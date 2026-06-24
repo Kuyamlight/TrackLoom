@@ -1,7 +1,9 @@
 #include "Command.h"
+#include "ProjectFile.h"
 #include "Project.h"
 #include "ProjectSerializer.h"
 
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -14,6 +16,14 @@ void require(bool condition, const std::string& message)
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+std::filesystem::path makeTestDirectory(const std::string& name)
+{
+    const auto path = std::filesystem::temp_directory_path() / "trackloom_tests" / name;
+    std::filesystem::remove_all(path);
+    std::filesystem::create_directories(path);
+    return path;
 }
 
 void projectStartsEmpty()
@@ -97,6 +107,69 @@ void invalidTextIsRejected()
     require(!loaded.error.empty(), "invalid project should report an error");
 }
 
+void projectCanSaveAndLoadFromFile()
+{
+    const auto directory = makeTestDirectory("save_and_load");
+    const auto path = directory / "song.tlproj";
+
+    trackloom::Project project("Saved Song");
+    project.createTrack("Lead Piano", trackloom::TrackType::Instrument);
+
+    const auto saved = trackloom::saveProjectToFileAtomically(project, path);
+    const auto loaded = trackloom::loadProjectFromFile(path);
+
+    require(saved.success, "saving project to file should succeed");
+    require(loaded.project.has_value(), "saved project file should load");
+    require(loaded.project->name() == "Saved Song", "loaded file should keep project name");
+    require(loaded.project->tracks().front().name == "Lead Piano", "loaded file should keep track name");
+}
+
+void saveCreatesParentDirectories()
+{
+    const auto directory = makeTestDirectory("nested_parent");
+    const auto path = directory / "level1" / "level2" / "song.tlproj";
+
+    trackloom::Project project("Nested Song");
+    const auto saved = trackloom::saveProjectToFileAtomically(project, path);
+
+    require(saved.success, "saving should create missing parent directories");
+    require(std::filesystem::exists(path), "project file should exist after save");
+}
+
+void saveReplacesExistingFile()
+{
+    const auto directory = makeTestDirectory("replace_existing");
+    const auto path = directory / "song.tlproj";
+
+    trackloom::Project first("Old Song");
+    trackloom::Project second("New Song");
+
+    require(trackloom::saveProjectToFileAtomically(first, path).success, "initial save should succeed");
+    require(trackloom::saveProjectToFileAtomically(second, path).success, "replacement save should succeed");
+
+    const auto loaded = trackloom::loadProjectFromFile(path);
+    require(loaded.project.has_value(), "replaced project should load");
+    require(loaded.project->name() == "New Song", "replacement should store new content");
+}
+
+void loadingMissingFileReportsError()
+{
+    const auto directory = makeTestDirectory("missing_file");
+    const auto loaded = trackloom::loadProjectFromFile(directory / "missing.tlproj");
+
+    require(!loaded.project.has_value(), "missing file should not load");
+    require(!loaded.error.empty(), "missing file should report an error");
+}
+
+void savingEmptyPathReportsError()
+{
+    trackloom::Project project("No Path");
+    const auto saved = trackloom::saveProjectToFileAtomically(project, {});
+
+    require(!saved.success, "saving to empty path should fail");
+    require(!saved.error.empty(), "empty path save should report an error");
+}
+
 }
 
 int main()
@@ -108,6 +181,11 @@ int main()
         projectCanRoundTripThroughText();
         projectCanRoundTripNamesWithSpaces();
         invalidTextIsRejected();
+        projectCanSaveAndLoadFromFile();
+        saveCreatesParentDirectories();
+        saveReplacesExistingFile();
+        loadingMissingFileReportsError();
+        savingEmptyPathReportsError();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';
         return 1;

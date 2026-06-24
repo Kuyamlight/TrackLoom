@@ -1,6 +1,7 @@
 add_library(trackloom_core STATIC
     Project.cpp
     Command.cpp
+    ProjectFile.cpp
     ProjectSerializer.cpp
 )
 

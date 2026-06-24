@@ -1,0 +1,120 @@
+#include "ProjectFile.h"
+
+#include <exception>
+#include <fstream>
+#include <sstream>
+#include <system_error>
+#include <utility>
+
+namespace trackloom {
+namespace {
+
+std::filesystem::path temporaryPathFor(const std::filesystem::path& targetPath)
+{
+    auto temporaryPath = targetPath;
+    temporaryPath += ".tmp";
+    return temporaryPath;
+}
+
+void removeIfExists(const std::filesystem::path& path)
+{
+    std::error_code ignoredError;
+    std::filesystem::remove(path, ignoredError);
+}
+
+FileOperationResult failAfterCleanup(const std::filesystem::path& temporaryPath, std::string message)
+{
+    // 保存失败时清理临时文件，避免下次保存误读旧的中间结果。
+    removeIfExists(temporaryPath);
+    return FileOperationResult::fail(std::move(message));
+}
+
+}
+
+FileOperationResult FileOperationResult::ok()
+{
+    return { true, "" };
+}
+
+FileOperationResult FileOperationResult::fail(std::string message)
+{
+    return { false, std::move(message) };
+}
+
+LoadProjectResult loadProjectFromFile(const std::filesystem::path& path)
+{
+    if (path.empty()) {
+        return LoadProjectResult::fail("Project file path must not be empty.");
+    }
+
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        return LoadProjectResult::fail("Could not open project file.");
+    }
+
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    if (input.bad()) {
+        return LoadProjectResult::fail("Could not read project file.");
+    }
+
+    return loadProjectFromText(contents.str());
+}
+
+FileOperationResult saveProjectToFileAtomically(const Project& project, const std::filesystem::path& path)
+{
+    if (path.empty()) {
+        return FileOperationResult::fail("Project file path must not be empty.");
+    }
+
+    const auto temporaryPath = temporaryPathFor(path);
+
+    try {
+        const auto parentPath = path.parent_path();
+        if (!parentPath.empty()) {
+            std::error_code createError;
+            std::filesystem::create_directories(parentPath, createError);
+            if (createError) {
+                return failAfterCleanup(temporaryPath, "Could not create project directory.");
+            }
+        }
+
+        {
+            std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
+            if (!output) {
+                return failAfterCleanup(temporaryPath, "Could not create temporary project file.");
+            }
+
+            output << saveProjectToText(project);
+            if (!output) {
+                return failAfterCleanup(temporaryPath, "Could not write temporary project file.");
+            }
+        }
+
+        // 临时文件写完后立即用正式读取路径验证，防止写出当前读取器无法理解的内容。
+        const auto validation = loadProjectFromFile(temporaryPath);
+        if (!validation.project.has_value()) {
+            return failAfterCleanup(temporaryPath, "Temporary project file did not validate: " + validation.error);
+        }
+
+        std::error_code replaceError;
+        if (std::filesystem::exists(path, replaceError)) {
+            std::filesystem::remove(path, replaceError);
+            if (replaceError) {
+                return failAfterCleanup(temporaryPath, "Could not remove existing project file.");
+            }
+        }
+
+        std::filesystem::rename(temporaryPath, path, replaceError);
+        if (replaceError) {
+            return failAfterCleanup(temporaryPath, "Could not replace project file.");
+        }
+
+        return FileOperationResult::ok();
+    } catch (const std::exception& error) {
+        // 这里捕获异常是为了让 UI 或 AI 调用层得到普通错误结果，而不是让保存流程崩出核心库。
+        return failAfterCleanup(temporaryPath, error.what());
+    }
+}
+
+}
