@@ -1,3 +1,6 @@
 # Local project guidance and planning documents
 /AGENTS.md
 /docs/
+
+# CMake build output
+/build/
