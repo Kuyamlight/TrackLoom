@@ -1,4 +1,5 @@
 add_library(trackloom_core STATIC
+    AudioEngine.cpp
     Project.cpp
     Command.cpp
     ProjectFile.cpp

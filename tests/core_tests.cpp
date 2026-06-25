@@ -1,3 +1,4 @@
+#include "AudioEngine.h"
 #include "Command.h"
 #include "ProjectFile.h"
 #include "Project.h"
@@ -9,6 +10,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -234,6 +236,93 @@ void transportRejectsInvalidValuesWithoutChangingState()
     require(transport.sampleRate() == 48000.0, "invalid sample rate should not replace previous value");
 }
 
+void audioBlockCanClearSamples()
+{
+    std::vector<float> samples { 1.0f, -1.0f, 0.5f, 2.0f };
+    trackloom::AudioBlock block(samples.data(), 2, 2);
+
+    block.clear();
+
+    for (const auto sample : samples) {
+        require(sample == 0.0f, "audio block clear should zero every sample");
+    }
+}
+
+void audioEngineAcceptsValidPrepareSettings()
+{
+    trackloom::AudioEngine engine;
+
+    require(engine.prepare(48000.0, 2, 512), "valid prepare settings should be accepted");
+    require(engine.isPrepared(), "engine should be prepared after valid settings");
+    require(engine.sampleRate() == 48000.0, "engine should store sample rate");
+    require(engine.channelCount() == 2, "engine should store channel count");
+    require(engine.maxBlockFrames() == 512, "engine should store max block size");
+}
+
+void audioEngineRejectsInvalidPrepareSettings()
+{
+    trackloom::AudioEngine engine;
+
+    require(!engine.prepare(0.0, 2, 512), "zero sample rate should be rejected");
+    require(!engine.prepare(44100.0, 0, 512), "zero channel count should be rejected");
+    require(!engine.prepare(44100.0, 2, 0), "zero max block size should be rejected");
+    require(!engine.isPrepared(), "invalid prepare settings should not prepare engine");
+}
+
+void audioEngineClearsOutputAndAdvancesPlayingTransport()
+{
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(engine.prepare(48000.0, 2, 16), "engine prepare should succeed");
+    transport.play();
+
+    require(engine.renderNextBlock(transport, block), "valid render should succeed");
+
+    for (const auto sample : samples) {
+        require(sample == 0.0f, "render should clear output to silence");
+    }
+    require(transport.currentSample() == 4, "playing render should advance by frame count");
+    require(transport.sampleRate() == 48000.0, "render should align transport sample rate");
+}
+
+void audioEngineClearsOutputWithoutAdvancingStoppedTransport()
+{
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(engine.prepare(44100.0, 2, 16), "engine prepare should succeed");
+    require(engine.renderNextBlock(transport, block), "stopped render should still succeed");
+
+    for (const auto sample : samples) {
+        require(sample == 0.0f, "stopped render should still clear output");
+    }
+    require(transport.currentSample() == 0, "stopped render should not advance transport");
+}
+
+void audioEngineRejectsInvalidRenderRequestsWithoutAdvancing()
+{
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock validBlock(samples.data(), 2, 4);
+    trackloom::AudioBlock wrongChannels(samples.data(), 1, 4);
+    trackloom::AudioBlock tooLarge(samples.data(), 2, 4);
+
+    transport.play();
+    require(!engine.renderNextBlock(transport, validBlock), "unprepared render should fail");
+    require(transport.currentSample() == 0, "failed render should not advance transport");
+
+    require(engine.prepare(44100.0, 2, 2), "engine prepare should succeed");
+    require(!engine.renderNextBlock(transport, wrongChannels), "channel mismatch should fail");
+    require(!engine.renderNextBlock(transport, tooLarge), "oversized block should fail");
+    require(transport.currentSample() == 0, "invalid render requests should not advance transport");
+}
+
 }
 
 int main()
@@ -256,6 +345,12 @@ int main()
         transportCanSeekBySample();
         transportCanSeekBySeconds();
         transportRejectsInvalidValuesWithoutChangingState();
+        audioBlockCanClearSamples();
+        audioEngineAcceptsValidPrepareSettings();
+        audioEngineRejectsInvalidPrepareSettings();
+        audioEngineClearsOutputAndAdvancesPlayingTransport();
+        audioEngineClearsOutputWithoutAdvancingStoppedTransport();
+        audioEngineRejectsInvalidRenderRequestsWithoutAdvancing();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';
         return 1;
