@@ -10,6 +10,19 @@ bool isValidSampleRate(double sampleRate)
     return std::isfinite(sampleRate) && sampleRate > 0.0;
 }
 
+bool isValidFrequency(double frequencyHz)
+{
+    return std::isfinite(frequencyHz) && frequencyHz > 0.0;
+}
+
+bool isValidGain(float gain)
+{
+    return std::isfinite(gain) && gain >= 0.0f;
+}
+
+constexpr double pi = 3.14159265358979323846264338327950288;
+constexpr double twoPi = 2.0 * pi;
+
 }
 
 AudioBlock::AudioBlock(float* samples, int channelCount, int frameCount)
@@ -56,6 +69,54 @@ void AudioBlock::clear()
     }
 }
 
+bool SineToneSource::setFrequency(double frequencyHz)
+{
+    if (!isValidFrequency(frequencyHz)) {
+        return false;
+    }
+
+    frequencyHz_ = frequencyHz;
+    return true;
+}
+
+bool SineToneSource::setGain(float gain)
+{
+    if (!isValidGain(gain)) {
+        return false;
+    }
+
+    gain_ = gain;
+    return true;
+}
+
+void SineToneSource::resetPhase()
+{
+    phaseRadians_ = 0.0;
+}
+
+bool SineToneSource::render(AudioBlock block, double sampleRate)
+{
+    if (!block.isValid() || !isValidSampleRate(sampleRate)) {
+        return false;
+    }
+
+    // 相位保存在对象里，连续 block 会接着上一段生成，测试结果稳定且可复现。
+    const auto phaseDelta = twoPi * frequencyHz_ / sampleRate;
+    for (int frame = 0; frame < block.frameCount(); ++frame) {
+        const auto sample = static_cast<float>(std::sin(phaseRadians_) * gain_);
+        for (int channel = 0; channel < block.channelCount(); ++channel) {
+            block.sampleAt(channel, frame) = sample;
+        }
+
+        phaseRadians_ += phaseDelta;
+        if (phaseRadians_ >= twoPi) {
+            phaseRadians_ = std::fmod(phaseRadians_, twoPi);
+        }
+    }
+
+    return true;
+}
+
 bool AudioEngine::prepare(double sampleRate, int channelCount, int maxBlockFrames)
 {
     if (!isValidSampleRate(sampleRate) || channelCount <= 0 || maxBlockFrames <= 0) {
@@ -91,6 +152,11 @@ int AudioEngine::maxBlockFrames() const
 
 bool AudioEngine::renderNextBlock(Transport& transport, AudioBlock block)
 {
+    return renderNextBlock(transport, block, nullptr);
+}
+
+bool AudioEngine::renderNextBlock(Transport& transport, AudioBlock block, AudioSource* source)
+{
     if (!prepared_ || !block.isValid()) {
         return false;
     }
@@ -100,6 +166,13 @@ bool AudioEngine::renderNextBlock(Transport& transport, AudioBlock block)
 
     block.clear();
     transport.setSampleRate(sampleRate_);
+    if (source != nullptr && transport.isPlaying()) {
+        // 音源只在播放中渲染；停止时保持静音，避免停止状态产生隐藏输出。
+        if (!source->render(block, sampleRate_)) {
+            return false;
+        }
+    }
+
     return transport.advanceBySamples(block.frameCount());
 }
 

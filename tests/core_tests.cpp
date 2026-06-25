@@ -7,6 +7,7 @@
 
 #include <filesystem>
 #include <iostream>
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -19,6 +20,16 @@ void require(bool condition, const std::string& message)
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+bool containsNonZeroSample(const std::vector<float>& samples)
+{
+    for (const auto sample : samples) {
+        if (std::fabs(sample) > 0.000001f) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::filesystem::path makeTestDirectory(const std::string& name)
@@ -323,6 +334,55 @@ void audioEngineRejectsInvalidRenderRequestsWithoutAdvancing()
     require(transport.currentSample() == 0, "invalid render requests should not advance transport");
 }
 
+void audioEngineRendersToneWhileTransportIsPlaying()
+{
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    trackloom::SineToneSource tone;
+    std::vector<float> samples(2 * 32, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 32);
+
+    require(engine.prepare(48000.0, 2, 64), "engine prepare should succeed");
+    require(tone.setFrequency(440.0), "valid tone frequency should be accepted");
+    require(tone.setGain(0.25f), "valid tone gain should be accepted");
+
+    transport.play();
+    require(engine.renderNextBlock(transport, block, &tone), "playing render should accept a tone source");
+
+    require(containsNonZeroSample(samples), "playing tone render should produce non-zero samples");
+    require(transport.currentSample() == 32, "tone render should advance playing transport");
+}
+
+void audioEngineDoesNotRenderToneWhileStopped()
+{
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    trackloom::SineToneSource tone;
+    std::vector<float> samples(2 * 32, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 32);
+
+    require(engine.prepare(48000.0, 2, 64), "engine prepare should succeed");
+    require(tone.setFrequency(440.0), "valid tone frequency should be accepted");
+    require(tone.setGain(0.25f), "valid tone gain should be accepted");
+
+    require(engine.renderNextBlock(transport, block, &tone), "stopped render should accept a tone source");
+
+    require(!containsNonZeroSample(samples), "stopped tone render should leave silence");
+    require(transport.currentSample() == 0, "stopped tone render should not advance transport");
+}
+
+void sineToneSourceRejectsInvalidParameters()
+{
+    trackloom::SineToneSource tone;
+
+    require(!tone.setFrequency(0.0), "zero tone frequency should be rejected");
+    require(!tone.setFrequency(-440.0), "negative tone frequency should be rejected");
+    require(!tone.setGain(-0.1f), "negative tone gain should be rejected");
+
+    require(tone.setFrequency(440.0), "valid tone frequency should still be accepted");
+    require(tone.setGain(0.0f), "zero tone gain should be accepted for silence");
+}
+
 }
 
 int main()
@@ -351,6 +411,9 @@ int main()
         audioEngineClearsOutputAndAdvancesPlayingTransport();
         audioEngineClearsOutputWithoutAdvancingStoppedTransport();
         audioEngineRejectsInvalidRenderRequestsWithoutAdvancing();
+        audioEngineRendersToneWhileTransportIsPlaying();
+        audioEngineDoesNotRenderToneWhileStopped();
+        sineToneSourceRejectsInvalidParameters();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';
         return 1;

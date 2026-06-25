@@ -17,7 +17,7 @@ public:
     float& sampleAt(int channel, int frame);
     const float& sampleAt(int channel, int frame) const;
 
-    // 清零是当前的安全输出策略：没有音源时也不能让随机内存进入声卡。
+    // 没有音源或渲染停止时仍要清零，避免随机内存被送进后续音频输出。
     void clear();
 
 private:
@@ -26,8 +26,34 @@ private:
     int frameCount_ = 0;
 };
 
+// AudioSource 是音频引擎的最小音源接口。
+// 后续轨道、采样器或插件宿主都可以实现它，但接口本身不绑定具体功能。
+class AudioSource {
+public:
+    virtual ~AudioSource() = default;
+
+    // render 只写入调用方提供的缓冲区，不拥有内存，也不执行文件或网络操作。
+    virtual bool render(AudioBlock block, double sampleRate) = 0;
+};
+
+// SineToneSource 是确定性测试音源，不是正式乐器功能。
+// 它用于证明渲染链路能产生可预测的非静音样本。
+class SineToneSource final : public AudioSource {
+public:
+    bool setFrequency(double frequencyHz);
+    bool setGain(float gain);
+    void resetPhase();
+
+    bool render(AudioBlock block, double sampleRate) override;
+
+private:
+    double frequencyHz_ = 440.0;
+    float gain_ = 0.1f;
+    double phaseRadians_ = 0.0;
+};
+
 // AudioEngine 是最小实时渲染骨架。
-// 当前只输出静音并推进 Transport，不打开设备、不解码文件、不运行插件。
+// 当前不打开设备、不解码文件、不运行插件，只负责清理缓冲区、调用音源并推进 Transport。
 class AudioEngine {
 public:
     bool prepare(double sampleRate, int channelCount, int maxBlockFrames);
@@ -37,8 +63,11 @@ public:
     int channelCount() const;
     int maxBlockFrames() const;
 
-    // 渲染函数为未来音频线程准备：不分配内存，不访问文件系统，不调用外部服务。
+    // 默认无音源渲染保持静音，兼容上一阶段行为。
     bool renderNextBlock(Transport& transport, AudioBlock block);
+
+    // 带音源的渲染只在 Transport 播放时写入非静音样本。
+    bool renderNextBlock(Transport& transport, AudioBlock block, AudioSource* source);
 
 private:
     bool prepared_ = false;
