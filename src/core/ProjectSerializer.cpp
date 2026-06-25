@@ -33,6 +33,21 @@ bool parseFlagToken(const std::string& token, std::string_view key, bool& value)
     return false;
 }
 
+bool parseFloatToken(const std::string& token, std::string_view key, float& value)
+{
+    const std::string expectedPrefix = std::string(key) + "=";
+    if (!startsWith(token, expectedPrefix)) {
+        return false;
+    }
+
+    const auto rawValue = token.substr(expectedPrefix.size());
+    std::istringstream input(rawValue);
+    input >> value;
+
+    // 必须完整消费 token，避免 "0.5abc" 这类坏值被误认为合法音量。
+    return input && input.eof();
+}
+
 }
 
 LoadProjectResult LoadProjectResult::ok(Project project)
@@ -58,6 +73,9 @@ std::string saveProjectToText(const Project& project)
                << " soloed=" << (track.playback.soloed ? 1 : 0)
                << " disabled=" << (track.playback.disabled ? 1 : 0)
                << '\n';
+        output << "track_mix_state " << track.id
+               << " gain=" << track.mix.gain
+               << '\n';
     }
 
     return output.str();
@@ -75,7 +93,7 @@ LoadProjectResult loadProjectFromText(const std::string& text)
     }
 
     std::istringstream header(line);
-    // v2 增加轨道播放状态；v1 仍可读取，并在内存中迁移为默认播放状态。
+    // v2 增加轨道播放状态；v3 增加轨道混音状态。旧版本读取后使用当前内存默认值。
     if (!(header >> keyword >> version) || keyword != "trackloom_project" || version < 1 || version > Project::currentFormatVersion) {
         return LoadProjectResult::fail("Unsupported or invalid project header.");
     }
@@ -92,7 +110,7 @@ LoadProjectResult loadProjectFromText(const std::string& text)
             continue;
         }
 
-        // 播放状态单独成行，避免破坏已有 track 行里“轨道名可以包含空格”的规则。
+        // 播放状态单独成行，避免破坏 track 行里“轨道名可以包含空格”的规则。
         if (startsWith(line, "track_playback_state ")) {
             if (version < 2) {
                 return LoadProjectResult::fail("Track playback state requires project version 2.");
@@ -115,6 +133,29 @@ LoadProjectResult loadProjectFromText(const std::string& text)
             }
             if (!project.setTrackPlaybackState(trackId, state)) {
                 return LoadProjectResult::fail("Track playback state references unknown track.");
+            }
+
+            continue;
+        }
+
+        if (startsWith(line, "track_mix_state ")) {
+            if (version < 3) {
+                return LoadProjectResult::fail("Track mix state requires project version 3.");
+            }
+
+            std::istringstream mixLine(line);
+            std::string trackId;
+            std::string gainToken;
+            TrackMixState state;
+
+            if (!(mixLine >> keyword >> trackId >> gainToken)) {
+                return LoadProjectResult::fail("Invalid track mix state record.");
+            }
+            if (!parseFloatToken(gainToken, "gain", state.gain) || !isValidTrackMixState(state)) {
+                return LoadProjectResult::fail("Invalid track mix state value.");
+            }
+            if (!project.setTrackMixState(trackId, state)) {
+                return LoadProjectResult::fail("Track mix state references unknown track.");
             }
 
             continue;
@@ -143,7 +184,7 @@ LoadProjectResult loadProjectFromText(const std::string& text)
 
             track.type = *type;
             if (!project.insertExistingTrack(track)) {
-                return LoadProjectResult::fail("Duplicate track id.");
+                return LoadProjectResult::fail("Duplicate or invalid track id.");
             }
 
             continue;

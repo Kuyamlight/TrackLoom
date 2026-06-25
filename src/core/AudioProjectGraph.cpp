@@ -49,7 +49,7 @@ bool ProjectPlaybackGraph::rebuild(const Project& project, const std::vector<Tra
         return false;
     }
 
-    std::vector<std::unique_ptr<TrackPlaybackAudioSource>> nextSources;
+    std::vector<SourceNode> nextSources;
     nextSources.reserve(bindings.size());
 
     for (const auto& binding : bindings) {
@@ -70,11 +70,16 @@ bool ProjectPlaybackGraph::rebuild(const Project& project, const std::vector<Tra
         playbackSource->setPlaybackState(track->playback);
         playbackSource->setSoloModeActive(nextSoloModeActive);
 
-        if (!nextMixer.addSource(playbackSource.get())) {
+        auto gainSource = std::make_unique<GainAudioSource>();
+        if (!gainSource->setSource(playbackSource.get()) || !gainSource->setGain(track->mix.gain)) {
             return false;
         }
 
-        nextSources.push_back(std::move(playbackSource));
+        if (!nextMixer.addSource(gainSource.get())) {
+            return false;
+        }
+
+        nextSources.push_back({ std::move(playbackSource), std::move(gainSource) });
     }
 
     soloModeActive_ = nextSoloModeActive;

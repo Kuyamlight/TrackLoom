@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -52,6 +53,7 @@ Track Project::createTrack(std::string name, TrackType type)
         "track-" + std::to_string(nextTrackNumber_++),
         std::move(name),
         type,
+        {},
         {}
     };
 
@@ -73,8 +75,30 @@ bool Project::setTrackPlaybackState(const std::string& id, TrackPlaybackState st
     return true;
 }
 
+bool Project::setTrackMixState(const std::string& id, TrackMixState state)
+{
+    if (!isValidTrackMixState(state)) {
+        return false;
+    }
+
+    const auto it = std::find_if(tracks_.begin(), tracks_.end(), [&](const Track& track) {
+        return track.id == id;
+    });
+
+    if (it == tracks_.end()) {
+        return false;
+    }
+
+    it->mix = state;
+    return true;
+}
+
 bool Project::insertExistingTrack(const Track& track)
 {
+    if (!isValidTrackMixState(track.mix)) {
+        return false;
+    }
+
     if (findTrackById(track.id).has_value()) {
         return false;
     }
@@ -141,6 +165,11 @@ std::optional<TrackType> trackTypeFromString(const std::string& value)
     }
 
     return std::nullopt;
+}
+
+bool isValidTrackMixState(TrackMixState state)
+{
+    return std::isfinite(state.gain) && state.gain >= 0.0f;
 }
 
 }

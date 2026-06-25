@@ -48,7 +48,7 @@ private:
 };
 
 // AddTrackCommand 是第一条真实工程命令。
-// 它保存创建出来的 Track，因此撤销后再重做时能恢复同一个稳定 ID。
+// 它保存创建出的 Track，因此撤销后再重做时能恢复同一个稳定 ID。
 class AddTrackCommand final : public Command {
 public:
     AddTrackCommand(std::string trackName, TrackType trackType);
@@ -65,7 +65,7 @@ private:
 };
 
 // SetTrackPlaybackStateCommand 修改轨道播放状态，并保存旧状态用于撤销。
-// 这让 UI 操作和 AI 操作都走同一条可验证、可回退的工程修改路径。
+// 静音、独奏和禁用属于播放开关，不负责表达音量或其他混音参数。
 class SetTrackPlaybackStateCommand final : public Command {
 public:
     SetTrackPlaybackStateCommand(std::string trackId, TrackPlaybackState newState);
@@ -79,6 +79,23 @@ private:
     std::string trackId_;
     TrackPlaybackState newState_;
     std::optional<TrackPlaybackState> oldState_;
+};
+
+// SetTrackMixStateCommand 修改轨道混音状态，并保存旧状态用于撤销。
+// 它与播放状态命令分开，避免把“音量为 0”和“轨道被静音”混为同一个概念。
+class SetTrackMixStateCommand final : public Command {
+public:
+    SetTrackMixStateCommand(std::string trackId, TrackMixState newState);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string trackId_;
+    TrackMixState newState_;
+    std::optional<TrackMixState> oldState_;
 };
 
 }

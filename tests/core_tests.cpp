@@ -216,6 +216,55 @@ void invalidPlaybackStateCommandDoesNotModifyProject()
     require(!commands.canUndo(), "failed playback command should not enter undo stack");
 }
 
+void newTrackMixStateStartsDefault()
+{
+    trackloom::Project project("Mix");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    require(track.mix.gain == 1.0f, "new track should start at unity gain");
+}
+
+void setTrackMixStateCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project;
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    trackloom::TrackMixState state;
+    state.gain = 0.25f;
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetTrackMixStateCommand>(track.id, state));
+
+    require(result.success, "mix state command should succeed");
+    require(project.findTrackById(track.id)->mix == state, "command should write mix state");
+
+    require(commands.undo(project), "mix state undo should be available");
+    require(project.findTrackById(track.id)->mix.gain == 1.0f, "undo should restore unity gain");
+
+    require(commands.redo(project), "mix state redo should be available");
+    require(project.findTrackById(track.id)->mix == state, "redo should restore mix state");
+}
+
+void invalidTrackMixStateCommandDoesNotModifyProject()
+{
+    trackloom::Project project;
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    trackloom::TrackMixState state;
+    state.gain = -1.0f;
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetTrackMixStateCommand>(track.id, state));
+
+    require(!result.success, "negative gain mix command should fail");
+    require(project.findTrackById(track.id)->mix.gain == 1.0f, "failed command should not modify mix state");
+    require(!commands.canUndo(), "failed mix command should not enter undo stack");
+}
+
 void projectCanRoundTripThroughText()
 {
     trackloom::Project project("Song");
@@ -245,11 +294,31 @@ void projectCanRoundTripTrackPlaybackState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 2\n") == 0, "saved project should use format version 2");
+    require(saved.find("trackloom_project 3\n") == 0, "saved project should use format version 3");
     require(loaded.project.has_value(), "project with playback state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
     require(loadedTrack.has_value(), "loaded project should contain track");
     require(loadedTrack->playback == state, "loaded track should keep playback state");
+}
+
+void projectCanRoundTripTrackMixState()
+{
+    trackloom::Project project("Mix Song");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    trackloom::TrackMixState state;
+    state.gain = 0.25f;
+
+    require(project.setTrackMixState(track.id, state), "project should accept mix state update");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("trackloom_project 3\n") == 0, "saved mix project should use format version 3");
+    require(saved.find("track_mix_state " + track.id + " gain=0.25\n") != std::string::npos, "saved project should include track mix state");
+    require(loaded.project.has_value(), "project with mix state should load");
+    const auto loadedTrack = loaded.project->findTrackById(track.id);
+    require(loadedTrack.has_value(), "loaded project should contain mixed track");
+    require(loadedTrack->mix == state, "loaded track should keep mix state");
 }
 
 void versionOneProjectLoadsDefaultPlaybackState()
@@ -267,6 +336,24 @@ void versionOneProjectLoadsDefaultPlaybackState()
     require(!track->playback.muted, "version 1 track should default to unmuted");
     require(!track->playback.soloed, "version 1 track should default to unsoloed");
     require(!track->playback.disabled, "version 1 track should default to enabled");
+    require(track->mix.gain == 1.0f, "version 1 track should default to unity gain");
+}
+
+void versionTwoProjectLoadsDefaultMixState()
+{
+    const std::string text =
+        "trackloom_project 2\n"
+        "name Playback Song\n"
+        "track track-1 Instrument Lead Piano\n"
+        "track_playback_state track-1 muted=1 soloed=0 disabled=0\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(loaded.project.has_value(), "version 2 project should still load");
+    const auto track = loaded.project->findTrackById("track-1");
+    require(track.has_value(), "version 2 track should load");
+    require(track->playback.muted, "version 2 playback state should still load");
+    require(track->mix.gain == 1.0f, "version 2 track should default to unity gain");
 }
 
 void invalidTrackPlaybackStateRecordIsRejected()
@@ -280,6 +367,21 @@ void invalidTrackPlaybackStateRecordIsRejected()
 
     require(!loaded.project.has_value(), "unknown track playback state should fail");
     require(!loaded.error.empty(), "invalid playback state should report an error");
+}
+
+void invalidTrackMixStateRecordIsRejected()
+{
+    const std::string text =
+        "trackloom_project 3\n"
+        "name Broken Mix Song\n"
+        "track track-1 Instrument Lead Piano\n"
+        "track_playback_state track-1 muted=0 soloed=0 disabled=0\n"
+        "track_mix_state track-1 gain=-1\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(!loaded.project.has_value(), "negative track mix state should fail");
+    require(!loaded.error.empty(), "invalid mix state should report an error");
 }
 
 void projectCanRoundTripNamesWithSpaces()
@@ -1205,6 +1307,25 @@ void projectPlaybackGraphAppliesMutedState()
     require(allSamplesNear(samples, 0.0f), "muted graph source should render silence");
 }
 
+void projectPlaybackGraphAppliesTrackGain()
+{
+    trackloom::Project project("Graph");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    ConstantAudioSource source(0.50f);
+    trackloom::TrackMixState mix;
+    trackloom::ProjectPlaybackGraph graph;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    mix.gain = 0.25f;
+    require(project.setTrackMixState(track.id, mix), "project should set graph track gain");
+    require(graph.prepare(2, 8), "project graph prepare should succeed");
+    require(graph.rebuild(project, { { track.id, &source } }), "project graph rebuild should accept gained binding");
+    require(graph.render(block, 48000.0), "project graph gained render should succeed");
+
+    require(allSamplesNear(samples, 0.125f), "project graph should apply track gain before mixing");
+}
+
 void projectPlaybackGraphRendersSilenceWhenEmpty()
 {
     trackloom::Project project("Graph");
@@ -1247,10 +1368,16 @@ int main()
         newTrackPlaybackStateStartsDefault();
         setTrackPlaybackStateCommandSupportsUndoAndRedo();
         invalidPlaybackStateCommandDoesNotModifyProject();
+        newTrackMixStateStartsDefault();
+        setTrackMixStateCommandSupportsUndoAndRedo();
+        invalidTrackMixStateCommandDoesNotModifyProject();
         projectCanRoundTripThroughText();
         projectCanRoundTripTrackPlaybackState();
+        projectCanRoundTripTrackMixState();
         versionOneProjectLoadsDefaultPlaybackState();
+        versionTwoProjectLoadsDefaultMixState();
         invalidTrackPlaybackStateRecordIsRejected();
+        invalidTrackMixStateRecordIsRejected();
         projectCanRoundTripNamesWithSpaces();
         invalidTextIsRejected();
         projectCanSaveAndLoadFromFile();
@@ -1310,6 +1437,7 @@ int main()
         projectPlaybackGraphAppliesProjectSoloMode();
         projectPlaybackGraphAppliesDisabledState();
         projectPlaybackGraphAppliesMutedState();
+        projectPlaybackGraphAppliesTrackGain();
         projectPlaybackGraphRendersSilenceWhenEmpty();
         projectPlaybackGraphRejectsInvalidBindings();
     } catch (const std::exception& error) {
