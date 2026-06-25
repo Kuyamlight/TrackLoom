@@ -1,4 +1,5 @@
 #include "AudioDisable.h"
+#include "AudioProjectGraph.h"
 #include "AudioSolo.h"
 #include "AudioTrackPlayback.h"
 #include "AudioMute.h"
@@ -1114,6 +1115,127 @@ void trackPlaybackAudioSourceRejectsInvalidSetup()
     require(!playback.setSource(nullptr), "track playback source should reject null input");
 }
 
+void projectPlaybackGraphSumsBoundTracks()
+{
+    trackloom::Project project("Graph");
+    const auto firstTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto secondTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    ConstantAudioSource firstSource(0.25f);
+    ConstantAudioSource secondSource(0.50f);
+    trackloom::ProjectPlaybackGraph graph;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(graph.prepare(2, 8), "project graph prepare should succeed");
+    require(graph.rebuild(project, {
+        { firstTrack.id, &firstSource },
+        { secondTrack.id, &secondSource },
+    }), "project graph rebuild should accept valid bindings");
+    require(graph.render(block, 48000.0), "project graph render should succeed");
+
+    require(graph.sourceCount() == 2, "project graph should expose bound source count");
+    require(!graph.isSoloModeActive(), "project graph should start without solo mode");
+    require(allSamplesNear(samples, 0.75f), "project graph should sum bound tracks");
+}
+
+void projectPlaybackGraphAppliesProjectSoloMode()
+{
+    trackloom::Project project("Graph");
+    const auto firstTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto secondTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    CountingAudioSource firstSource(0.25f);
+    CountingAudioSource secondSource(0.50f);
+    trackloom::TrackPlaybackState secondState;
+    trackloom::ProjectPlaybackGraph graph;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    secondState.soloed = true;
+    require(project.setTrackPlaybackState(secondTrack.id, secondState), "project should set solo state");
+    require(graph.prepare(2, 8), "project graph prepare should succeed");
+    require(graph.rebuild(project, {
+        { firstTrack.id, &firstSource },
+        { secondTrack.id, &secondSource },
+    }), "project graph rebuild should accept solo bindings");
+    require(graph.render(block, 48000.0), "project graph solo render should succeed");
+
+    require(graph.isSoloModeActive(), "project graph should detect solo mode from project");
+    require(firstSource.renderCount() == 1, "unsoloed source should still process in solo mode");
+    require(secondSource.renderCount() == 1, "soloed source should process in solo mode");
+    require(allSamplesNear(samples, 0.50f), "project graph should output only soloed track");
+}
+
+void projectPlaybackGraphAppliesDisabledState()
+{
+    trackloom::Project project("Graph");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    CountingAudioSource source(0.50f);
+    trackloom::TrackPlaybackState state;
+    trackloom::ProjectPlaybackGraph graph;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    state.disabled = true;
+    require(project.setTrackPlaybackState(track.id, state), "project should set disabled state");
+    require(graph.prepare(2, 8), "project graph prepare should succeed");
+    require(graph.rebuild(project, { { track.id, &source } }), "project graph rebuild should accept disabled binding");
+    require(graph.render(block, 48000.0), "project graph disabled render should succeed");
+
+    require(source.renderCount() == 0, "disabled graph source should not process");
+    require(allSamplesNear(samples, 0.0f), "disabled graph source should render silence");
+}
+
+void projectPlaybackGraphAppliesMutedState()
+{
+    trackloom::Project project("Graph");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    CountingAudioSource source(0.50f);
+    trackloom::TrackPlaybackState state;
+    trackloom::ProjectPlaybackGraph graph;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    state.muted = true;
+    require(project.setTrackPlaybackState(track.id, state), "project should set muted state");
+    require(graph.prepare(2, 8), "project graph prepare should succeed");
+    require(graph.rebuild(project, { { track.id, &source } }), "project graph rebuild should accept muted binding");
+    require(graph.render(block, 48000.0), "project graph muted render should succeed");
+
+    require(source.renderCount() == 1, "muted graph source should still process");
+    require(allSamplesNear(samples, 0.0f), "muted graph source should render silence");
+}
+
+void projectPlaybackGraphRendersSilenceWhenEmpty()
+{
+    trackloom::Project project("Graph");
+    trackloom::ProjectPlaybackGraph graph;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(graph.prepare(2, 8), "project graph prepare should succeed");
+    require(graph.rebuild(project, {}), "project graph rebuild should accept empty bindings");
+    require(graph.render(block, 48000.0), "empty project graph render should succeed");
+
+    require(graph.sourceCount() == 0, "empty project graph should have no sources");
+    require(allSamplesNear(samples, 0.0f), "empty project graph should render silence");
+}
+
+void projectPlaybackGraphRejectsInvalidBindings()
+{
+    trackloom::Project project("Graph");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    ConstantAudioSource source(0.50f);
+    trackloom::ProjectPlaybackGraph graph;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(!graph.rebuild(project, { { track.id, &source } }), "unprepared graph rebuild should fail");
+    require(graph.prepare(2, 8), "project graph prepare should succeed");
+    require(!graph.rebuild(project, { { "missing-track", &source } }), "unknown track binding should fail");
+    require(!graph.rebuild(project, { { track.id, nullptr } }), "null source binding should fail");
+    require(!graph.render(block, 0.0), "project graph should reject invalid sample rate through mixer");
+}
+
 }
 
 int main()
@@ -1184,6 +1306,12 @@ int main()
         trackPlaybackAudioSourcePassesSoloedTrackInSoloMode();
         sourceMixerSumsTrackPlaybackAudioSources();
         trackPlaybackAudioSourceRejectsInvalidSetup();
+        projectPlaybackGraphSumsBoundTracks();
+        projectPlaybackGraphAppliesProjectSoloMode();
+        projectPlaybackGraphAppliesDisabledState();
+        projectPlaybackGraphAppliesMutedState();
+        projectPlaybackGraphRendersSilenceWhenEmpty();
+        projectPlaybackGraphRejectsInvalidBindings();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';
         return 1;
