@@ -119,7 +119,7 @@ void projectStartsEmpty()
 {
     trackloom::Project project("Demo");
 
-    require(project.formatVersion() == 1, "format version should start at 1");
+    require(project.formatVersion() == trackloom::Project::currentFormatVersion, "format version should match current format");
     require(project.name() == "Demo", "project name should be stored");
     require(project.tracks().empty(), "new project should not contain tracks");
 }
@@ -159,6 +159,61 @@ void invalidCommandDoesNotModifyProject()
     require(!commands.canUndo(), "failed command should not enter undo stack");
 }
 
+void newTrackPlaybackStateStartsDefault()
+{
+    trackloom::Project project("Playback");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    require(!track.playback.muted, "new track should start unmuted");
+    require(!track.playback.soloed, "new track should start unsoloed");
+    require(!track.playback.disabled, "new track should start enabled");
+}
+
+void setTrackPlaybackStateCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project;
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    trackloom::TrackPlaybackState state;
+    state.muted = true;
+    state.soloed = true;
+    state.disabled = true;
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetTrackPlaybackStateCommand>(track.id, state));
+
+    require(result.success, "playback state command should succeed");
+    require(project.findTrackById(track.id)->playback == state, "command should write playback state");
+
+    require(commands.undo(project), "playback state undo should be available");
+    require(!project.findTrackById(track.id)->playback.muted, "undo should restore muted state");
+    require(!project.findTrackById(track.id)->playback.soloed, "undo should restore soloed state");
+    require(!project.findTrackById(track.id)->playback.disabled, "undo should restore disabled state");
+
+    require(commands.redo(project), "playback state redo should be available");
+    require(project.findTrackById(track.id)->playback == state, "redo should restore playback state");
+}
+
+void invalidPlaybackStateCommandDoesNotModifyProject()
+{
+    trackloom::Project project;
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    trackloom::TrackPlaybackState state;
+    state.muted = true;
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetTrackPlaybackStateCommand>("missing-track", state));
+
+    require(!result.success, "missing track playback state command should fail");
+    require(!project.findTrackById(track.id)->playback.muted, "failed command should not modify playback state");
+    require(!commands.canUndo(), "failed playback command should not enter undo stack");
+}
+
 void projectCanRoundTripThroughText()
 {
     trackloom::Project project("Song");
@@ -173,6 +228,56 @@ void projectCanRoundTripThroughText()
     require(loaded.project->tracks().size() == 2, "loaded project should keep tracks");
     require(loaded.project->tracks()[0].type == trackloom::TrackType::Instrument, "first track type should survive");
     require(loaded.project->tracks()[1].type == trackloom::TrackType::Audio, "second track type should survive");
+}
+
+void projectCanRoundTripTrackPlaybackState()
+{
+    trackloom::Project project("Playback Song");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    trackloom::TrackPlaybackState state;
+    state.muted = true;
+    state.disabled = true;
+
+    require(project.setTrackPlaybackState(track.id, state), "project should accept playback state update");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("trackloom_project 2\n") == 0, "saved project should use format version 2");
+    require(loaded.project.has_value(), "project with playback state should load");
+    const auto loadedTrack = loaded.project->findTrackById(track.id);
+    require(loadedTrack.has_value(), "loaded project should contain track");
+    require(loadedTrack->playback == state, "loaded track should keep playback state");
+}
+
+void versionOneProjectLoadsDefaultPlaybackState()
+{
+    const std::string text =
+        "trackloom_project 1\n"
+        "name Old Song\n"
+        "track track-1 Instrument Lead Piano\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(loaded.project.has_value(), "version 1 project should still load");
+    const auto track = loaded.project->findTrackById("track-1");
+    require(track.has_value(), "version 1 track should load");
+    require(!track->playback.muted, "version 1 track should default to unmuted");
+    require(!track->playback.soloed, "version 1 track should default to unsoloed");
+    require(!track->playback.disabled, "version 1 track should default to enabled");
+}
+
+void invalidTrackPlaybackStateRecordIsRejected()
+{
+    const std::string text =
+        "trackloom_project 2\n"
+        "name Broken Song\n"
+        "track_playback_state missing-track muted=1 soloed=0 disabled=0\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(!loaded.project.has_value(), "unknown track playback state should fail");
+    require(!loaded.error.empty(), "invalid playback state should report an error");
 }
 
 void projectCanRoundTripNamesWithSpaces()
@@ -899,7 +1004,13 @@ int main()
         projectStartsEmpty();
         addTrackCommandSupportsUndoAndRedo();
         invalidCommandDoesNotModifyProject();
+        newTrackPlaybackStateStartsDefault();
+        setTrackPlaybackStateCommandSupportsUndoAndRedo();
+        invalidPlaybackStateCommandDoesNotModifyProject();
         projectCanRoundTripThroughText();
+        projectCanRoundTripTrackPlaybackState();
+        versionOneProjectLoadsDefaultPlaybackState();
+        invalidTrackPlaybackStateRecordIsRejected();
         projectCanRoundTripNamesWithSpaces();
         invalidTextIsRejected();
         projectCanSaveAndLoadFromFile();

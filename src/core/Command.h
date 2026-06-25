@@ -64,4 +64,21 @@ private:
     std::optional<Track> createdTrack_;
 };
 
+// SetTrackPlaybackStateCommand 修改轨道播放状态，并保存旧状态用于撤销。
+// 这让 UI 操作和 AI 操作都走同一条可验证、可回退的工程修改路径。
+class SetTrackPlaybackStateCommand final : public Command {
+public:
+    SetTrackPlaybackStateCommand(std::string trackId, TrackPlaybackState newState);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string trackId_;
+    TrackPlaybackState newState_;
+    std::optional<TrackPlaybackState> oldState_;
+};
+
 }

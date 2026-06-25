@@ -112,4 +112,49 @@ void AddTrackCommand::undo(Project& project)
     }
 }
 
+SetTrackPlaybackStateCommand::SetTrackPlaybackStateCommand(std::string trackId, TrackPlaybackState newState)
+    : trackId_(std::move(trackId))
+    , newState_(newState)
+{
+}
+
+std::string SetTrackPlaybackStateCommand::name() const
+{
+    return "SetTrackPlaybackState";
+}
+
+CommandResult SetTrackPlaybackStateCommand::validate(const Project& project) const
+{
+    if (!project.findTrackById(trackId_).has_value()) {
+        return CommandResult::fail("Track does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult SetTrackPlaybackStateCommand::execute(Project& project)
+{
+    const auto track = project.findTrackById(trackId_);
+    if (!track.has_value()) {
+        return CommandResult::fail("Track does not exist.");
+    }
+
+    if (!oldState_.has_value()) {
+        oldState_ = track->playback;
+    }
+
+    if (!project.setTrackPlaybackState(trackId_, newState_)) {
+        return CommandResult::fail("Track does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+void SetTrackPlaybackStateCommand::undo(Project& project)
+{
+    if (oldState_.has_value()) {
+        project.setTrackPlaybackState(trackId_, *oldState_);
+    }
+}
+
 }

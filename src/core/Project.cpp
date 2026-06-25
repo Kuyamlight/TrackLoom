@@ -51,11 +51,26 @@ Track Project::createTrack(std::string name, TrackType type)
     Track track {
         "track-" + std::to_string(nextTrackNumber_++),
         std::move(name),
-        type
+        type,
+        {}
     };
 
     tracks_.push_back(track);
     return track;
+}
+
+bool Project::setTrackPlaybackState(const std::string& id, TrackPlaybackState state)
+{
+    const auto it = std::find_if(tracks_.begin(), tracks_.end(), [&](const Track& track) {
+        return track.id == id;
+    });
+
+    if (it == tracks_.end()) {
+        return false;
+    }
+
+    it->playback = state;
+    return true;
 }
 
 bool Project::insertExistingTrack(const Track& track)

@@ -14,19 +14,30 @@ enum class TrackType {
     Folder
 };
 
+// TrackPlaybackState 只保存会影响播放处理的轨道开关。
+// 隐藏、冻结和隐私权限语义不同，后续应作为独立状态扩展。
+struct TrackPlaybackState {
+    bool muted = false;
+    bool soloed = false;
+    bool disabled = false;
+
+    bool operator==(const TrackPlaybackState&) const = default;
+};
+
 // Track 是工程里最小的轨道数据。
 // 第一阶段暂不保存插件、片段或自动化，避免在核心边界稳定前过早扩大模型。
 struct Track {
     std::string id;
     std::string name;
     TrackType type;
+    TrackPlaybackState playback;
 };
 
 // Project 是 TrackLoom 自有工程格式的最小核心状态。
 // 后续 UI、AI 和导入器都应通过命令系统修改它，避免绕过验证、撤销和历史记录。
 class Project {
 public:
-    static constexpr int currentFormatVersion = 1;
+    static constexpr int currentFormatVersion = 2;
 
     explicit Project(std::string name = "Untitled");
 
@@ -39,6 +50,9 @@ public:
 
     // createTrack 用于创建全新轨道，并分配本工程内稳定的可读 ID。
     Track createTrack(std::string name, TrackType type);
+
+    // setTrackPlaybackState 只按轨道 ID 更新播放状态；轨道不存在时保持工程不变。
+    bool setTrackPlaybackState(const std::string& id, TrackPlaybackState state);
 
     // insertExistingTrack 用于撤销重做或读取文件时恢复已有 ID 的轨道。
     bool insertExistingTrack(const Track& track);
