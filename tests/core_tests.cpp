@@ -1,3 +1,4 @@
+#include "AudioMixer.h"
 #include "AudioEngine.h"
 #include "Command.h"
 #include "ProjectFile.h"
@@ -31,6 +32,42 @@ bool containsNonZeroSample(const std::vector<float>& samples)
     }
     return false;
 }
+
+bool allSamplesNear(const std::vector<float>& samples, float expected)
+{
+    for (const auto sample : samples) {
+        if (std::fabs(sample - expected) > 0.000001f) {
+            return false;
+        }
+    }
+    return true;
+}
+
+class ConstantAudioSource final : public trackloom::AudioSource {
+public:
+    explicit ConstantAudioSource(float value)
+        : value_(value)
+    {
+    }
+
+    bool render(trackloom::AudioBlock block, double sampleRate) override
+    {
+        if (!block.isValid() || sampleRate <= 0.0) {
+            return false;
+        }
+
+        for (int channel = 0; channel < block.channelCount(); ++channel) {
+            for (int frame = 0; frame < block.frameCount(); ++frame) {
+                block.sampleAt(channel, frame) = value_;
+            }
+        }
+
+        return true;
+    }
+
+private:
+    float value_ = 0.0f;
+};
 
 std::filesystem::path makeTestDirectory(const std::string& name)
 {
@@ -383,6 +420,81 @@ void sineToneSourceRejectsInvalidParameters()
     require(tone.setGain(0.0f), "zero tone gain should be accepted for silence");
 }
 
+void sourceMixerSumsPreparedSources()
+{
+    trackloom::SourceMixer mixer;
+    ConstantAudioSource first(0.25f);
+    ConstantAudioSource second(0.50f);
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(mixer.prepare(2, 8), "valid mixer prepare should succeed");
+    require(mixer.addSource(&first), "first source should be accepted");
+    require(mixer.addSource(&second), "second source should be accepted");
+
+    require(mixer.render(block, 48000.0), "mixer render should succeed");
+
+    require(mixer.sourceCount() == 2, "mixer should report added source count");
+    require(allSamplesNear(samples, 0.75f), "mixer should sum source samples");
+}
+
+void sourceMixerRendersSilenceWhenEmpty()
+{
+    trackloom::SourceMixer mixer;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(mixer.prepare(2, 8), "valid mixer prepare should succeed");
+    require(mixer.render(block, 44100.0), "empty mixer render should succeed");
+
+    require(allSamplesNear(samples, 0.0f), "empty mixer should clear output to silence");
+}
+
+void sourceMixerRejectsInvalidRequests()
+{
+    trackloom::SourceMixer mixer;
+    ConstantAudioSource source(0.25f);
+    std::vector<float> samples(2 * 4, 0.0f);
+    std::vector<float> largeSamples(2 * 8, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+    trackloom::AudioBlock wrongChannels(samples.data(), 1, 4);
+    trackloom::AudioBlock tooLarge(largeSamples.data(), 2, 8);
+
+    require(!mixer.prepare(0, 8), "zero mixer channel count should be rejected");
+    require(!mixer.prepare(2, 0), "zero mixer max block size should be rejected");
+    require(!mixer.addSource(nullptr), "null mixer source should be rejected");
+    require(!mixer.render(block, 48000.0), "unprepared mixer render should fail");
+
+    require(mixer.prepare(2, 4), "valid mixer prepare should succeed");
+    require(mixer.addSource(&source), "valid source should be accepted");
+
+    require(!mixer.render(wrongChannels, 48000.0), "mixer should reject channel mismatch");
+    require(!mixer.render(tooLarge, 48000.0), "mixer should reject oversized block");
+    require(!mixer.render(block, 0.0), "mixer should reject invalid sample rate");
+}
+
+void audioEngineRendersSourceMixerWhilePlaying()
+{
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    trackloom::SourceMixer mixer;
+    ConstantAudioSource first(0.20f);
+    ConstantAudioSource second(0.30f);
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(engine.prepare(48000.0, 2, 16), "engine prepare should succeed");
+    require(mixer.prepare(2, 16), "mixer prepare should succeed");
+    require(mixer.addSource(&first), "first mixer source should be accepted");
+    require(mixer.addSource(&second), "second mixer source should be accepted");
+
+    transport.play();
+    require(engine.renderNextBlock(transport, block, &mixer), "engine should render a mixer source");
+
+    require(allSamplesNear(samples, 0.50f), "engine should receive summed mixer output");
+    require(transport.currentSample() == 4, "engine should advance transport after mixer render");
+}
+
 }
 
 int main()
@@ -414,6 +526,10 @@ int main()
         audioEngineRendersToneWhileTransportIsPlaying();
         audioEngineDoesNotRenderToneWhileStopped();
         sineToneSourceRejectsInvalidParameters();
+        sourceMixerSumsPreparedSources();
+        sourceMixerRendersSilenceWhenEmpty();
+        sourceMixerRejectsInvalidRequests();
+        audioEngineRendersSourceMixerWhilePlaying();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';
         return 1;
