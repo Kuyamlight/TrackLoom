@@ -1,4 +1,5 @@
 add_library(trackloom_core STATIC
+    AudioGain.cpp
     AudioMixer.cpp
     AudioEngine.cpp
     Project.cpp

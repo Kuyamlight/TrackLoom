@@ -1,3 +1,4 @@
+#include "AudioGain.h"
 #include "AudioMixer.h"
 #include "AudioEngine.h"
 #include "Command.h"
@@ -9,6 +10,7 @@
 #include <filesystem>
 #include <iostream>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -495,6 +497,89 @@ void audioEngineRendersSourceMixerWhilePlaying()
     require(transport.currentSample() == 4, "engine should advance transport after mixer render");
 }
 
+void gainAudioSourceUsesUnityGainByDefault()
+{
+    ConstantAudioSource source(0.50f);
+    trackloom::GainAudioSource gain;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(gain.setSource(&source), "gain source should accept a valid source");
+    require(gain.render(block, 48000.0), "gain source render should succeed");
+
+    require(allSamplesNear(samples, 0.50f), "default unity gain should preserve source samples");
+}
+
+void gainAudioSourceAppliesLinearGain()
+{
+    ConstantAudioSource source(0.50f);
+    trackloom::GainAudioSource gain;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(gain.setSource(&source), "gain source should accept a valid source");
+    require(gain.setGain(0.25f), "finite non-negative gain should be accepted");
+    require(gain.render(block, 48000.0), "gain source render should succeed");
+
+    require(allSamplesNear(samples, 0.125f), "gain source should scale samples linearly");
+}
+
+void gainAudioSourceCanMuteWithZeroGain()
+{
+    ConstantAudioSource source(0.50f);
+    trackloom::GainAudioSource gain;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(gain.setSource(&source), "gain source should accept a valid source");
+    require(gain.setGain(0.0f), "zero gain should be accepted");
+    require(gain.render(block, 48000.0), "gain source render should succeed");
+
+    require(allSamplesNear(samples, 0.0f), "zero gain should mute source samples");
+}
+
+void gainAudioSourceRejectsInvalidSetup()
+{
+    ConstantAudioSource source(0.50f);
+    trackloom::GainAudioSource gain;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(!gain.render(block, 48000.0), "gain source without input source should fail");
+    require(!gain.setSource(nullptr), "null wrapped source should be rejected");
+    require(gain.setSource(&source), "valid wrapped source should be accepted");
+    require(gain.setGain(2.0f), "initial valid gain should be accepted");
+
+    require(!gain.setGain(-1.0f), "negative gain should be rejected");
+    require(!gain.setGain(std::numeric_limits<float>::infinity()), "infinite gain should be rejected");
+    require(gain.render(block, 48000.0), "render after rejected gain should still succeed");
+
+    require(allSamplesNear(samples, 1.0f), "rejected gain should not replace previous valid gain");
+}
+
+void sourceMixerSumsGainWrappedSources()
+{
+    ConstantAudioSource firstSource(1.0f);
+    ConstantAudioSource secondSource(1.0f);
+    trackloom::GainAudioSource firstGain;
+    trackloom::GainAudioSource secondGain;
+    trackloom::SourceMixer mixer;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(firstGain.setSource(&firstSource), "first gain source should accept input");
+    require(secondGain.setSource(&secondSource), "second gain source should accept input");
+    require(firstGain.setGain(0.25f), "first gain value should be accepted");
+    require(secondGain.setGain(0.50f), "second gain value should be accepted");
+    require(mixer.prepare(2, 8), "mixer prepare should succeed");
+    require(mixer.addSource(&firstGain), "first gain source should be mixable");
+    require(mixer.addSource(&secondGain), "second gain source should be mixable");
+
+    require(mixer.render(block, 48000.0), "mixer should render gain-wrapped sources");
+
+    require(allSamplesNear(samples, 0.75f), "mixer should sum gain-wrapped source outputs");
+}
+
 }
 
 int main()
@@ -530,6 +615,11 @@ int main()
         sourceMixerRendersSilenceWhenEmpty();
         sourceMixerRejectsInvalidRequests();
         audioEngineRendersSourceMixerWhilePlaying();
+        gainAudioSourceUsesUnityGainByDefault();
+        gainAudioSourceAppliesLinearGain();
+        gainAudioSourceCanMuteWithZeroGain();
+        gainAudioSourceRejectsInvalidSetup();
+        sourceMixerSumsGainWrappedSources();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';
         return 1;
