@@ -1,3 +1,4 @@
+#include "AudioMute.h"
 #include "AudioGain.h"
 #include "AudioMixer.h"
 #include "AudioEngine.h"
@@ -69,6 +70,39 @@ public:
 
 private:
     float value_ = 0.0f;
+};
+
+class CountingAudioSource final : public trackloom::AudioSource {
+public:
+    explicit CountingAudioSource(float value)
+        : value_(value)
+    {
+    }
+
+    int renderCount() const
+    {
+        return renderCount_;
+    }
+
+    bool render(trackloom::AudioBlock block, double sampleRate) override
+    {
+        if (!block.isValid() || sampleRate <= 0.0) {
+            return false;
+        }
+
+        ++renderCount_;
+        for (int channel = 0; channel < block.channelCount(); ++channel) {
+            for (int frame = 0; frame < block.frameCount(); ++frame) {
+                block.sampleAt(channel, frame) = value_;
+            }
+        }
+
+        return true;
+    }
+
+private:
+    float value_ = 0.0f;
+    int renderCount_ = 0;
 };
 
 std::filesystem::path makeTestDirectory(const std::string& name)
@@ -580,6 +614,99 @@ void sourceMixerSumsGainWrappedSources()
     require(allSamplesNear(samples, 0.75f), "mixer should sum gain-wrapped source outputs");
 }
 
+void muteAudioSourcePassesThroughByDefault()
+{
+    ConstantAudioSource source(0.50f);
+    trackloom::MuteAudioSource mute;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(mute.setSource(&source), "mute source should accept a valid source");
+    require(!mute.isMuted(), "mute source should start unmuted");
+    require(mute.render(block, 48000.0), "unmuted render should succeed");
+
+    require(allSamplesNear(samples, 0.50f), "unmuted source should pass through samples");
+}
+
+void muteAudioSourceClearsOutputWhenMuted()
+{
+    ConstantAudioSource source(0.50f);
+    trackloom::MuteAudioSource mute;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(mute.setSource(&source), "mute source should accept a valid source");
+    mute.setMuted(true);
+    require(mute.isMuted(), "mute source should report muted state");
+    require(mute.render(block, 48000.0), "muted render should succeed");
+
+    require(allSamplesNear(samples, 0.0f), "muted source should clear output");
+}
+
+void muteAudioSourceStillProcessesWrappedSourceWhenMuted()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::MuteAudioSource mute;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(mute.setSource(&source), "mute source should accept a valid source");
+    mute.setMuted(true);
+    require(mute.render(block, 48000.0), "muted render should succeed");
+
+    require(source.renderCount() == 1, "muted source should still process wrapped source");
+    require(allSamplesNear(samples, 0.0f), "muted source should clear processed output");
+}
+
+void muteAudioSourceCanUnmuteAfterMutedRender()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::MuteAudioSource mute;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(mute.setSource(&source), "mute source should accept a valid source");
+    mute.setMuted(true);
+    require(mute.render(block, 48000.0), "muted render should succeed");
+    mute.setMuted(false);
+    require(mute.render(block, 48000.0), "unmuted render should succeed after muted render");
+
+    require(source.renderCount() == 2, "source should process both muted and unmuted renders");
+    require(allSamplesNear(samples, 0.50f), "unmuted source should restore source output");
+}
+
+void muteAudioSourceRejectsInvalidSetup()
+{
+    trackloom::MuteAudioSource mute;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(!mute.render(block, 48000.0), "mute source without input source should fail");
+    require(!mute.setSource(nullptr), "null wrapped source should be rejected");
+}
+
+void sourceMixerSumsMutedAndUnmutedSources()
+{
+    ConstantAudioSource firstSource(0.25f);
+    ConstantAudioSource secondSource(0.50f);
+    trackloom::MuteAudioSource firstMute;
+    trackloom::MuteAudioSource secondMute;
+    trackloom::SourceMixer mixer;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(firstMute.setSource(&firstSource), "first mute source should accept input");
+    require(secondMute.setSource(&secondSource), "second mute source should accept input");
+    secondMute.setMuted(true);
+    require(mixer.prepare(2, 8), "mixer prepare should succeed");
+    require(mixer.addSource(&firstMute), "first mute source should be mixable");
+    require(mixer.addSource(&secondMute), "second mute source should be mixable");
+
+    require(mixer.render(block, 48000.0), "mixer should render mute-wrapped sources");
+
+    require(allSamplesNear(samples, 0.25f), "mixer should sum only audible muted-wrapper outputs");
+}
+
 }
 
 int main()
@@ -620,6 +747,12 @@ int main()
         gainAudioSourceCanMuteWithZeroGain();
         gainAudioSourceRejectsInvalidSetup();
         sourceMixerSumsGainWrappedSources();
+        muteAudioSourcePassesThroughByDefault();
+        muteAudioSourceClearsOutputWhenMuted();
+        muteAudioSourceStillProcessesWrappedSourceWhenMuted();
+        muteAudioSourceCanUnmuteAfterMutedRender();
+        muteAudioSourceRejectsInvalidSetup();
+        sourceMixerSumsMutedAndUnmutedSources();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';
         return 1;
