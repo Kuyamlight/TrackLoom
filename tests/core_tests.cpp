@@ -1,3 +1,4 @@
+#include "AudioDisable.h"
 #include "AudioMute.h"
 #include "AudioGain.h"
 #include "AudioMixer.h"
@@ -707,6 +708,88 @@ void sourceMixerSumsMutedAndUnmutedSources()
     require(allSamplesNear(samples, 0.25f), "mixer should sum only audible muted-wrapper outputs");
 }
 
+void disabledAudioSourcePassesThroughByDefault()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::DisabledAudioSource disabled;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(disabled.setSource(&source), "disabled source should accept a valid source");
+    require(!disabled.isDisabled(), "disabled source should start enabled");
+    require(disabled.render(block, 48000.0), "enabled disabled-source render should succeed");
+
+    require(source.renderCount() == 1, "enabled disabled-source should process wrapped source");
+    require(allSamplesNear(samples, 0.50f), "enabled disabled-source should pass through samples");
+}
+
+void disabledAudioSourceClearsOutputWithoutProcessingSource()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::DisabledAudioSource disabled;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(disabled.setSource(&source), "disabled source should accept a valid source");
+    disabled.setDisabled(true);
+    require(disabled.isDisabled(), "disabled source should report disabled state");
+    require(disabled.render(block, 48000.0), "disabled render should succeed");
+
+    require(source.renderCount() == 0, "disabled source should skip wrapped source processing");
+    require(allSamplesNear(samples, 0.0f), "disabled source should clear output");
+}
+
+void disabledAudioSourceCanReEnableAfterDisabledRender()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::DisabledAudioSource disabled;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(disabled.setSource(&source), "disabled source should accept a valid source");
+    disabled.setDisabled(true);
+    require(disabled.render(block, 48000.0), "disabled render should succeed");
+    disabled.setDisabled(false);
+    require(disabled.render(block, 48000.0), "re-enabled render should succeed");
+
+    require(source.renderCount() == 1, "source should only process after re-enabled render");
+    require(allSamplesNear(samples, 0.50f), "re-enabled source should restore source output");
+}
+
+void disabledAudioSourceRejectsInvalidSetup()
+{
+    trackloom::DisabledAudioSource disabled;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(!disabled.render(block, 48000.0), "disabled source without input source should fail");
+    require(!disabled.setSource(nullptr), "null wrapped source should be rejected");
+}
+
+void sourceMixerSumsDisabledAndEnabledSources()
+{
+    CountingAudioSource firstSource(0.25f);
+    CountingAudioSource secondSource(0.50f);
+    trackloom::DisabledAudioSource firstDisabled;
+    trackloom::DisabledAudioSource secondDisabled;
+    trackloom::SourceMixer mixer;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(firstDisabled.setSource(&firstSource), "first disabled source should accept input");
+    require(secondDisabled.setSource(&secondSource), "second disabled source should accept input");
+    secondDisabled.setDisabled(true);
+    require(mixer.prepare(2, 8), "mixer prepare should succeed");
+    require(mixer.addSource(&firstDisabled), "first disabled source should be mixable");
+    require(mixer.addSource(&secondDisabled), "second disabled source should be mixable");
+
+    require(mixer.render(block, 48000.0), "mixer should render disabled-wrapper sources");
+
+    require(firstSource.renderCount() == 1, "enabled source should be processed by mixer");
+    require(secondSource.renderCount() == 0, "disabled source should be skipped by mixer");
+    require(allSamplesNear(samples, 0.25f), "mixer should sum only enabled disabled-wrapper outputs");
+}
+
 }
 
 int main()
@@ -753,6 +836,11 @@ int main()
         muteAudioSourceCanUnmuteAfterMutedRender();
         muteAudioSourceRejectsInvalidSetup();
         sourceMixerSumsMutedAndUnmutedSources();
+        disabledAudioSourcePassesThroughByDefault();
+        disabledAudioSourceClearsOutputWithoutProcessingSource();
+        disabledAudioSourceCanReEnableAfterDisabledRender();
+        disabledAudioSourceRejectsInvalidSetup();
+        sourceMixerSumsDisabledAndEnabledSources();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';
         return 1;

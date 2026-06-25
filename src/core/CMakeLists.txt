@@ -1,4 +1,5 @@
 add_library(trackloom_core STATIC
+    AudioDisable.cpp
     AudioGain.cpp
     AudioMute.cpp
     AudioMixer.cpp
