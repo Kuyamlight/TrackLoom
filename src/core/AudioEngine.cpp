@@ -89,11 +89,6 @@ bool SineToneSource::setGain(float gain)
     return true;
 }
 
-void SineToneSource::resetPhase()
-{
-    phaseRadians_ = 0.0;
-}
-
 bool SineToneSource::render(AudioBlock block, double sampleRate)
 {
     if (!block.isValid() || !isValidSampleRate(sampleRate)) {

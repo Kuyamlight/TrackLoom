@@ -42,7 +42,6 @@ class SineToneSource final : public AudioSource {
 public:
     bool setFrequency(double frequencyHz);
     bool setGain(float gain);
-    void resetPhase();
 
     bool render(AudioBlock block, double sampleRate) override;
 
