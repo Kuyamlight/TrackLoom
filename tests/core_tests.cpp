@@ -1,5 +1,6 @@
 #include "AudioDisable.h"
 #include "AudioSolo.h"
+#include "AudioTrackPlayback.h"
 #include "AudioMute.h"
 #include "AudioGain.h"
 #include "AudioMixer.h"
@@ -996,6 +997,123 @@ void sourceMixerSumsOnlyAudibleSoloSources()
     require(allSamplesNear(samples, 0.25f), "mixer should sum only audible solo-wrapper outputs");
 }
 
+void trackPlaybackAudioSourcePassesThroughDefaultState()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::TrackPlaybackAudioSource playback;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(playback.setSource(&source), "track playback source should accept input");
+    require(playback.render(block, 48000.0), "default playback render should succeed");
+
+    require(source.renderCount() == 1, "default playback should process source");
+    require(allSamplesNear(samples, 0.50f), "default playback should pass through source output");
+}
+
+void trackPlaybackAudioSourceMutesWhileProcessing()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::TrackPlaybackAudioSource playback;
+    trackloom::TrackPlaybackState state;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    state.muted = true;
+    require(playback.setSource(&source), "track playback source should accept input");
+    playback.setPlaybackState(state);
+    require(playback.render(block, 48000.0), "muted playback render should succeed");
+
+    require(source.renderCount() == 1, "muted playback should still process source");
+    require(allSamplesNear(samples, 0.0f), "muted playback should clear output");
+}
+
+void trackPlaybackAudioSourceDisablesWithoutProcessing()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::TrackPlaybackAudioSource playback;
+    trackloom::TrackPlaybackState state;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    state.disabled = true;
+    require(playback.setSource(&source), "track playback source should accept input");
+    playback.setPlaybackState(state);
+    require(playback.render(block, 48000.0), "disabled playback render should succeed");
+
+    require(source.renderCount() == 0, "disabled playback should skip source processing");
+    require(allSamplesNear(samples, 0.0f), "disabled playback should clear output");
+}
+
+void trackPlaybackAudioSourceSilencesUnsoloedTrackInSoloMode()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::TrackPlaybackAudioSource playback;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(playback.setSource(&source), "track playback source should accept input");
+    playback.setSoloModeActive(true);
+    require(playback.render(block, 48000.0), "unsoloed solo-mode render should succeed");
+
+    require(source.renderCount() == 1, "unsoloed solo-mode playback should still process source");
+    require(allSamplesNear(samples, 0.0f), "unsoloed solo-mode playback should clear output");
+}
+
+void trackPlaybackAudioSourcePassesSoloedTrackInSoloMode()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::TrackPlaybackAudioSource playback;
+    trackloom::TrackPlaybackState state;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    state.soloed = true;
+    require(playback.setSource(&source), "track playback source should accept input");
+    playback.setPlaybackState(state);
+    playback.setSoloModeActive(true);
+    require(playback.render(block, 48000.0), "soloed solo-mode render should succeed");
+
+    require(source.renderCount() == 1, "soloed solo-mode playback should process source");
+    require(allSamplesNear(samples, 0.50f), "soloed solo-mode playback should pass through output");
+}
+
+void sourceMixerSumsTrackPlaybackAudioSources()
+{
+    CountingAudioSource firstSource(0.25f);
+    CountingAudioSource secondSource(0.50f);
+    trackloom::TrackPlaybackAudioSource firstPlayback;
+    trackloom::TrackPlaybackAudioSource secondPlayback;
+    trackloom::TrackPlaybackState secondState;
+    trackloom::SourceMixer mixer;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    secondState.muted = true;
+    require(firstPlayback.setSource(&firstSource), "first playback source should accept input");
+    require(secondPlayback.setSource(&secondSource), "second playback source should accept input");
+    secondPlayback.setPlaybackState(secondState);
+    require(mixer.prepare(2, 8), "mixer prepare should succeed");
+    require(mixer.addSource(&firstPlayback), "first playback source should be mixable");
+    require(mixer.addSource(&secondPlayback), "second playback source should be mixable");
+
+    require(mixer.render(block, 48000.0), "mixer should render track playback sources");
+
+    require(firstSource.renderCount() == 1, "audible playback source should be processed");
+    require(secondSource.renderCount() == 1, "muted playback source should still be processed");
+    require(allSamplesNear(samples, 0.25f), "mixer should sum only audible track playback outputs");
+}
+
+void trackPlaybackAudioSourceRejectsInvalidSetup()
+{
+    trackloom::TrackPlaybackAudioSource playback;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(!playback.render(block, 48000.0), "track playback source without input should fail");
+    require(!playback.setSource(nullptr), "track playback source should reject null input");
+}
+
 }
 
 int main()
@@ -1059,6 +1177,13 @@ int main()
         soloAudioSourceCanLeaveSoloMode();
         soloAudioSourceRejectsInvalidSetup();
         sourceMixerSumsOnlyAudibleSoloSources();
+        trackPlaybackAudioSourcePassesThroughDefaultState();
+        trackPlaybackAudioSourceMutesWhileProcessing();
+        trackPlaybackAudioSourceDisablesWithoutProcessing();
+        trackPlaybackAudioSourceSilencesUnsoloedTrackInSoloMode();
+        trackPlaybackAudioSourcePassesSoloedTrackInSoloMode();
+        sourceMixerSumsTrackPlaybackAudioSources();
+        trackPlaybackAudioSourceRejectsInvalidSetup();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';
         return 1;
