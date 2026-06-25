@@ -1,4 +1,5 @@
 #include "AudioDisable.h"
+#include "AudioSolo.h"
 #include "AudioMute.h"
 #include "AudioGain.h"
 #include "AudioMixer.h"
@@ -790,6 +791,106 @@ void sourceMixerSumsDisabledAndEnabledSources()
     require(allSamplesNear(samples, 0.25f), "mixer should sum only enabled disabled-wrapper outputs");
 }
 
+void soloAudioSourcePassesThroughWhenSoloModeInactive()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::SoloAudioSource solo;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(solo.setSource(&source), "solo source should accept a valid source");
+    require(!solo.isSoloed(), "solo source should start not soloed");
+    require(!solo.isSoloModeActive(), "solo mode should start inactive");
+    require(solo.render(block, 48000.0), "inactive solo mode render should succeed");
+
+    require(source.renderCount() == 1, "inactive solo mode should process wrapped source");
+    require(allSamplesNear(samples, 0.50f), "inactive solo mode should pass through samples");
+}
+
+void soloAudioSourcePassesThroughWhenSoloedInSoloMode()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::SoloAudioSource solo;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(solo.setSource(&source), "solo source should accept a valid source");
+    solo.setSoloed(true);
+    solo.setSoloModeActive(true);
+    require(solo.render(block, 48000.0), "soloed render should succeed in solo mode");
+
+    require(source.renderCount() == 1, "soloed source should process wrapped source");
+    require(allSamplesNear(samples, 0.50f), "soloed source should pass through in solo mode");
+}
+
+void soloAudioSourceClearsUnsoloedOutputWhileProcessing()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::SoloAudioSource solo;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(solo.setSource(&source), "solo source should accept a valid source");
+    solo.setSoloModeActive(true);
+    require(solo.render(block, 48000.0), "unsoloed render should succeed in solo mode");
+
+    require(source.renderCount() == 1, "unsoloed source should still process in solo mode");
+    require(allSamplesNear(samples, 0.0f), "unsoloed source should be inaudible in solo mode");
+}
+
+void soloAudioSourceCanLeaveSoloMode()
+{
+    CountingAudioSource source(0.50f);
+    trackloom::SoloAudioSource solo;
+    std::vector<float> samples(2 * 4, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(solo.setSource(&source), "solo source should accept a valid source");
+    solo.setSoloModeActive(true);
+    require(solo.render(block, 48000.0), "unsoloed render should succeed in solo mode");
+    solo.setSoloModeActive(false);
+    require(solo.render(block, 48000.0), "render should succeed after leaving solo mode");
+
+    require(source.renderCount() == 2, "source should process both solo-mode and normal renders");
+    require(allSamplesNear(samples, 0.50f), "leaving solo mode should restore source output");
+}
+
+void soloAudioSourceRejectsInvalidSetup()
+{
+    trackloom::SoloAudioSource solo;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(!solo.render(block, 48000.0), "solo source without input source should fail");
+    require(!solo.setSource(nullptr), "null wrapped source should be rejected");
+}
+
+void sourceMixerSumsOnlyAudibleSoloSources()
+{
+    CountingAudioSource firstSource(0.25f);
+    CountingAudioSource secondSource(0.50f);
+    trackloom::SoloAudioSource firstSolo;
+    trackloom::SoloAudioSource secondSolo;
+    trackloom::SourceMixer mixer;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(firstSolo.setSource(&firstSource), "first solo source should accept input");
+    require(secondSolo.setSource(&secondSource), "second solo source should accept input");
+    firstSolo.setSoloed(true);
+    firstSolo.setSoloModeActive(true);
+    secondSolo.setSoloModeActive(true);
+    require(mixer.prepare(2, 8), "mixer prepare should succeed");
+    require(mixer.addSource(&firstSolo), "first solo source should be mixable");
+    require(mixer.addSource(&secondSolo), "second solo source should be mixable");
+
+    require(mixer.render(block, 48000.0), "mixer should render solo-wrapper sources");
+
+    require(firstSource.renderCount() == 1, "soloed source should be processed by mixer");
+    require(secondSource.renderCount() == 1, "unsoloed source should still be processed by mixer");
+    require(allSamplesNear(samples, 0.25f), "mixer should sum only audible solo-wrapper outputs");
+}
+
 }
 
 int main()
@@ -841,6 +942,12 @@ int main()
         disabledAudioSourceCanReEnableAfterDisabledRender();
         disabledAudioSourceRejectsInvalidSetup();
         sourceMixerSumsDisabledAndEnabledSources();
+        soloAudioSourcePassesThroughWhenSoloModeInactive();
+        soloAudioSourcePassesThroughWhenSoloedInSoloMode();
+        soloAudioSourceClearsUnsoloedOutputWhileProcessing();
+        soloAudioSourceCanLeaveSoloMode();
+        soloAudioSourceRejectsInvalidSetup();
+        sourceMixerSumsOnlyAudibleSoloSources();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';
         return 1;
