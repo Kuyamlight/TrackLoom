@@ -2,6 +2,7 @@
 #include "ProjectFile.h"
 #include "Project.h"
 #include "ProjectSerializer.h"
+#include "Transport.h"
 
 #include <filesystem>
 #include <iostream>
@@ -170,6 +171,69 @@ void savingEmptyPathReportsError()
     require(!saved.error.empty(), "empty path save should report an error");
 }
 
+void transportStartsStoppedAtSampleZero()
+{
+    trackloom::Transport transport;
+
+    require(!transport.isPlaying(), "transport should start stopped");
+    require(transport.currentSample() == 0, "transport should start at sample zero");
+    require(transport.sampleRate() == 44100.0, "transport should default to 44100 Hz");
+}
+
+void playingTransportAdvancesBySamples()
+{
+    trackloom::Transport transport;
+
+    transport.play();
+    require(transport.advanceBySamples(512), "positive advance should be accepted");
+
+    require(transport.isPlaying(), "advance should not stop playback");
+    require(transport.currentSample() == 512, "playing transport should advance by sample count");
+}
+
+void stoppedTransportDoesNotAdvance()
+{
+    trackloom::Transport transport;
+
+    require(transport.advanceBySamples(512), "positive advance should be accepted while stopped");
+    require(transport.currentSample() == 0, "stopped transport should not advance");
+}
+
+void transportCanSeekBySample()
+{
+    trackloom::Transport transport;
+
+    require(transport.seekToSample(2048), "sample seek should accept non-negative sample");
+    require(transport.currentSample() == 2048, "sample seek should set current sample");
+}
+
+void transportCanSeekBySeconds()
+{
+    trackloom::Transport transport;
+
+    require(transport.setSampleRate(48000.0), "valid sample rate should be accepted");
+    require(transport.seekToSeconds(2.5), "second seek should accept non-negative time");
+
+    require(transport.currentSample() == 120000, "second seek should convert using sample rate");
+    require(transport.currentSeconds() == 2.5, "current seconds should match sample position");
+}
+
+void transportRejectsInvalidValuesWithoutChangingState()
+{
+    trackloom::Transport transport;
+
+    require(transport.seekToSample(100), "initial seek should succeed");
+    require(transport.setSampleRate(48000.0), "initial sample rate should succeed");
+
+    require(!transport.seekToSample(-1), "negative sample seek should fail");
+    require(!transport.seekToSeconds(-0.5), "negative second seek should fail");
+    require(!transport.advanceBySamples(-128), "negative advance should fail");
+    require(!transport.setSampleRate(0.0), "zero sample rate should fail");
+
+    require(transport.currentSample() == 100, "invalid values should not change sample position");
+    require(transport.sampleRate() == 48000.0, "invalid sample rate should not replace previous value");
+}
+
 }
 
 int main()
@@ -186,6 +250,12 @@ int main()
         saveReplacesExistingFile();
         loadingMissingFileReportsError();
         savingEmptyPathReportsError();
+        transportStartsStoppedAtSampleZero();
+        playingTransportAdvancesBySamples();
+        stoppedTransportDoesNotAdvance();
+        transportCanSeekBySample();
+        transportCanSeekBySeconds();
+        transportRejectsInvalidValuesWithoutChangingState();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';
         return 1;

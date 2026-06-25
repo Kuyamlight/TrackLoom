@@ -3,6 +3,7 @@ add_library(trackloom_core STATIC
     Command.cpp
     ProjectFile.cpp
     ProjectSerializer.cpp
+    Transport.cpp
 )
 
 target_include_directories(trackloom_core
