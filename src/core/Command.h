@@ -158,6 +158,24 @@ private:
     std::optional<std::string> oldTrackId_;
 };
 
+// SplitClipCommand 把一个片段外壳切成左右两段，并保存原始片段与右段用于撤销重做。
+// 当前只切分时间范围，不切分 MIDI 事件、音频文件或自动化数据。
+class SplitClipCommand final : public Command {
+public:
+    SplitClipCommand(std::string clipId, std::int64_t splitTick);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string clipId_;
+    std::int64_t splitTick_ = 0;
+    std::optional<TimelineClip> originalClip_;
+    std::optional<TimelineClip> rightClip_;
+};
+
 // SetTrackPlaybackStateCommand 修改轨道播放状态，并保存旧状态用于撤销。
 // 静音、独奏和禁用属于播放开关，不负责表达音量或其他混音参数。
 class SetTrackPlaybackStateCommand final : public Command {

@@ -277,6 +277,43 @@ bool Project::moveClipToTrack(const std::string& clipId, std::string targetTrack
     return true;
 }
 
+std::optional<TimelineClip> Project::splitClipAtTick(const std::string& clipId, std::int64_t splitTick)
+{
+    const auto clipIt = std::find_if(clips_.begin(), clips_.end(), [&](const TimelineClip& clip) {
+        return clip.id == clipId;
+    });
+
+    if (clipIt == clips_.end()) {
+        return std::nullopt;
+    }
+
+    const auto originalEndTick = clipIt->startTick + clipIt->lengthTick;
+    if (splitTick <= clipIt->startTick || splitTick >= originalEndTick) {
+        return std::nullopt;
+    }
+
+    const auto leftLength = splitTick - clipIt->startTick;
+    const auto rightLength = originalEndTick - splitTick;
+    if (!isValidClipTiming(clipIt->startTick, leftLength) || !isValidClipTiming(splitTick, rightLength)) {
+        return std::nullopt;
+    }
+
+    TimelineClip rightClip {
+        "clip-" + std::to_string(nextClipNumber_),
+        clipIt->trackId,
+        clipIt->name,
+        clipIt->type,
+        splitTick,
+        rightLength
+    };
+
+    // 先缩短左段，再追加右段。右段使用 observeClipId 推进计数器，保证后续新片段不撞 ID。
+    clipIt->lengthTick = leftLength;
+    clips_.push_back(rightClip);
+    observeClipId(rightClip.id);
+    return rightClip;
+}
+
 void Project::observeTrackId(const std::string& id)
 {
     constexpr std::string_view prefix = "track-";

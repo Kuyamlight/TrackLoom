@@ -399,6 +399,76 @@ void MoveClipToTrackCommand::undo(Project& project)
     }
 }
 
+SplitClipCommand::SplitClipCommand(std::string clipId, std::int64_t splitTick)
+    : clipId_(std::move(clipId))
+    , splitTick_(splitTick)
+{
+}
+
+std::string SplitClipCommand::name() const
+{
+    return "SplitClip";
+}
+
+CommandResult SplitClipCommand::validate(const Project& project) const
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    const auto clipEndTick = clip->startTick + clip->lengthTick;
+    if (splitTick_ <= clip->startTick || splitTick_ >= clipEndTick) {
+        return CommandResult::fail("Split tick must be inside the clip.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult SplitClipCommand::execute(Project& project)
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    if (!originalClip_.has_value()) {
+        originalClip_ = *clip;
+        rightClip_ = project.splitClipAtTick(clipId_, splitTick_);
+        if (!rightClip_.has_value()) {
+            originalClip_.reset();
+            return CommandResult::fail("Clip could not be split.");
+        }
+        return CommandResult::ok();
+    }
+
+    if (!rightClip_.has_value() || project.findClipById(rightClip_->id).has_value()) {
+        return CommandResult::fail("Right split clip already exists.");
+    }
+
+    const auto leftLength = splitTick_ - originalClip_->startTick;
+    if (!project.setClipTiming(clipId_, originalClip_->startTick, leftLength)) {
+        return CommandResult::fail("Clip could not be restored for split redo.");
+    }
+
+    if (!project.insertExistingClip(*rightClip_)) {
+        project.setClipTiming(clipId_, originalClip_->startTick, originalClip_->lengthTick);
+        return CommandResult::fail("Right split clip could not be restored.");
+    }
+
+    return CommandResult::ok();
+}
+
+void SplitClipCommand::undo(Project& project)
+{
+    if (!originalClip_.has_value() || !rightClip_.has_value()) {
+        return;
+    }
+
+    project.removeClipById(rightClip_->id);
+    project.setClipTiming(clipId_, originalClip_->startTick, originalClip_->lengthTick);
+}
+
 SetTrackPlaybackStateCommand::SetTrackPlaybackStateCommand(std::string trackId, TrackPlaybackState newState)
     : trackId_(std::move(trackId))
     , newState_(newState)

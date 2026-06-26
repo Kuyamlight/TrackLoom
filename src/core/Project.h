@@ -115,6 +115,9 @@ public:
     // moveClipToTrack 只修改片段所属轨道；目标轨道必须存在并兼容片段类型。
     bool moveClipToTrack(const std::string& clipId, std::string targetTrackId);
 
+    // splitClipAtTick 在片段内部切开时间范围；左段复用原 ID，右段获得新的稳定 ID。
+    std::optional<TimelineClip> splitClipAtTick(const std::string& clipId, std::int64_t splitTick);
+
 private:
     int formatVersion_ = currentFormatVersion;
     std::string name_;

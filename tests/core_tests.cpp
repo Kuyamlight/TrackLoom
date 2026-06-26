@@ -367,6 +367,70 @@ void projectRejectsInvalidClipTrackMoves()
     require(project.findClipById(clip->id)->trackId == instrument.id, "failed moves should not change clip track");
 }
 
+void projectCanSplitMidiClipAtInteriorTick()
+{
+    trackloom::Project project("Clips");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "midi clip should be created before split");
+    const auto rightClip = project.splitClipAtTick(clip->id, 360);
+
+    require(rightClip.has_value(), "midi clip split should create right clip");
+    const auto leftClip = project.findClipById(clip->id);
+    require(leftClip.has_value(), "left split clip should still exist");
+    require(leftClip->id == clip->id, "left split should keep original id");
+    require(leftClip->trackId == track.id, "left split should keep track");
+    require(leftClip->name == "Intro", "left split should keep name");
+    require(leftClip->type == trackloom::ClipType::Midi, "left split should keep type");
+    require(leftClip->startTick == 0, "left split should keep start tick");
+    require(leftClip->lengthTick == 360, "left split should end at split tick");
+    require(rightClip->id == "clip-2", "right split should receive next stable clip id");
+    require(rightClip->trackId == track.id, "right split should keep track");
+    require(rightClip->name == "Intro", "right split should keep name");
+    require(rightClip->type == trackloom::ClipType::Midi, "right split should keep type");
+    require(rightClip->startTick == 360, "right split should start at split tick");
+    require(rightClip->lengthTick == 600, "right split should keep remaining length");
+    require(project.clips().size() == 2, "project should contain both split clips");
+}
+
+void projectCanSplitAudioClipAtInteriorTick()
+{
+    trackloom::Project project("Clips");
+    const auto track = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = project.createClip(track.id, "Take", trackloom::ClipType::Audio, 480, 1920);
+
+    require(clip.has_value(), "audio clip should be created before split");
+    const auto rightClip = project.splitClipAtTick(clip->id, 960);
+
+    require(rightClip.has_value(), "audio clip split should create right clip");
+    require(project.findClipById(clip->id)->startTick == 480, "audio left split should keep original start");
+    require(project.findClipById(clip->id)->lengthTick == 480, "audio left split should keep left length");
+    require(rightClip->startTick == 960, "audio right split should start at split tick");
+    require(rightClip->lengthTick == 1440, "audio right split should keep remaining length");
+    require(rightClip->type == trackloom::ClipType::Audio, "audio right split should keep audio type");
+}
+
+void projectRejectsInvalidClipSplits()
+{
+    trackloom::Project project("Clips");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 120, 480);
+
+    require(clip.has_value(), "clip should be created before invalid splits");
+    require(!project.splitClipAtTick("missing-clip", 240).has_value(), "missing clip split should fail");
+    require(!project.splitClipAtTick(clip->id, 119).has_value(), "split before start should fail");
+    require(!project.splitClipAtTick(clip->id, 120).has_value(), "split at start should fail");
+    require(!project.splitClipAtTick(clip->id, 600).has_value(), "split at end should fail");
+    require(!project.splitClipAtTick(clip->id, 601).has_value(), "split after end should fail");
+
+    const auto unchangedClip = project.findClipById(clip->id);
+    require(unchangedClip.has_value(), "failed split should keep original clip");
+    require(unchangedClip->startTick == 120, "failed split should not change start tick");
+    require(unchangedClip->lengthTick == 480, "failed split should not change length tick");
+    require(project.clips().size() == 1, "failed split should not add clips");
+}
+
 void renameClipCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Clips");
@@ -541,6 +605,54 @@ void invalidMoveClipToTrackCommandDoesNotModifyProject()
     require(!result.success, "incompatible move clip to track command should fail");
     require(project.findClipById(clip->id)->trackId == instrument.id, "failed move command should not modify clip track");
     require(!commands.canUndo(), "failed move command should not enter undo stack");
+}
+
+void splitClipCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before command split");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SplitClipCommand>(clip->id, 360));
+
+    require(result.success, "split clip command should succeed");
+    require(project.clips().size() == 2, "split command should create two clips");
+    const auto rightClipId = project.clips().back().id;
+    require(project.findClipById(clip->id)->lengthTick == 360, "split command should shrink left clip");
+    require(project.findClipById(rightClipId)->startTick == 360, "split command should create right clip at split tick");
+
+    require(commands.undo(project), "split clip undo should be available");
+    require(project.clips().size() == 1, "undo should remove right split clip");
+    require(project.findClipById(clip->id)->lengthTick == 960, "undo should restore original left length");
+    require(!project.findClipById(rightClipId).has_value(), "undo should remove generated right clip");
+
+    require(commands.redo(project), "split clip redo should be available");
+    require(project.clips().size() == 2, "redo should restore right split clip");
+    require(project.findClipById(clip->id)->lengthTick == 360, "redo should shrink left clip again");
+    require(project.findClipById(rightClipId).has_value(), "redo should reuse original right clip id");
+    require(project.findClipById(rightClipId)->lengthTick == 600, "redo should restore right split length");
+}
+
+void invalidSplitClipCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before invalid command split");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SplitClipCommand>(clip->id, 960));
+
+    require(!result.success, "split at clip end should fail validation");
+    require(project.clips().size() == 1, "failed split command should not add clips");
+    require(project.findClipById(clip->id)->lengthTick == 960, "failed split command should not change length");
+    require(!commands.canUndo(), "failed split command should not enter undo stack");
 }
 
 void newTrackPlaybackStateStartsDefault()
@@ -804,6 +916,28 @@ void projectCanRoundTripTimelineClipTrackMove()
     const auto loadedClip = loaded.project->findClipById(clip->id);
     require(loadedClip.has_value(), "loaded project should keep moved clip");
     require(loadedClip->trackId == targetTrack.id, "loaded moved clip should keep target track");
+}
+
+void projectCanRoundTripTimelineClipSplit()
+{
+    trackloom::Project project("Split Clip Song");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Split Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before split round trip");
+    const auto rightClip = project.splitClipAtTick(clip->id, 360);
+    require(rightClip.has_value(), "clip should split before save");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("clip " + clip->id + " " + track.id + " Midi 0 360 Split Intro\n") != std::string::npos, "saved project should include left split clip");
+    require(saved.find("clip " + rightClip->id + " " + track.id + " Midi 360 600 Split Intro\n") != std::string::npos, "saved project should include right split clip");
+    require(loaded.project.has_value(), "project with split clips should load");
+    require(loaded.project->clips().size() == 2, "loaded project should keep both split clips");
+    require(loaded.project->findClipById(clip->id)->lengthTick == 360, "loaded left split should keep shortened length");
+    require(loaded.project->findClipById(rightClip->id)->startTick == 360, "loaded right split should keep start tick");
+    require(loaded.project->findClipById(rightClip->id)->lengthTick == 600, "loaded right split should keep length");
 }
 
 void versionOneProjectLoadsDefaultPlaybackState()
@@ -2038,6 +2172,9 @@ int main()
         projectCanMoveMidiClipBetweenInstrumentTracks();
         projectCanMoveAudioClipBetweenAudioTracks();
         projectRejectsInvalidClipTrackMoves();
+        projectCanSplitMidiClipAtInteriorTick();
+        projectCanSplitAudioClipAtInteriorTick();
+        projectRejectsInvalidClipSplits();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
@@ -2046,6 +2183,8 @@ int main()
         invalidDeleteClipCommandDoesNotModifyProject();
         moveClipToTrackCommandSupportsUndoAndRedo();
         invalidMoveClipToTrackCommandDoesNotModifyProject();
+        splitClipCommandSupportsUndoAndRedo();
+        invalidSplitClipCommandDoesNotModifyProject();
         newTrackPlaybackStateStartsDefault();
         setTrackPlaybackStateCommandSupportsUndoAndRedo();
         invalidPlaybackStateCommandDoesNotModifyProject();
@@ -2059,6 +2198,7 @@ int main()
         projectCanRoundTripTimelineClipEdits();
         projectCanSaveAfterTimelineClipDeletion();
         projectCanRoundTripTimelineClipTrackMove();
+        projectCanRoundTripTimelineClipSplit();
         versionOneProjectLoadsDefaultPlaybackState();
         versionTwoProjectLoadsDefaultMixState();
         versionThreeProjectLoadsDefaultPanState();
