@@ -8,6 +8,23 @@
 #include <utility>
 
 namespace trackloom {
+namespace {
+
+bool trackCanOwnClip(const Track& track, ClipType clipType)
+{
+    // 片段类型和轨道类型先保持严格对应，避免把 MIDI 放到音频轨或把音频放到乐器轨。
+    if (track.type == TrackType::Instrument) {
+        return clipType == ClipType::Midi;
+    }
+    if (track.type == TrackType::Audio) {
+        return clipType == ClipType::Audio;
+    }
+
+    // 文件夹轨只负责分类和折叠，不能承载真实时间线片段。
+    return false;
+}
+
+}
 
 Project::Project(std::string name)
     : name_(std::move(name))
@@ -41,6 +58,24 @@ std::optional<Track> Project::findTrackById(const std::string& id) const
     });
 
     if (it == tracks_.end()) {
+        return std::nullopt;
+    }
+
+    return *it;
+}
+
+const std::vector<TimelineClip>& Project::clips() const
+{
+    return clips_;
+}
+
+std::optional<TimelineClip> Project::findClipById(const std::string& id) const
+{
+    const auto it = std::find_if(clips_.begin(), clips_.end(), [&](const TimelineClip& clip) {
+        return clip.id == id;
+    });
+
+    if (it == clips_.end()) {
         return std::nullopt;
     }
 
@@ -117,7 +152,73 @@ bool Project::removeTrackById(const std::string& id)
         }),
         tracks_.end());
 
-    return tracks_.size() != oldSize;
+    if (tracks_.size() == oldSize) {
+        return false;
+    }
+
+    // 轨道是片段的父对象；删除轨道时必须清理它的片段，避免保存出无法解析的工程文件。
+    clips_.erase(
+        std::remove_if(clips_.begin(), clips_.end(), [&](const TimelineClip& clip) {
+            return clip.trackId == id;
+        }),
+        clips_.end());
+
+    return true;
+}
+
+std::optional<TimelineClip> Project::createClip(
+    std::string trackId,
+    std::string name,
+    ClipType type,
+    std::int64_t startTick,
+    std::int64_t lengthTick)
+{
+    TimelineClip clip {
+        "clip-" + std::to_string(nextClipNumber_),
+        std::move(trackId),
+        std::move(name),
+        type,
+        startTick,
+        lengthTick
+    };
+
+    if (!insertExistingClip(clip)) {
+        return std::nullopt;
+    }
+
+    return clip;
+}
+
+bool Project::insertExistingClip(const TimelineClip& clip)
+{
+    if (clip.id.empty() || clip.name.empty() || !isValidClipTiming(clip.startTick, clip.lengthTick)) {
+        return false;
+    }
+
+    if (findClipById(clip.id).has_value()) {
+        return false;
+    }
+
+    const auto track = findTrackById(clip.trackId);
+    if (!track.has_value() || !trackCanOwnClip(*track, clip.type)) {
+        return false;
+    }
+
+    clips_.push_back(clip);
+    observeClipId(clip.id);
+    return true;
+}
+
+bool Project::removeClipById(const std::string& id)
+{
+    const auto oldSize = clips_.size();
+    clips_.erase(
+        std::remove_if(clips_.begin(), clips_.end(), [&](const TimelineClip& clip) {
+            return clip.id == id;
+        }),
+        clips_.end());
+
+    return clips_.size() != oldSize;
 }
 
 void Project::observeTrackId(const std::string& id)
@@ -135,6 +236,24 @@ void Project::observeTrackId(const std::string& id)
 
     if (result.ec == std::errc{} && result.ptr == last && parsedNumber >= nextTrackNumber_) {
         nextTrackNumber_ = parsedNumber + 1;
+    }
+}
+
+void Project::observeClipId(const std::string& id)
+{
+    constexpr std::string_view prefix = "clip-";
+    if (id.rfind(prefix, 0) != 0) {
+        return;
+    }
+
+    int parsedNumber = 0;
+    const auto numberPart = std::string_view(id).substr(prefix.size());
+    const auto* first = numberPart.data();
+    const auto* last = first + numberPart.size();
+    const auto result = std::from_chars(first, last, parsedNumber);
+
+    if (result.ec == std::errc{} && result.ptr == last && parsedNumber >= nextClipNumber_) {
+        nextClipNumber_ = parsedNumber + 1;
     }
 }
 
@@ -167,6 +286,30 @@ std::optional<TrackType> trackTypeFromString(const std::string& value)
     return std::nullopt;
 }
 
+std::string toString(ClipType type)
+{
+    switch (type) {
+    case ClipType::Midi:
+        return "Midi";
+    case ClipType::Audio:
+        return "Audio";
+    }
+
+    return "Unknown";
+}
+
+std::optional<ClipType> clipTypeFromString(const std::string& value)
+{
+    if (value == "Midi") {
+        return ClipType::Midi;
+    }
+    if (value == "Audio") {
+        return ClipType::Audio;
+    }
+
+    return std::nullopt;
+}
+
 bool isValidTrackMixState(TrackMixState state)
 {
     return std::isfinite(state.gain)
@@ -174,6 +317,12 @@ bool isValidTrackMixState(TrackMixState state)
         && std::isfinite(state.pan)
         && state.pan >= -1.0f
         && state.pan <= 1.0f;
+}
+
+bool isValidClipTiming(std::int64_t startTick, std::int64_t lengthTick)
+{
+    // 时间线位置使用音乐 tick。起点允许为 0，但长度必须大于 0，避免零长度片段干扰后续调度。
+    return startTick >= 0 && lengthTick > 0;
 }
 
 }

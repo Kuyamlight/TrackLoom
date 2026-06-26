@@ -3,6 +3,22 @@
 #include <utility>
 
 namespace trackloom {
+namespace {
+
+bool trackTypeAcceptsClip(TrackType trackType, ClipType clipType)
+{
+    // 命令层提前做同样的类型检查，让错误在进入执行阶段前就能报告清楚。
+    if (trackType == TrackType::Instrument) {
+        return clipType == ClipType::Midi;
+    }
+    if (trackType == TrackType::Audio) {
+        return clipType == ClipType::Audio;
+    }
+
+    return false;
+}
+
+}
 
 CommandResult CommandResult::ok()
 {
@@ -109,6 +125,71 @@ void AddTrackCommand::undo(Project& project)
 {
     if (createdTrack_.has_value()) {
         project.removeTrackById(createdTrack_->id);
+    }
+}
+
+AddClipCommand::AddClipCommand(
+    std::string trackId,
+    std::string clipName,
+    ClipType clipType,
+    std::int64_t startTick,
+    std::int64_t lengthTick)
+    : trackId_(std::move(trackId))
+    , clipName_(std::move(clipName))
+    , clipType_(clipType)
+    , startTick_(startTick)
+    , lengthTick_(lengthTick)
+{
+}
+
+std::string AddClipCommand::name() const
+{
+    return "AddClip";
+}
+
+CommandResult AddClipCommand::validate(const Project& project) const
+{
+    if (clipName_.empty()) {
+        return CommandResult::fail("Clip name must not be empty.");
+    }
+
+    if (!isValidClipTiming(startTick_, lengthTick_)) {
+        return CommandResult::fail("Clip timing is invalid.");
+    }
+
+    const auto track = project.findTrackById(trackId_);
+    if (!track.has_value()) {
+        return CommandResult::fail("Track does not exist.");
+    }
+
+    if (!trackTypeAcceptsClip(track->type, clipType_)) {
+        return CommandResult::fail("Clip type is not compatible with track type.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult AddClipCommand::execute(Project& project)
+{
+    if (createdClip_.has_value()) {
+        if (!project.insertExistingClip(*createdClip_)) {
+            return CommandResult::fail("Clip already exists or is no longer valid.");
+        }
+        return CommandResult::ok();
+    }
+
+    createdClip_ = project.createClip(trackId_, clipName_, clipType_, startTick_, lengthTick_);
+    if (!createdClip_.has_value()) {
+        return CommandResult::fail("Clip could not be created.");
+    }
+
+    return CommandResult::ok();
+}
+
+void AddClipCommand::undo(Project& project)
+{
+    if (createdClip_.has_value()) {
+        project.removeClipById(createdClip_->id);
     }
 }
 

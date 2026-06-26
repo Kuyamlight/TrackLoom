@@ -136,6 +136,7 @@ void projectStartsEmpty()
     require(project.formatVersion() == trackloom::Project::currentFormatVersion, "format version should match current format");
     require(project.name() == "Demo", "project name should be stored");
     require(project.tracks().empty(), "new project should not contain tracks");
+    require(project.clips().empty(), "new project should not contain clips");
 }
 
 void addTrackCommandSupportsUndoAndRedo()
@@ -171,6 +172,106 @@ void invalidCommandDoesNotModifyProject()
     require(!result.success, "empty track name should fail validation");
     require(project.tracks().empty(), "failed command should not modify project");
     require(!commands.canUndo(), "failed command should not enter undo stack");
+}
+
+void projectCreatesMidiClipOnInstrumentTrack()
+{
+    trackloom::Project project("Clips");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto clip = project.createClip(track.id, "Intro Melody", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "instrument track should accept midi clip");
+    require(clip->id == "clip-1", "first clip id should be stable");
+    require(clip->trackId == track.id, "clip should reference owning track");
+    require(clip->name == "Intro Melody", "clip should keep name");
+    require(clip->type == trackloom::ClipType::Midi, "clip should keep midi type");
+    require(clip->startTick == 0, "clip should keep start tick");
+    require(clip->lengthTick == 960, "clip should keep length tick");
+    require(project.clips().size() == 1, "project should store created clip");
+}
+
+void projectCreatesAudioClipOnAudioTrack()
+{
+    trackloom::Project project("Clips");
+    const auto track = project.createTrack("Vocal", trackloom::TrackType::Audio);
+
+    const auto clip = project.createClip(track.id, "Vocal Take", trackloom::ClipType::Audio, 480, 1920);
+
+    require(clip.has_value(), "audio track should accept audio clip");
+    require(clip->id == "clip-1", "first audio clip id should be stable");
+    require(clip->type == trackloom::ClipType::Audio, "clip should keep audio type");
+    require(clip->startTick == 480, "audio clip should keep start tick");
+    require(clip->lengthTick == 1920, "audio clip should keep length tick");
+}
+
+void projectRejectsInvalidClipRequests()
+{
+    trackloom::Project project("Clips");
+    const auto instrument = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audio = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto folder = project.createTrack("Folder", trackloom::TrackType::Folder);
+
+    require(!project.createClip("missing-track", "Missing", trackloom::ClipType::Midi, 0, 960).has_value(), "clip should reject missing track");
+    require(!project.createClip(folder.id, "Folder Clip", trackloom::ClipType::Midi, 0, 960).has_value(), "folder track should reject clips");
+    require(!project.createClip(audio.id, "Wrong Midi", trackloom::ClipType::Midi, 0, 960).has_value(), "audio track should reject midi clips");
+    require(!project.createClip(instrument.id, "Wrong Audio", trackloom::ClipType::Audio, 0, 960).has_value(), "instrument track should reject audio clips");
+    require(!project.createClip(instrument.id, "", trackloom::ClipType::Midi, 0, 960).has_value(), "clip should reject empty names");
+    require(!project.createClip(instrument.id, "Negative Start", trackloom::ClipType::Midi, -1, 960).has_value(), "clip should reject negative start tick");
+    require(!project.createClip(instrument.id, "Zero Length", trackloom::ClipType::Midi, 0, 0).has_value(), "clip should reject zero length");
+    require(project.clips().empty(), "invalid clips should not modify project");
+}
+
+void removingTrackRemovesItsClips()
+{
+    trackloom::Project project("Clips");
+    const auto firstTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto secondTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+
+    require(project.createClip(firstTrack.id, "Lead Clip", trackloom::ClipType::Midi, 0, 960).has_value(), "first track clip should be created");
+    require(project.createClip(secondTrack.id, "Pad Clip", trackloom::ClipType::Midi, 960, 960).has_value(), "second track clip should be created");
+
+    require(project.removeTrackById(firstTrack.id), "track removal should succeed");
+
+    require(project.clips().size() == 1, "removing track should remove only clips on that track");
+    require(project.clips().front().trackId == secondTrack.id, "remaining clip should belong to remaining track");
+}
+
+void addClipCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::AddClipCommand>(track.id, "Intro Melody", trackloom::ClipType::Midi, 0, 960));
+
+    require(result.success, "add clip command should succeed");
+    require(project.clips().size() == 1, "command should add clip");
+    require(project.clips().front().id == "clip-1", "command should create stable clip id");
+
+    require(commands.undo(project), "clip undo should be available");
+    require(project.clips().empty(), "undo should remove clip");
+
+    require(commands.redo(project), "clip redo should be available");
+    require(project.clips().size() == 1, "redo should restore clip");
+    require(project.clips().front().id == "clip-1", "redo should preserve clip id");
+}
+
+void invalidAddClipCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto folder = project.createTrack("Folder", trackloom::TrackType::Folder);
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::AddClipCommand>(folder.id, "Bad Clip", trackloom::ClipType::Midi, 0, 960));
+
+    require(!result.success, "invalid add clip command should fail");
+    require(project.clips().empty(), "failed clip command should not modify project");
+    require(!commands.canUndo(), "failed clip command should not enter undo stack");
 }
 
 void newTrackPlaybackStateStartsDefault()
@@ -309,7 +410,7 @@ void projectCanRoundTripTrackPlaybackState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 4\n") == 0, "saved project should use format version 4");
+    require(saved.find("trackloom_project 5\n") == 0, "saved project should use format version 5");
     require(loaded.project.has_value(), "project with playback state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
     require(loadedTrack.has_value(), "loaded project should contain track");
@@ -329,12 +430,47 @@ void projectCanRoundTripTrackMixState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 4\n") == 0, "saved mix project should use format version 4");
+    require(saved.find("trackloom_project 5\n") == 0, "saved mix project should use format version 5");
     require(saved.find("track_mix_state " + track.id + " gain=0.25 pan=-0.5\n") != std::string::npos, "saved project should include track mix state");
     require(loaded.project.has_value(), "project with mix state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
     require(loadedTrack.has_value(), "loaded project should contain mixed track");
     require(loadedTrack->mix == state, "loaded track should keep mix state");
+}
+
+void projectCanRoundTripTimelineClips()
+{
+    trackloom::Project project("Clip Song");
+    const auto instrumentTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audioTrack = project.createTrack("Vocal", trackloom::TrackType::Audio);
+
+    require(project.createClip(instrumentTrack.id, "Intro Melody", trackloom::ClipType::Midi, 0, 960).has_value(), "midi clip should be created");
+    require(project.createClip(audioTrack.id, "Vocal Take", trackloom::ClipType::Audio, 960, 1920).has_value(), "audio clip should be created");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("trackloom_project 5\n") == 0, "saved clip project should use format version 5");
+    require(saved.find("clip clip-1 " + instrumentTrack.id + " Midi 0 960 Intro Melody\n") != std::string::npos, "saved project should include midi clip record");
+    require(saved.find("clip clip-2 " + audioTrack.id + " Audio 960 1920 Vocal Take\n") != std::string::npos, "saved project should include audio clip record");
+    require(loaded.project.has_value(), "project with clips should load");
+    require(loaded.project->clips().size() == 2, "loaded project should keep clips");
+
+    const auto& midiClip = loaded.project->clips()[0];
+    require(midiClip.id == "clip-1", "loaded midi clip should keep id");
+    require(midiClip.trackId == instrumentTrack.id, "loaded midi clip should keep track id");
+    require(midiClip.name == "Intro Melody", "loaded midi clip should keep name");
+    require(midiClip.type == trackloom::ClipType::Midi, "loaded midi clip should keep type");
+    require(midiClip.startTick == 0, "loaded midi clip should keep start tick");
+    require(midiClip.lengthTick == 960, "loaded midi clip should keep length tick");
+
+    const auto& audioClip = loaded.project->clips()[1];
+    require(audioClip.id == "clip-2", "loaded audio clip should keep id");
+    require(audioClip.trackId == audioTrack.id, "loaded audio clip should keep track id");
+    require(audioClip.name == "Vocal Take", "loaded audio clip should keep name");
+    require(audioClip.type == trackloom::ClipType::Audio, "loaded audio clip should keep type");
+    require(audioClip.startTick == 960, "loaded audio clip should keep start tick");
+    require(audioClip.lengthTick == 1920, "loaded audio clip should keep length tick");
 }
 
 void versionOneProjectLoadsDefaultPlaybackState()
@@ -392,6 +528,21 @@ void versionThreeProjectLoadsDefaultPanState()
     require(track->mix.pan == 0.0f, "version 3 track should default to centered pan");
 }
 
+void versionFourProjectLoadsWithoutClips()
+{
+    const std::string text =
+        "trackloom_project 4\n"
+        "name Mix Song\n"
+        "track track-1 Instrument Lead Piano\n"
+        "track_playback_state track-1 muted=0 soloed=0 disabled=0\n"
+        "track_mix_state track-1 gain=0.8 pan=-0.25\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(loaded.project.has_value(), "version 4 project should still load");
+    require(loaded.project->clips().empty(), "version 4 project should load without clips");
+}
+
 void invalidTrackPlaybackStateRecordIsRejected()
 {
     const std::string text =
@@ -418,6 +569,22 @@ void invalidTrackMixStateRecordIsRejected()
 
     require(!loaded.project.has_value(), "out-of-range track pan state should fail");
     require(!loaded.error.empty(), "invalid mix state should report an error");
+}
+
+void invalidClipRecordIsRejected()
+{
+    const std::string text =
+        "trackloom_project 5\n"
+        "name Broken Clip Song\n"
+        "track track-1 Instrument Lead Piano\n"
+        "track_playback_state track-1 muted=0 soloed=0 disabled=0\n"
+        "track_mix_state track-1 gain=1 pan=0\n"
+        "clip clip-1 track-1 Midi 0 0 Bad Clip\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(!loaded.project.has_value(), "zero-length clip record should fail");
+    require(!loaded.error.empty(), "invalid clip record should report an error");
 }
 
 void projectCanRoundTripNamesWithSpaces()
@@ -1527,6 +1694,12 @@ int main()
         projectStartsEmpty();
         addTrackCommandSupportsUndoAndRedo();
         invalidCommandDoesNotModifyProject();
+        projectCreatesMidiClipOnInstrumentTrack();
+        projectCreatesAudioClipOnAudioTrack();
+        projectRejectsInvalidClipRequests();
+        removingTrackRemovesItsClips();
+        addClipCommandSupportsUndoAndRedo();
+        invalidAddClipCommandDoesNotModifyProject();
         newTrackPlaybackStateStartsDefault();
         setTrackPlaybackStateCommandSupportsUndoAndRedo();
         invalidPlaybackStateCommandDoesNotModifyProject();
@@ -1536,11 +1709,14 @@ int main()
         projectCanRoundTripThroughText();
         projectCanRoundTripTrackPlaybackState();
         projectCanRoundTripTrackMixState();
+        projectCanRoundTripTimelineClips();
         versionOneProjectLoadsDefaultPlaybackState();
         versionTwoProjectLoadsDefaultMixState();
         versionThreeProjectLoadsDefaultPanState();
+        versionFourProjectLoadsWithoutClips();
         invalidTrackPlaybackStateRecordIsRejected();
         invalidTrackMixStateRecordIsRejected();
+        invalidClipRecordIsRejected();
         projectCanRoundTripNamesWithSpaces();
         invalidTextIsRejected();
         projectCanSaveAndLoadFromFile();

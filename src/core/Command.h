@@ -64,6 +64,31 @@ private:
     std::optional<Track> createdTrack_;
 };
 
+// AddClipCommand 负责把新的时间线片段加入工程。
+// 它保存创建出的 TimelineClip，因此撤销后再重做时能恢复同一个稳定 ID。
+class AddClipCommand final : public Command {
+public:
+    AddClipCommand(
+        std::string trackId,
+        std::string clipName,
+        ClipType clipType,
+        std::int64_t startTick,
+        std::int64_t lengthTick);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string trackId_;
+    std::string clipName_;
+    ClipType clipType_;
+    std::int64_t startTick_ = 0;
+    std::int64_t lengthTick_ = 0;
+    std::optional<TimelineClip> createdClip_;
+};
+
 // SetTrackPlaybackStateCommand 修改轨道播放状态，并保存旧状态用于撤销。
 // 静音、独奏和禁用属于播放开关，不负责表达音量或其他混音参数。
 class SetTrackPlaybackStateCommand final : public Command {

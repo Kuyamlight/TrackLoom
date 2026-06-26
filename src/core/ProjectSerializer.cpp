@@ -1,5 +1,6 @@
 #include "ProjectSerializer.h"
 
+#include <cstdint>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -48,6 +49,15 @@ bool parseFloatToken(const std::string& token, std::string_view key, float& valu
     return input && input.eof();
 }
 
+bool parseInt64Value(const std::string& token, std::int64_t& value)
+{
+    std::istringstream input(token);
+    input >> value;
+
+    // 必须完整消费 token，避免 "960abc" 这类坏时间值被误认为合法 tick。
+    return input && input.eof();
+}
+
 }
 
 LoadProjectResult LoadProjectResult::ok(Project project)
@@ -79,6 +89,16 @@ std::string saveProjectToText(const Project& project)
                << '\n';
     }
 
+    for (const auto& clip : project.clips()) {
+        output << "clip " << clip.id
+               << ' ' << clip.trackId
+               << ' ' << toString(clip.type)
+               << ' ' << clip.startTick
+               << ' ' << clip.lengthTick
+               << ' ' << clip.name
+               << '\n';
+    }
+
     return output.str();
 }
 
@@ -94,7 +114,8 @@ LoadProjectResult loadProjectFromText(const std::string& text)
     }
 
     std::istringstream header(line);
-    // v2 增加轨道播放状态；v3 增加轨道混音状态。旧版本读取后使用当前内存默认值。
+    // v2 增加轨道播放状态；v3 增加轨道混音 gain；v4 增加 pan；v5 增加时间线片段。
+    // 旧版本读取后使用当前内存默认值，避免老工程因为新增字段无法打开。
     if (!(header >> keyword >> version) || keyword != "trackloom_project" || version < 1 || version > Project::currentFormatVersion) {
         return LoadProjectResult::fail("Unsupported or invalid project header.");
     }
@@ -163,6 +184,44 @@ LoadProjectResult loadProjectFromText(const std::string& text)
             }
             if (!project.setTrackMixState(trackId, state)) {
                 return LoadProjectResult::fail("Track mix state references unknown track.");
+            }
+
+            continue;
+        }
+
+        if (startsWith(line, "clip ")) {
+            if (version < 5) {
+                return LoadProjectResult::fail("Timeline clip requires project version 5.");
+            }
+
+            std::istringstream clipLine(line);
+            TimelineClip clip;
+            std::string typeName;
+            std::string startTickToken;
+            std::string lengthTickToken;
+
+            if (!(clipLine >> keyword >> clip.id >> clip.trackId >> typeName >> startTickToken >> lengthTickToken)) {
+                return LoadProjectResult::fail("Invalid clip record.");
+            }
+
+            const auto type = clipTypeFromString(typeName);
+            if (!type.has_value()
+                || !parseInt64Value(startTickToken, clip.startTick)
+                || !parseInt64Value(lengthTickToken, clip.lengthTick)) {
+                return LoadProjectResult::fail("Invalid clip value.");
+            }
+
+            std::getline(clipLine, clip.name);
+            if (!clip.name.empty() && clip.name.front() == ' ') {
+                clip.name.erase(0, 1);
+            }
+            if (clip.name.empty()) {
+                return LoadProjectResult::fail("Clip name is missing.");
+            }
+
+            clip.type = *type;
+            if (!project.insertExistingClip(clip)) {
+                return LoadProjectResult::fail("Duplicate, invalid, or incompatible clip.");
             }
 
             continue;
