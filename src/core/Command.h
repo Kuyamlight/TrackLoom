@@ -298,6 +298,23 @@ private:
     std::optional<TrackPlaybackState> oldState_;
 };
 
+// SetTrackViewStateCommand 修改轨道显示状态，并保存旧状态用于撤销。
+// 它不改变播放、混音、片段归属或路由，避免把“隐藏”和“静音”混为一谈。
+class SetTrackViewStateCommand final : public Command {
+public:
+    SetTrackViewStateCommand(std::string trackId, TrackViewState newState);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string trackId_;
+    TrackViewState newState_;
+    std::optional<TrackViewState> oldState_;
+};
+
 // SetTrackMixStateCommand 修改轨道混音状态，并保存旧状态用于撤销。
 // 它与播放状态命令分开，避免把“音量为 0”和“轨道被静音”混为同一个概念。
 class SetTrackMixStateCommand final : public Command {

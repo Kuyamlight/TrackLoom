@@ -87,6 +87,10 @@ std::string saveProjectToText(const Project& project)
                << " gain=" << track.mix.gain
                << " pan=" << track.mix.pan
                << '\n';
+        output << "track_view_state " << track.id
+               << " hidden=" << (track.view.hidden ? 1 : 0)
+               << " collapsed=" << (track.view.collapsed ? 1 : 0)
+               << '\n';
     }
 
     for (const auto& clip : project.clips()) {
@@ -114,7 +118,7 @@ LoadProjectResult loadProjectFromText(const std::string& text)
     }
 
     std::istringstream header(line);
-    // v2 增加轨道播放状态；v3 增加轨道混音 gain；v4 增加 pan；v5 增加时间线片段。
+    // v2 增加轨道播放状态；v3 增加轨道混音 gain；v4 增加 pan；v5 增加时间线片段；v6 增加轨道显示状态。
     // 旧版本读取后使用当前内存默认值，避免老工程因为新增字段无法打开。
     if (!(header >> keyword >> version) || keyword != "trackloom_project" || version < 1 || version > Project::currentFormatVersion) {
         return LoadProjectResult::fail("Unsupported or invalid project header.");
@@ -184,6 +188,31 @@ LoadProjectResult loadProjectFromText(const std::string& text)
             }
             if (!project.setTrackMixState(trackId, state)) {
                 return LoadProjectResult::fail("Track mix state references unknown track.");
+            }
+
+            continue;
+        }
+
+        if (startsWith(line, "track_view_state ")) {
+            if (version < 6) {
+                return LoadProjectResult::fail("Track view state requires project version 6.");
+            }
+
+            std::istringstream viewLine(line);
+            std::string trackId;
+            std::string hiddenToken;
+            std::string collapsedToken;
+            TrackViewState state;
+
+            if (!(viewLine >> keyword >> trackId >> hiddenToken >> collapsedToken)) {
+                return LoadProjectResult::fail("Invalid track view state record.");
+            }
+            if (!parseFlagToken(hiddenToken, "hidden", state.hidden)
+                || !parseFlagToken(collapsedToken, "collapsed", state.collapsed)) {
+                return LoadProjectResult::fail("Invalid track view state value.");
+            }
+            if (!project.setTrackViewState(trackId, state)) {
+                return LoadProjectResult::fail("Track view state references unknown or incompatible track.");
             }
 
             continue;

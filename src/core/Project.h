@@ -35,6 +35,15 @@ struct TrackMixState {
     bool operator==(const TrackMixState&) const = default;
 };
 
+// TrackViewState 保存只影响界面显示的轨道状态。
+// hidden 不参与播放判断；collapsed 只允许文件夹轨使用，用来表达折叠显示。
+struct TrackViewState {
+    bool hidden = false;
+    bool collapsed = false;
+
+    bool operator==(const TrackViewState&) const = default;
+};
+
 // Track 是工程里最小的轨道数据。
 // 第一阶段暂不保存插件、片段或自动化，避免在核心边界稳定前过早扩大模型。
 struct Track {
@@ -43,6 +52,7 @@ struct Track {
     TrackType type;
     TrackPlaybackState playback;
     TrackMixState mix;
+    TrackViewState view;
 };
 
 // ClipType 描述时间线片段承载的素材类型。
@@ -69,7 +79,7 @@ struct TimelineClip {
 // 后续 UI、AI 和导入器都应通过命令系统修改它，避免绕过验证、撤销和历史记录。
 class Project {
 public:
-    static constexpr int currentFormatVersion = 5;
+    static constexpr int currentFormatVersion = 6;
 
     explicit Project(std::string name = "Untitled");
 
@@ -90,6 +100,9 @@ public:
 
     // setTrackMixState 只更新轨道混音参数；非法 gain 会被拒绝，避免坏文件或 AI 命令污染工程。
     bool setTrackMixState(const std::string& id, TrackMixState state);
+
+    // setTrackViewState 只更新轨道显示状态；隐藏不能影响播放，折叠只允许文件夹轨使用。
+    bool setTrackViewState(const std::string& id, TrackViewState state);
 
     // insertExistingTrack 用于撤销重做或读取文件时恢复已有 ID 的轨道。
     bool insertExistingTrack(const Track& track);
@@ -164,6 +177,7 @@ std::optional<TrackType> trackTypeFromString(const std::string& value);
 std::string toString(ClipType type);
 std::optional<ClipType> clipTypeFromString(const std::string& value);
 bool isValidTrackMixState(TrackMixState state);
+bool isValidTrackViewState(TrackType type, TrackViewState state);
 bool isValidClipTiming(std::int64_t startTick, std::int64_t lengthTick);
 
 }

@@ -90,6 +90,7 @@ Track Project::createTrack(std::string name, TrackType type)
         std::move(name),
         type,
         {},
+        {},
         {}
     };
 
@@ -129,6 +130,20 @@ bool Project::setTrackMixState(const std::string& id, TrackMixState state)
     return true;
 }
 
+bool Project::setTrackViewState(const std::string& id, TrackViewState state)
+{
+    const auto it = std::find_if(tracks_.begin(), tracks_.end(), [&](const Track& track) {
+        return track.id == id;
+    });
+
+    if (it == tracks_.end() || !isValidTrackViewState(it->type, state)) {
+        return false;
+    }
+
+    it->view = state;
+    return true;
+}
+
 bool Project::insertExistingTrack(const Track& track)
 {
     return insertExistingTrackAt(track, tracks_.size());
@@ -136,7 +151,7 @@ bool Project::insertExistingTrack(const Track& track)
 
 bool Project::insertExistingTrackAt(const Track& track, std::size_t index)
 {
-    if (!isValidTrackMixState(track.mix)) {
+    if (!isValidTrackMixState(track.mix) || !isValidTrackViewState(track.type, track.view)) {
         return false;
     }
 
@@ -569,6 +584,12 @@ bool isValidTrackMixState(TrackMixState state)
         && std::isfinite(state.pan)
         && state.pan >= -1.0f
         && state.pan <= 1.0f;
+}
+
+bool isValidTrackViewState(TrackType type, TrackViewState state)
+{
+    // hidden 只是显示过滤，不影响轨道能否播放；collapsed 只属于文件夹轨。
+    return !state.collapsed || type == TrackType::Folder;
 }
 
 bool isValidClipTiming(std::int64_t startTick, std::int64_t lengthTick)

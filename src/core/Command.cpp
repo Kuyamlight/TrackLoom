@@ -847,6 +847,60 @@ void SetTrackPlaybackStateCommand::undo(Project& project)
     }
 }
 
+SetTrackViewStateCommand::SetTrackViewStateCommand(std::string trackId, TrackViewState newState)
+    : trackId_(std::move(trackId))
+    , newState_(newState)
+{
+}
+
+std::string SetTrackViewStateCommand::name() const
+{
+    return "SetTrackViewState";
+}
+
+CommandResult SetTrackViewStateCommand::validate(const Project& project) const
+{
+    const auto track = project.findTrackById(trackId_);
+    if (!track.has_value()) {
+        return CommandResult::fail("Track does not exist.");
+    }
+
+    if (!isValidTrackViewState(track->type, newState_)) {
+        return CommandResult::fail("Track view state is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult SetTrackViewStateCommand::execute(Project& project)
+{
+    const auto track = project.findTrackById(trackId_);
+    if (!track.has_value()) {
+        return CommandResult::fail("Track does not exist.");
+    }
+
+    if (!isValidTrackViewState(track->type, newState_)) {
+        return CommandResult::fail("Track view state is invalid.");
+    }
+
+    if (!oldState_.has_value()) {
+        oldState_ = track->view;
+    }
+
+    if (!project.setTrackViewState(trackId_, newState_)) {
+        return CommandResult::fail("Track view state is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+void SetTrackViewStateCommand::undo(Project& project)
+{
+    if (oldState_.has_value()) {
+        project.setTrackViewState(trackId_, *oldState_);
+    }
+}
+
 SetTrackMixStateCommand::SetTrackMixStateCommand(std::string trackId, TrackMixState newState)
     : trackId_(std::move(trackId))
     , newState_(newState)

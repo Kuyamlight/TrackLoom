@@ -250,6 +250,50 @@ void projectRejectsInvalidTrackMoves()
     require(project.tracks()[2].id == vocalTrack.id, "failed track moves should keep third track");
 }
 
+void newTrackViewStateStartsDefault()
+{
+    trackloom::Project project("View");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    require(!track.view.hidden, "new track should start visible");
+    require(!track.view.collapsed, "new track should start expanded");
+}
+
+void projectCanSetTrackViewState()
+{
+    trackloom::Project project("View");
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto folderTrack = project.createTrack("Folder", trackloom::TrackType::Folder);
+    trackloom::TrackViewState hiddenState;
+    trackloom::TrackViewState folderState;
+
+    hiddenState.hidden = true;
+    folderState.hidden = true;
+    folderState.collapsed = true;
+
+    require(project.setTrackViewState(leadTrack.id, hiddenState), "instrument track should accept hidden view state");
+    require(project.findTrackById(leadTrack.id)->view == hiddenState, "hidden view state should be stored");
+    require(!project.findTrackById(leadTrack.id)->playback.muted, "hidden should not change muted state");
+    require(project.setTrackViewState(folderTrack.id, folderState), "folder track should accept collapsed view state");
+    require(project.findTrackById(folderTrack.id)->view == folderState, "folder view state should be stored");
+}
+
+void projectRejectsInvalidTrackViewState()
+{
+    trackloom::Project project("View");
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audioTrack = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    trackloom::TrackViewState collapsedState;
+
+    collapsedState.collapsed = true;
+
+    require(!project.setTrackViewState("missing-track", collapsedState), "missing track view state should fail");
+    require(!project.setTrackViewState(leadTrack.id, collapsedState), "instrument track should reject collapsed view state");
+    require(!project.setTrackViewState(audioTrack.id, collapsedState), "audio track should reject collapsed view state");
+    require(!project.findTrackById(leadTrack.id)->view.collapsed, "failed view state should not collapse instrument track");
+    require(!project.findTrackById(audioTrack.id)->view.collapsed, "failed view state should not collapse audio track");
+}
+
 void projectCreatesMidiClipOnInstrumentTrack()
 {
     trackloom::Project project("Clips");
@@ -1131,6 +1175,54 @@ void invalidMoveTrackCommandDoesNotModifyProject()
     require(!commands.canUndo(), "failed track move should not enter undo stack");
 }
 
+void setTrackViewStateCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("View");
+    trackloom::CommandStack commands;
+    const auto folderTrack = project.createTrack("Folder", trackloom::TrackType::Folder);
+    trackloom::TrackViewState state;
+
+    state.hidden = true;
+    state.collapsed = true;
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetTrackViewStateCommand>(folderTrack.id, state));
+
+    require(result.success, "view state command should succeed");
+    require(project.findTrackById(folderTrack.id)->view == state, "view state command should write state");
+
+    require(commands.undo(project), "view state undo should be available");
+    require(!project.findTrackById(folderTrack.id)->view.hidden, "undo should restore visible state");
+    require(!project.findTrackById(folderTrack.id)->view.collapsed, "undo should restore expanded state");
+
+    require(commands.redo(project), "view state redo should be available");
+    require(project.findTrackById(folderTrack.id)->view == state, "redo should restore view state");
+}
+
+void invalidTrackViewStateCommandDoesNotModifyProject()
+{
+    trackloom::Project project("View");
+    trackloom::CommandStack commands;
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    trackloom::TrackViewState state;
+
+    state.collapsed = true;
+
+    auto collapsedInstrumentResult = commands.execute(
+        project,
+        std::make_unique<trackloom::SetTrackViewStateCommand>(leadTrack.id, state));
+    auto missingTrackResult = commands.execute(
+        project,
+        std::make_unique<trackloom::SetTrackViewStateCommand>("missing-track", state));
+
+    require(!collapsedInstrumentResult.success, "collapsed instrument view command should fail");
+    require(!missingTrackResult.success, "missing track view command should fail");
+    require(!project.findTrackById(leadTrack.id)->view.hidden, "failed view command should not hide track");
+    require(!project.findTrackById(leadTrack.id)->view.collapsed, "failed view command should not collapse track");
+    require(!commands.canUndo(), "failed view command should not enter undo stack");
+}
+
 void newTrackPlaybackStateStartsDefault()
 {
     trackloom::Project project("Playback");
@@ -1264,7 +1356,7 @@ void projectCanRoundTripTrackRename()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 5\n") == 0, "track rename should not change project format version");
+    require(saved.find("trackloom_project 6\n") == 0, "track rename should use current project format version");
     require(loaded.project.has_value(), "project with renamed track should load");
     require(loaded.project->findTrackById(track.id).has_value(), "loaded project should keep renamed track id");
     require(loaded.project->findTrackById(track.id)->name == "Lead", "loaded project should keep renamed track name");
@@ -1314,12 +1406,37 @@ void projectCanRoundTripTrackReorder()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 5\n") == 0, "track reorder should not change project format version");
+    require(saved.find("trackloom_project 6\n") == 0, "track reorder should use current project format version");
     require(loaded.project.has_value(), "project with reordered tracks should load");
     require(loaded.project->tracks()[0].id == leadTrack.id, "loaded project should keep first track order");
     require(loaded.project->tracks()[1].id == vocalTrack.id, "loaded project should keep shifted track order");
     require(loaded.project->tracks()[2].id == padTrack.id, "loaded project should keep moved track order");
     require(loaded.project->findClipById(padClip->id)->trackId == padTrack.id, "loaded reordered project should keep clip ownership");
+}
+
+void projectCanRoundTripTrackViewState()
+{
+    trackloom::Project project("View Song");
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto folderTrack = project.createTrack("Folder", trackloom::TrackType::Folder);
+    trackloom::TrackViewState leadState;
+    trackloom::TrackViewState folderState;
+
+    leadState.hidden = true;
+    folderState.hidden = true;
+    folderState.collapsed = true;
+    require(project.setTrackViewState(leadTrack.id, leadState), "project should accept hidden track view state");
+    require(project.setTrackViewState(folderTrack.id, folderState), "project should accept folder track view state");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("trackloom_project 6\n") == 0, "saved view project should use format version 6");
+    require(saved.find("track_view_state " + leadTrack.id + " hidden=1 collapsed=0\n") != std::string::npos, "saved project should include hidden state");
+    require(saved.find("track_view_state " + folderTrack.id + " hidden=1 collapsed=1\n") != std::string::npos, "saved project should include folder collapsed state");
+    require(loaded.project.has_value(), "project with view state should load");
+    require(loaded.project->findTrackById(leadTrack.id)->view == leadState, "loaded project should keep hidden state");
+    require(loaded.project->findTrackById(folderTrack.id)->view == folderState, "loaded project should keep folder collapsed state");
 }
 
 void projectCanRoundTripTrackPlaybackState()
@@ -1335,7 +1452,7 @@ void projectCanRoundTripTrackPlaybackState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 5\n") == 0, "saved project should use format version 5");
+    require(saved.find("trackloom_project 6\n") == 0, "saved project should use format version 6");
     require(loaded.project.has_value(), "project with playback state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
     require(loadedTrack.has_value(), "loaded project should contain track");
@@ -1355,7 +1472,7 @@ void projectCanRoundTripTrackMixState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 5\n") == 0, "saved mix project should use format version 5");
+    require(saved.find("trackloom_project 6\n") == 0, "saved mix project should use format version 6");
     require(saved.find("track_mix_state " + track.id + " gain=0.25 pan=-0.5\n") != std::string::npos, "saved project should include track mix state");
     require(loaded.project.has_value(), "project with mix state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
@@ -1375,7 +1492,7 @@ void projectCanRoundTripTimelineClips()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 5\n") == 0, "saved clip project should use format version 5");
+    require(saved.find("trackloom_project 6\n") == 0, "saved clip project should use format version 6");
     require(saved.find("clip clip-1 " + instrumentTrack.id + " Midi 0 960 Intro Melody\n") != std::string::npos, "saved project should include midi clip record");
     require(saved.find("clip clip-2 " + audioTrack.id + " Audio 960 1920 Vocal Take\n") != std::string::npos, "saved project should include audio clip record");
     require(loaded.project.has_value(), "project with clips should load");
@@ -1601,6 +1718,25 @@ void versionFourProjectLoadsWithoutClips()
     require(loaded.project->clips().empty(), "version 4 project should load without clips");
 }
 
+void versionFiveProjectLoadsDefaultTrackViewState()
+{
+    const std::string text =
+        "trackloom_project 5\n"
+        "name Clip Song\n"
+        "track track-1 Instrument Lead Piano\n"
+        "track_playback_state track-1 muted=0 soloed=0 disabled=0\n"
+        "track_mix_state track-1 gain=1 pan=0\n"
+        "clip clip-1 track-1 Midi 0 960 Intro\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(loaded.project.has_value(), "version 5 project should load with default view state");
+    const auto track = loaded.project->findTrackById("track-1");
+    require(track.has_value(), "version 5 project should contain track");
+    require(!track->view.hidden, "version 5 track should default to visible");
+    require(!track->view.collapsed, "version 5 track should default to expanded");
+}
+
 void invalidTrackPlaybackStateRecordIsRejected()
 {
     const std::string text =
@@ -1627,6 +1763,22 @@ void invalidTrackMixStateRecordIsRejected()
 
     require(!loaded.project.has_value(), "out-of-range track pan state should fail");
     require(!loaded.error.empty(), "invalid mix state should report an error");
+}
+
+void invalidTrackViewStateRecordIsRejected()
+{
+    const std::string text =
+        "trackloom_project 6\n"
+        "name Broken View Song\n"
+        "track track-1 Instrument Lead Piano\n"
+        "track_playback_state track-1 muted=0 soloed=0 disabled=0\n"
+        "track_mix_state track-1 gain=1 pan=0\n"
+        "track_view_state track-1 hidden=0 collapsed=1\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(!loaded.project.has_value(), "invalid view state should be rejected");
+    require(!loaded.error.empty(), "invalid view state should report an error");
 }
 
 void invalidClipRecordIsRejected()
@@ -2673,6 +2825,26 @@ void projectPlaybackGraphAppliesMutedState()
     require(allSamplesNear(samples, 0.0f), "muted graph source should render silence");
 }
 
+void projectPlaybackGraphIgnoresHiddenState()
+{
+    trackloom::Project project("Graph");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    CountingAudioSource source(0.50f);
+    trackloom::TrackViewState state;
+    trackloom::ProjectPlaybackGraph graph;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    state.hidden = true;
+    require(project.setTrackViewState(track.id, state), "project should set hidden view state");
+    require(graph.prepare(2, 8), "project graph prepare should succeed");
+    require(graph.rebuild(project, { { track.id, &source } }), "project graph rebuild should accept hidden track binding");
+    require(graph.render(block, 48000.0), "project graph hidden render should succeed");
+
+    require(source.renderCount() == 1, "hidden graph source should still process");
+    require(allSamplesNear(samples, 0.50f), "hidden graph source should remain audible");
+}
+
 void projectPlaybackGraphAppliesTrackGain()
 {
     trackloom::Project project("Graph");
@@ -2755,6 +2927,9 @@ int main()
         projectCanRenameTrack();
         projectCanMoveTrackToIndex();
         projectRejectsInvalidTrackMoves();
+        newTrackViewStateStartsDefault();
+        projectCanSetTrackViewState();
+        projectRejectsInvalidTrackViewState();
         projectCreatesMidiClipOnInstrumentTrack();
         projectCreatesAudioClipOnAudioTrack();
         projectRejectsInvalidClipRequests();
@@ -2796,6 +2971,8 @@ int main()
         invalidDeleteTrackCommandDoesNotModifyProject();
         moveTrackCommandSupportsUndoAndRedo();
         invalidMoveTrackCommandDoesNotModifyProject();
+        setTrackViewStateCommandSupportsUndoAndRedo();
+        invalidTrackViewStateCommandDoesNotModifyProject();
         newTrackPlaybackStateStartsDefault();
         setTrackPlaybackStateCommandSupportsUndoAndRedo();
         invalidPlaybackStateCommandDoesNotModifyProject();
@@ -2806,6 +2983,7 @@ int main()
         projectCanRoundTripTrackRename();
         projectCanSaveAfterTrackDeletion();
         projectCanRoundTripTrackReorder();
+        projectCanRoundTripTrackViewState();
         projectCanRoundTripTrackPlaybackState();
         projectCanRoundTripTrackMixState();
         projectCanRoundTripTimelineClips();
@@ -2819,8 +2997,10 @@ int main()
         versionTwoProjectLoadsDefaultMixState();
         versionThreeProjectLoadsDefaultPanState();
         versionFourProjectLoadsWithoutClips();
+        versionFiveProjectLoadsDefaultTrackViewState();
         invalidTrackPlaybackStateRecordIsRejected();
         invalidTrackMixStateRecordIsRejected();
+        invalidTrackViewStateRecordIsRejected();
         invalidClipRecordIsRejected();
         projectCanRoundTripNamesWithSpaces();
         invalidTextIsRejected();
@@ -2887,6 +3067,7 @@ int main()
         projectPlaybackGraphAppliesProjectSoloMode();
         projectPlaybackGraphAppliesDisabledState();
         projectPlaybackGraphAppliesMutedState();
+        projectPlaybackGraphIgnoresHiddenState();
         projectPlaybackGraphAppliesTrackGain();
         projectPlaybackGraphAppliesTrackPanAfterGain();
         projectPlaybackGraphRendersSilenceWhenEmpty();
