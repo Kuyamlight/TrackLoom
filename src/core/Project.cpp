@@ -83,6 +83,24 @@ std::optional<TimelineClip> Project::findClipById(const std::string& id) const
     return *it;
 }
 
+const std::vector<TimelineMarker>& Project::markers() const
+{
+    return markers_;
+}
+
+std::optional<TimelineMarker> Project::findMarkerById(const std::string& id) const
+{
+    const auto it = std::find_if(markers_.begin(), markers_.end(), [&](const TimelineMarker& marker) {
+        return marker.id == id;
+    });
+
+    if (it == markers_.end()) {
+        return std::nullopt;
+    }
+
+    return *it;
+}
+
 Track Project::createTrack(std::string name, TrackType type)
 {
     Track track {
@@ -488,6 +506,85 @@ bool Project::trimClipEndToTick(const std::string& clipId, std::int64_t endTick)
     return true;
 }
 
+std::optional<TimelineMarker> Project::createMarker(std::string name, std::int64_t tick)
+{
+    TimelineMarker marker {
+        "marker-" + std::to_string(nextMarkerNumber_),
+        std::move(name),
+        tick
+    };
+
+    if (!insertExistingMarker(marker)) {
+        return std::nullopt;
+    }
+
+    return marker;
+}
+
+bool Project::insertExistingMarker(const TimelineMarker& marker)
+{
+    if (marker.id.empty() || marker.name.empty() || !isValidMarkerTick(marker.tick)) {
+        return false;
+    }
+
+    if (findMarkerById(marker.id).has_value()) {
+        return false;
+    }
+
+    // 多个标记允许放在同一 tick；它们可能表达不同结构语义，例如“副歌”和“高潮”同点开始。
+    markers_.push_back(marker);
+    observeMarkerId(marker.id);
+    return true;
+}
+
+bool Project::removeMarkerById(const std::string& id)
+{
+    const auto oldSize = markers_.size();
+    markers_.erase(
+        std::remove_if(markers_.begin(), markers_.end(), [&](const TimelineMarker& marker) {
+            return marker.id == id;
+        }),
+        markers_.end());
+
+    return markers_.size() != oldSize;
+}
+
+bool Project::renameMarkerById(const std::string& id, std::string name)
+{
+    if (name.empty()) {
+        return false;
+    }
+
+    const auto it = std::find_if(markers_.begin(), markers_.end(), [&](const TimelineMarker& marker) {
+        return marker.id == id;
+    });
+
+    if (it == markers_.end()) {
+        return false;
+    }
+
+    it->name = std::move(name);
+    return true;
+}
+
+bool Project::moveMarkerToTick(const std::string& id, std::int64_t tick)
+{
+    if (!isValidMarkerTick(tick)) {
+        return false;
+    }
+
+    const auto it = std::find_if(markers_.begin(), markers_.end(), [&](const TimelineMarker& marker) {
+        return marker.id == id;
+    });
+
+    if (it == markers_.end() || it->tick == tick) {
+        return false;
+    }
+
+    it->tick = tick;
+    return true;
+}
+
 void Project::observeTrackId(const std::string& id)
 {
     constexpr std::string_view prefix = "track-";
@@ -521,6 +618,24 @@ void Project::observeClipId(const std::string& id)
 
     if (result.ec == std::errc{} && result.ptr == last && parsedNumber >= nextClipNumber_) {
         nextClipNumber_ = parsedNumber + 1;
+    }
+}
+
+void Project::observeMarkerId(const std::string& id)
+{
+    constexpr std::string_view prefix = "marker-";
+    if (id.rfind(prefix, 0) != 0) {
+        return;
+    }
+
+    int parsedNumber = 0;
+    const auto numberPart = std::string_view(id).substr(prefix.size());
+    const auto* first = numberPart.data();
+    const auto* last = first + numberPart.size();
+    const auto result = std::from_chars(first, last, parsedNumber);
+
+    if (result.ec == std::errc{} && result.ptr == last && parsedNumber >= nextMarkerNumber_) {
+        nextMarkerNumber_ = parsedNumber + 1;
     }
 }
 
@@ -596,6 +711,12 @@ bool isValidClipTiming(std::int64_t startTick, std::int64_t lengthTick)
 {
     // 时间线位置使用音乐 tick。起点允许为 0，但长度必须大于 0，避免零长度片段干扰后续调度。
     return startTick >= 0 && lengthTick > 0;
+}
+
+bool isValidMarkerTick(std::int64_t tick)
+{
+    // 标记是时间线上的点，因此允许 0；负数没有明确音乐含义，读取坏文件或 AI 命令时必须拒绝。
+    return tick >= 0;
 }
 
 }

@@ -75,11 +75,21 @@ struct TimelineClip {
     bool operator==(const TimelineClip&) const = default;
 };
 
+// TimelineMarker 是工程级时间线提示点，不属于任何轨道或片段。
+// 它只记录结构位置和名称；播放、速度图、拍号图和 MIDI 导出会在后续模块单独处理。
+struct TimelineMarker {
+    std::string id;
+    std::string name;
+    std::int64_t tick = 0;
+
+    bool operator==(const TimelineMarker&) const = default;
+};
+
 // Project 是 TrackLoom 自有工程格式的最小核心状态。
 // 后续 UI、AI 和导入器都应通过命令系统修改它，避免绕过验证、撤销和历史记录。
 class Project {
 public:
-    static constexpr int currentFormatVersion = 6;
+    static constexpr int currentFormatVersion = 7;
 
     explicit Project(std::string name = "Untitled");
 
@@ -91,6 +101,8 @@ public:
     std::optional<Track> findTrackById(const std::string& id) const;
     const std::vector<TimelineClip>& clips() const;
     std::optional<TimelineClip> findClipById(const std::string& id) const;
+    const std::vector<TimelineMarker>& markers() const;
+    std::optional<TimelineMarker> findMarkerById(const std::string& id) const;
 
     // createTrack 用于创建全新轨道，并分配本工程内稳定的可读 ID。
     Track createTrack(std::string name, TrackType type);
@@ -157,19 +169,35 @@ public:
     // trimClipEndToTick 向内移动片段右边界，并保持旧起点不变。
     bool trimClipEndToTick(const std::string& clipId, std::int64_t endTick);
 
+    // createMarker 创建工程级时间线标记。标记只表达结构位置，不影响播放或片段调度。
+    std::optional<TimelineMarker> createMarker(std::string name, std::int64_t tick);
+
+    // insertExistingMarker 用于撤销重做或读取文件时恢复已有 ID，避免重做后引用失效。
+    bool insertExistingMarker(const TimelineMarker& marker);
+    bool removeMarkerById(const std::string& id);
+
+    // renameMarkerById 和 moveMarkerToTick 只修改标记自身，不移动片段或轨道。
+    bool renameMarkerById(const std::string& id, std::string name);
+    bool moveMarkerToTick(const std::string& id, std::int64_t tick);
+
 private:
     int formatVersion_ = currentFormatVersion;
     std::string name_;
     std::vector<Track> tracks_;
     std::vector<TimelineClip> clips_;
+    std::vector<TimelineMarker> markers_;
     int nextTrackNumber_ = 1;
     int nextClipNumber_ = 1;
+    int nextMarkerNumber_ = 1;
 
     // 读取旧轨道 ID 后推进计数器，避免下一次新建轨道撞上已有 ID。
     void observeTrackId(const std::string& id);
 
     // 读取旧片段 ID 后推进计数器，避免下一次新建片段撞上已有 ID。
     void observeClipId(const std::string& id);
+
+    // 读取旧标记 ID 后推进计数器，避免下一次新建标记撞上已有 ID。
+    void observeMarkerId(const std::string& id);
 };
 
 std::string toString(TrackType type);
@@ -179,5 +207,6 @@ std::optional<ClipType> clipTypeFromString(const std::string& value);
 bool isValidTrackMixState(TrackMixState state);
 bool isValidTrackViewState(TrackType type, TrackViewState state);
 bool isValidClipTiming(std::int64_t startTick, std::int64_t lengthTick);
+bool isValidMarkerTick(std::int64_t tick);
 
 }

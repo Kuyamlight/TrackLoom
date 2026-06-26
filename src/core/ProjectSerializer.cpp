@@ -103,6 +103,13 @@ std::string saveProjectToText(const Project& project)
                << '\n';
     }
 
+    for (const auto& marker : project.markers()) {
+        output << "marker " << marker.id
+               << ' ' << marker.tick
+               << ' ' << marker.name
+               << '\n';
+    }
+
     return output.str();
 }
 
@@ -118,7 +125,7 @@ LoadProjectResult loadProjectFromText(const std::string& text)
     }
 
     std::istringstream header(line);
-    // v2 增加轨道播放状态；v3 增加轨道混音 gain；v4 增加 pan；v5 增加时间线片段；v6 增加轨道显示状态。
+    // v2 增加轨道播放状态；v3 增加轨道混音 gain；v4 增加 pan；v5 增加时间线片段；v6 增加轨道显示状态；v7 增加时间线标记。
     // 旧版本读取后使用当前内存默认值，避免老工程因为新增字段无法打开。
     if (!(header >> keyword >> version) || keyword != "trackloom_project" || version < 1 || version > Project::currentFormatVersion) {
         return LoadProjectResult::fail("Unsupported or invalid project header.");
@@ -251,6 +258,38 @@ LoadProjectResult loadProjectFromText(const std::string& text)
             clip.type = *type;
             if (!project.insertExistingClip(clip)) {
                 return LoadProjectResult::fail("Duplicate, invalid, or incompatible clip.");
+            }
+
+            continue;
+        }
+
+        if (startsWith(line, "marker ")) {
+            if (version < 7) {
+                return LoadProjectResult::fail("Timeline marker requires project version 7.");
+            }
+
+            std::istringstream markerLine(line);
+            TimelineMarker marker;
+            std::string tickToken;
+
+            if (!(markerLine >> keyword >> marker.id >> tickToken)) {
+                return LoadProjectResult::fail("Invalid marker record.");
+            }
+
+            if (!parseInt64Value(tickToken, marker.tick)) {
+                return LoadProjectResult::fail("Invalid marker value.");
+            }
+
+            std::getline(markerLine, marker.name);
+            if (!marker.name.empty() && marker.name.front() == ' ') {
+                marker.name.erase(0, 1);
+            }
+            if (marker.name.empty()) {
+                return LoadProjectResult::fail("Marker name is missing.");
+            }
+
+            if (!project.insertExistingMarker(marker)) {
+                return LoadProjectResult::fail("Duplicate or invalid marker.");
             }
 
             continue;

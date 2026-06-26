@@ -668,6 +668,74 @@ void projectRejectsInvalidClipTrims()
     require(unchangedClip->lengthTick == 480, "failed trim should not change length tick");
 }
 
+void newProjectStartsWithoutMarkers()
+{
+    trackloom::Project project("Markers");
+
+    require(project.markers().empty(), "new project should not contain timeline markers");
+}
+
+void projectCanCreateTimelineMarker()
+{
+    trackloom::Project project("Markers");
+
+    const auto marker = project.createMarker("Verse", 960);
+
+    require(marker.has_value(), "timeline marker should be created");
+    require(marker->id == "marker-1", "first marker id should be stable");
+    require(marker->name == "Verse", "marker should keep name");
+    require(marker->tick == 960, "marker should keep tick");
+    require(project.markers().size() == 1, "project should store created marker");
+    require(project.findMarkerById(marker->id).has_value(), "marker should be searchable by stable id");
+}
+
+void projectCanEditTimelineMarker()
+{
+    trackloom::Project project("Markers");
+    const auto marker = project.createMarker("Verse", 960);
+
+    require(marker.has_value(), "marker should be created before edit");
+    require(project.renameMarkerById(marker->id, "Chorus"), "marker rename should succeed");
+    require(project.moveMarkerToTick(marker->id, 1920), "marker move should succeed");
+
+    const auto editedMarker = project.findMarkerById(marker->id);
+    require(editedMarker.has_value(), "edited marker should still exist");
+    require(editedMarker->id == marker->id, "marker edit should keep stable id");
+    require(editedMarker->name == "Chorus", "marker rename should store new name");
+    require(editedMarker->tick == 1920, "marker move should store new tick");
+}
+
+void projectRejectsInvalidTimelineMarkers()
+{
+    trackloom::Project project("Markers");
+    const auto marker = project.createMarker("Verse", 960);
+    trackloom::TimelineMarker duplicateMarker;
+    trackloom::TimelineMarker missingIdMarker;
+
+    require(marker.has_value(), "marker should be created before invalid marker tests");
+    duplicateMarker.id = marker->id;
+    duplicateMarker.name = "Duplicate";
+    duplicateMarker.tick = 1920;
+    missingIdMarker.name = "Missing Id";
+    missingIdMarker.tick = 0;
+
+    require(!project.createMarker("", 0).has_value(), "marker should reject empty names");
+    require(!project.createMarker("Bad", -1).has_value(), "marker should reject negative tick");
+    require(!project.insertExistingMarker(duplicateMarker), "marker should reject duplicate id");
+    require(!project.insertExistingMarker(missingIdMarker), "marker should reject empty id");
+    require(!project.renameMarkerById(marker->id, ""), "marker should reject empty rename");
+    require(!project.renameMarkerById("missing-marker", "Name"), "missing marker rename should fail");
+    require(!project.moveMarkerToTick(marker->id, -1), "marker should reject negative move tick");
+    require(!project.moveMarkerToTick("missing-marker", 0), "missing marker move should fail");
+    require(!project.removeMarkerById("missing-marker"), "missing marker delete should fail");
+
+    const auto unchangedMarker = project.findMarkerById(marker->id);
+    require(unchangedMarker.has_value(), "invalid marker operations should keep original marker");
+    require(unchangedMarker->name == "Verse", "failed marker operations should keep original name");
+    require(unchangedMarker->tick == 960, "failed marker operations should keep original tick");
+    require(project.markers().size() == 1, "invalid marker operations should not add markers");
+}
+
 void renameClipCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Clips");
@@ -1008,6 +1076,122 @@ void invalidTrimClipCommandDoesNotModifyProject()
     require(project.findClipById(clip->id)->startTick == 0, "failed trim command should not change start");
     require(project.findClipById(clip->id)->lengthTick == 960, "failed trim command should not change length");
     require(!commands.canUndo(), "failed trim command should not enter undo stack");
+}
+
+void addMarkerCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Markers");
+    trackloom::CommandStack commands;
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::AddMarkerCommand>("Verse", 960));
+
+    require(result.success, "add marker command should succeed");
+    require(project.markers().size() == 1, "add marker command should store marker");
+    require(project.markers().front().id == "marker-1", "add marker command should create stable id");
+    require(project.markers().front().name == "Verse", "add marker command should keep marker name");
+    require(project.markers().front().tick == 960, "add marker command should keep marker tick");
+
+    require(commands.undo(project), "add marker undo should be available");
+    require(project.markers().empty(), "undo should remove marker");
+
+    require(commands.redo(project), "add marker redo should be available");
+    require(project.markers().size() == 1, "redo should restore marker");
+    require(project.markers().front().id == "marker-1", "redo should preserve marker id");
+}
+
+void renameMarkerCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Markers");
+    trackloom::CommandStack commands;
+    const auto marker = project.createMarker("Verse", 960);
+
+    require(marker.has_value(), "marker should be created before command rename");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::RenameMarkerCommand>(marker->id, "Chorus"));
+
+    require(result.success, "rename marker command should succeed");
+    require(project.findMarkerById(marker->id)->name == "Chorus", "rename command should update marker name");
+
+    require(commands.undo(project), "rename marker undo should be available");
+    require(project.findMarkerById(marker->id)->name == "Verse", "undo should restore marker name");
+
+    require(commands.redo(project), "rename marker redo should be available");
+    require(project.findMarkerById(marker->id)->name == "Chorus", "redo should restore marker name");
+}
+
+void moveMarkerCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Markers");
+    trackloom::CommandStack commands;
+    const auto marker = project.createMarker("Verse", 960);
+
+    require(marker.has_value(), "marker should be created before command move");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::MoveMarkerCommand>(marker->id, 1920));
+
+    require(result.success, "move marker command should succeed");
+    require(project.findMarkerById(marker->id)->tick == 1920, "move command should update marker tick");
+
+    require(commands.undo(project), "move marker undo should be available");
+    require(project.findMarkerById(marker->id)->tick == 960, "undo should restore marker tick");
+
+    require(commands.redo(project), "move marker redo should be available");
+    require(project.findMarkerById(marker->id)->tick == 1920, "redo should restore marker tick");
+}
+
+void deleteMarkerCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Markers");
+    trackloom::CommandStack commands;
+    const auto marker = project.createMarker("Verse", 960);
+
+    require(marker.has_value(), "marker should be created before command delete");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteMarkerCommand>(marker->id));
+
+    require(result.success, "delete marker command should succeed");
+    require(project.markers().empty(), "delete marker command should remove marker");
+
+    require(commands.undo(project), "delete marker undo should be available");
+    require(project.markers().size() == 1, "undo should restore marker");
+    require(project.markers().front() == *marker, "undo should restore complete marker state");
+
+    require(commands.redo(project), "delete marker redo should be available");
+    require(project.markers().empty(), "redo should delete marker again");
+}
+
+void invalidMarkerCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Markers");
+    trackloom::CommandStack commands;
+    const auto marker = project.createMarker("Verse", 960);
+
+    require(marker.has_value(), "marker should be created before invalid marker commands");
+    auto addEmptyNameResult = commands.execute(
+        project,
+        std::make_unique<trackloom::AddMarkerCommand>("", 0));
+    auto renameEmptyNameResult = commands.execute(
+        project,
+        std::make_unique<trackloom::RenameMarkerCommand>(marker->id, ""));
+    auto moveNegativeTickResult = commands.execute(
+        project,
+        std::make_unique<trackloom::MoveMarkerCommand>(marker->id, -1));
+    auto deleteMissingMarkerResult = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteMarkerCommand>("missing-marker"));
+
+    require(!addEmptyNameResult.success, "empty marker add command should fail");
+    require(!renameEmptyNameResult.success, "empty marker rename command should fail");
+    require(!moveNegativeTickResult.success, "negative marker move command should fail");
+    require(!deleteMissingMarkerResult.success, "missing marker delete command should fail");
+    require(project.markers().size() == 1, "failed marker commands should keep marker count");
+    require(project.markers().front() == *marker, "failed marker commands should not modify marker");
+    require(!commands.canUndo(), "failed marker commands should not enter undo stack");
 }
 
 void renameTrackCommandSupportsUndoAndRedo()
@@ -1356,7 +1540,7 @@ void projectCanRoundTripTrackRename()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 6\n") == 0, "track rename should use current project format version");
+    require(saved.find("trackloom_project 7\n") == 0, "track rename should use current project format version");
     require(loaded.project.has_value(), "project with renamed track should load");
     require(loaded.project->findTrackById(track.id).has_value(), "loaded project should keep renamed track id");
     require(loaded.project->findTrackById(track.id)->name == "Lead", "loaded project should keep renamed track name");
@@ -1406,7 +1590,7 @@ void projectCanRoundTripTrackReorder()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 6\n") == 0, "track reorder should use current project format version");
+    require(saved.find("trackloom_project 7\n") == 0, "track reorder should use current project format version");
     require(loaded.project.has_value(), "project with reordered tracks should load");
     require(loaded.project->tracks()[0].id == leadTrack.id, "loaded project should keep first track order");
     require(loaded.project->tracks()[1].id == vocalTrack.id, "loaded project should keep shifted track order");
@@ -1431,7 +1615,7 @@ void projectCanRoundTripTrackViewState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 6\n") == 0, "saved view project should use format version 6");
+    require(saved.find("trackloom_project 7\n") == 0, "saved view project should use current format version");
     require(saved.find("track_view_state " + leadTrack.id + " hidden=1 collapsed=0\n") != std::string::npos, "saved project should include hidden state");
     require(saved.find("track_view_state " + folderTrack.id + " hidden=1 collapsed=1\n") != std::string::npos, "saved project should include folder collapsed state");
     require(loaded.project.has_value(), "project with view state should load");
@@ -1452,7 +1636,7 @@ void projectCanRoundTripTrackPlaybackState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 6\n") == 0, "saved project should use format version 6");
+    require(saved.find("trackloom_project 7\n") == 0, "saved project should use current format version");
     require(loaded.project.has_value(), "project with playback state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
     require(loadedTrack.has_value(), "loaded project should contain track");
@@ -1472,7 +1656,7 @@ void projectCanRoundTripTrackMixState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 6\n") == 0, "saved mix project should use format version 6");
+    require(saved.find("trackloom_project 7\n") == 0, "saved mix project should use current format version");
     require(saved.find("track_mix_state " + track.id + " gain=0.25 pan=-0.5\n") != std::string::npos, "saved project should include track mix state");
     require(loaded.project.has_value(), "project with mix state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
@@ -1492,7 +1676,7 @@ void projectCanRoundTripTimelineClips()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 6\n") == 0, "saved clip project should use format version 6");
+    require(saved.find("trackloom_project 7\n") == 0, "saved clip project should use current format version");
     require(saved.find("clip clip-1 " + instrumentTrack.id + " Midi 0 960 Intro Melody\n") != std::string::npos, "saved project should include midi clip record");
     require(saved.find("clip clip-2 " + audioTrack.id + " Audio 960 1920 Vocal Take\n") != std::string::npos, "saved project should include audio clip record");
     require(loaded.project.has_value(), "project with clips should load");
@@ -1648,6 +1832,53 @@ void projectCanRoundTripTimelineClipTrim()
     require(loaded.project->findClipById(endTrimmedClip->id)->lengthTick == 480, "loaded end-trimmed clip should keep length");
 }
 
+void projectCanRoundTripTimelineMarkers()
+{
+    trackloom::Project project("Marker Song");
+    const auto introMarker = project.createMarker("Intro", 0);
+    const auto verseMarker = project.createMarker("Verse", 960);
+
+    require(introMarker.has_value(), "intro marker should be created before round trip");
+    require(verseMarker.has_value(), "verse marker should be created before round trip");
+    require(project.renameMarkerById(verseMarker->id, "Verse A"), "marker should rename before save");
+    require(project.moveMarkerToTick(verseMarker->id, 1920), "marker should move before save");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("trackloom_project 7\n") == 0, "saved marker project should use current format version");
+    require(saved.find("marker " + introMarker->id + " 0 Intro\n") != std::string::npos, "saved project should include intro marker");
+    require(saved.find("marker " + verseMarker->id + " 1920 Verse A\n") != std::string::npos, "saved project should include edited marker");
+    require(loaded.project.has_value(), "project with markers should load");
+    require(loaded.project->markers().size() == 2, "loaded project should keep markers");
+    require(loaded.project->findMarkerById(introMarker->id)->name == "Intro", "loaded intro marker should keep name");
+    require(loaded.project->findMarkerById(introMarker->id)->tick == 0, "loaded intro marker should keep tick");
+    require(loaded.project->findMarkerById(verseMarker->id)->name == "Verse A", "loaded edited marker should keep name with spaces");
+    require(loaded.project->findMarkerById(verseMarker->id)->tick == 1920, "loaded edited marker should keep moved tick");
+}
+
+void projectCanSaveAfterTimelineMarkerDeletion()
+{
+    trackloom::Project project("Deleted Marker Song");
+    trackloom::CommandStack commands;
+    const auto deletedMarker = project.createMarker("Deleted Intro", 0);
+    const auto keptMarker = project.createMarker("Kept Verse", 960);
+
+    require(deletedMarker.has_value(), "deleted marker should be created before save-delete test");
+    require(keptMarker.has_value(), "kept marker should be created before save-delete test");
+    require(commands.execute(project, std::make_unique<trackloom::DeleteMarkerCommand>(deletedMarker->id)).success, "delete marker should succeed before save");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("marker " + deletedMarker->id + " ") == std::string::npos, "saved project should omit deleted marker");
+    require(saved.find("marker " + keptMarker->id + " 960 Kept Verse\n") != std::string::npos, "saved project should keep unrelated marker");
+    require(loaded.project.has_value(), "project saved after marker deletion should load");
+    require(!loaded.project->findMarkerById(deletedMarker->id).has_value(), "loaded project should not contain deleted marker");
+    require(loaded.project->findMarkerById(keptMarker->id).has_value(), "loaded project should contain kept marker");
+    require(loaded.project->markers().size() == 1, "loaded project should contain only kept marker");
+}
+
 void versionOneProjectLoadsDefaultPlaybackState()
 {
     const std::string text =
@@ -1737,6 +1968,23 @@ void versionFiveProjectLoadsDefaultTrackViewState()
     require(!track->view.collapsed, "version 5 track should default to expanded");
 }
 
+void versionSixProjectLoadsWithoutTimelineMarkers()
+{
+    const std::string text =
+        "trackloom_project 6\n"
+        "name View Song\n"
+        "track track-1 Instrument Lead Piano\n"
+        "track_playback_state track-1 muted=0 soloed=0 disabled=0\n"
+        "track_mix_state track-1 gain=1 pan=0\n"
+        "track_view_state track-1 hidden=1 collapsed=0\n"
+        "clip clip-1 track-1 Midi 0 960 Intro\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(loaded.project.has_value(), "version 6 project should load without markers");
+    require(loaded.project->markers().empty(), "version 6 project should default to no markers");
+}
+
 void invalidTrackPlaybackStateRecordIsRejected()
 {
     const std::string text =
@@ -1795,6 +2043,19 @@ void invalidClipRecordIsRejected()
 
     require(!loaded.project.has_value(), "zero-length clip record should fail");
     require(!loaded.error.empty(), "invalid clip record should report an error");
+}
+
+void invalidMarkerRecordIsRejected()
+{
+    const std::string text =
+        "trackloom_project 7\n"
+        "name Broken Marker Song\n"
+        "marker marker-1 -1 Bad Marker\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(!loaded.project.has_value(), "negative marker tick should fail");
+    require(!loaded.error.empty(), "invalid marker record should report an error");
 }
 
 void projectCanRoundTripNamesWithSpaces()
@@ -2950,6 +3211,10 @@ int main()
         projectCanTrimClipStartWithinExistingRange();
         projectCanTrimClipEndWithinExistingRange();
         projectRejectsInvalidClipTrims();
+        newProjectStartsWithoutMarkers();
+        projectCanCreateTimelineMarker();
+        projectCanEditTimelineMarker();
+        projectRejectsInvalidTimelineMarkers();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
@@ -2965,6 +3230,11 @@ int main()
         trimClipStartCommandSupportsUndoAndRedo();
         trimClipEndCommandSupportsUndoAndRedo();
         invalidTrimClipCommandDoesNotModifyProject();
+        addMarkerCommandSupportsUndoAndRedo();
+        renameMarkerCommandSupportsUndoAndRedo();
+        moveMarkerCommandSupportsUndoAndRedo();
+        deleteMarkerCommandSupportsUndoAndRedo();
+        invalidMarkerCommandDoesNotModifyProject();
         renameTrackCommandSupportsUndoAndRedo();
         invalidRenameTrackCommandDoesNotModifyProject();
         deleteTrackCommandSupportsUndoAndRedo();
@@ -2993,15 +3263,19 @@ int main()
         projectCanRoundTripTimelineClipSplit();
         projectCanRoundTripTimelineClipDuplicate();
         projectCanRoundTripTimelineClipTrim();
+        projectCanRoundTripTimelineMarkers();
+        projectCanSaveAfterTimelineMarkerDeletion();
         versionOneProjectLoadsDefaultPlaybackState();
         versionTwoProjectLoadsDefaultMixState();
         versionThreeProjectLoadsDefaultPanState();
         versionFourProjectLoadsWithoutClips();
         versionFiveProjectLoadsDefaultTrackViewState();
+        versionSixProjectLoadsWithoutTimelineMarkers();
         invalidTrackPlaybackStateRecordIsRejected();
         invalidTrackMixStateRecordIsRejected();
         invalidTrackViewStateRecordIsRejected();
         invalidClipRecordIsRejected();
+        invalidMarkerRecordIsRejected();
         projectCanRoundTripNamesWithSpaces();
         invalidTextIsRejected();
         projectCanSaveAndLoadFromFile();

@@ -281,6 +281,70 @@ private:
     std::optional<std::int64_t> oldLengthTick_;
 };
 
+// AddMarkerCommand 创建工程级时间线标记，并保存首次创建出的 ID 用于重做。
+// 标记只表达歌曲结构位置，不改变播放、片段或轨道状态。
+class AddMarkerCommand final : public Command {
+public:
+    AddMarkerCommand(std::string markerName, std::int64_t tick);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string markerName_;
+    std::int64_t tick_ = 0;
+    std::optional<TimelineMarker> createdMarker_;
+};
+
+// RenameMarkerCommand 修改标记显示名称，并保存旧名称用于撤销。
+class RenameMarkerCommand final : public Command {
+public:
+    RenameMarkerCommand(std::string markerId, std::string newName);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string markerId_;
+    std::string newName_;
+    std::optional<std::string> oldName_;
+};
+
+// MoveMarkerCommand 修改标记在音乐时间线上的 tick，不移动任何片段内容。
+class MoveMarkerCommand final : public Command {
+public:
+    MoveMarkerCommand(std::string markerId, std::int64_t tick);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string markerId_;
+    std::int64_t tick_ = 0;
+    std::optional<std::int64_t> oldTick_;
+};
+
+// DeleteMarkerCommand 删除标记时保存完整对象，撤销后能恢复相同 ID 和位置。
+class DeleteMarkerCommand final : public Command {
+public:
+    explicit DeleteMarkerCommand(std::string markerId);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string markerId_;
+    std::optional<TimelineMarker> deletedMarker_;
+};
+
 // SetTrackPlaybackStateCommand 修改轨道播放状态，并保存旧状态用于撤销。
 // 静音、独奏和禁用属于播放开关，不负责表达音量或其他混音参数。
 class SetTrackPlaybackStateCommand final : public Command {

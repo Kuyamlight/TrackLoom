@@ -802,6 +802,212 @@ void TrimClipEndCommand::undo(Project& project)
     }
 }
 
+AddMarkerCommand::AddMarkerCommand(std::string markerName, std::int64_t tick)
+    : markerName_(std::move(markerName))
+    , tick_(tick)
+{
+}
+
+std::string AddMarkerCommand::name() const
+{
+    return "AddMarker";
+}
+
+CommandResult AddMarkerCommand::validate(const Project&) const
+{
+    if (markerName_.empty()) {
+        return CommandResult::fail("Marker name must not be empty.");
+    }
+
+    if (!isValidMarkerTick(tick_)) {
+        return CommandResult::fail("Marker tick is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult AddMarkerCommand::execute(Project& project)
+{
+    if (createdMarker_.has_value()) {
+        if (!project.insertExistingMarker(*createdMarker_)) {
+            return CommandResult::fail("Marker already exists or is no longer valid.");
+        }
+        return CommandResult::ok();
+    }
+
+    createdMarker_ = project.createMarker(markerName_, tick_);
+    if (!createdMarker_.has_value()) {
+        return CommandResult::fail("Marker could not be created.");
+    }
+
+    return CommandResult::ok();
+}
+
+void AddMarkerCommand::undo(Project& project)
+{
+    if (createdMarker_.has_value()) {
+        project.removeMarkerById(createdMarker_->id);
+    }
+}
+
+RenameMarkerCommand::RenameMarkerCommand(std::string markerId, std::string newName)
+    : markerId_(std::move(markerId))
+    , newName_(std::move(newName))
+{
+}
+
+std::string RenameMarkerCommand::name() const
+{
+    return "RenameMarker";
+}
+
+CommandResult RenameMarkerCommand::validate(const Project& project) const
+{
+    if (newName_.empty()) {
+        return CommandResult::fail("Marker name must not be empty.");
+    }
+
+    if (!project.findMarkerById(markerId_).has_value()) {
+        return CommandResult::fail("Marker does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult RenameMarkerCommand::execute(Project& project)
+{
+    const auto marker = project.findMarkerById(markerId_);
+    if (!marker.has_value()) {
+        return CommandResult::fail("Marker does not exist.");
+    }
+
+    if (newName_.empty()) {
+        return CommandResult::fail("Marker name must not be empty.");
+    }
+
+    if (!oldName_.has_value()) {
+        oldName_ = marker->name;
+    }
+
+    if (!project.renameMarkerById(markerId_, newName_)) {
+        return CommandResult::fail("Marker could not be renamed.");
+    }
+
+    return CommandResult::ok();
+}
+
+void RenameMarkerCommand::undo(Project& project)
+{
+    if (oldName_.has_value()) {
+        project.renameMarkerById(markerId_, *oldName_);
+    }
+}
+
+MoveMarkerCommand::MoveMarkerCommand(std::string markerId, std::int64_t tick)
+    : markerId_(std::move(markerId))
+    , tick_(tick)
+{
+}
+
+std::string MoveMarkerCommand::name() const
+{
+    return "MoveMarker";
+}
+
+CommandResult MoveMarkerCommand::validate(const Project& project) const
+{
+    const auto marker = project.findMarkerById(markerId_);
+    if (!marker.has_value()) {
+        return CommandResult::fail("Marker does not exist.");
+    }
+
+    if (!isValidMarkerTick(tick_)) {
+        return CommandResult::fail("Marker tick is invalid.");
+    }
+
+    if (marker->tick == tick_) {
+        return CommandResult::fail("Marker is already at target tick.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult MoveMarkerCommand::execute(Project& project)
+{
+    const auto marker = project.findMarkerById(markerId_);
+    if (!marker.has_value()) {
+        return CommandResult::fail("Marker does not exist.");
+    }
+
+    if (!isValidMarkerTick(tick_)) {
+        return CommandResult::fail("Marker tick is invalid.");
+    }
+
+    if (marker->tick == tick_) {
+        return CommandResult::fail("Marker is already at target tick.");
+    }
+
+    if (!oldTick_.has_value()) {
+        oldTick_ = marker->tick;
+    }
+
+    if (!project.moveMarkerToTick(markerId_, tick_)) {
+        return CommandResult::fail("Marker could not be moved.");
+    }
+
+    return CommandResult::ok();
+}
+
+void MoveMarkerCommand::undo(Project& project)
+{
+    if (oldTick_.has_value()) {
+        project.moveMarkerToTick(markerId_, *oldTick_);
+    }
+}
+
+DeleteMarkerCommand::DeleteMarkerCommand(std::string markerId)
+    : markerId_(std::move(markerId))
+{
+}
+
+std::string DeleteMarkerCommand::name() const
+{
+    return "DeleteMarker";
+}
+
+CommandResult DeleteMarkerCommand::validate(const Project& project) const
+{
+    if (!project.findMarkerById(markerId_).has_value()) {
+        return CommandResult::fail("Marker does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult DeleteMarkerCommand::execute(Project& project)
+{
+    if (!deletedMarker_.has_value()) {
+        const auto marker = project.findMarkerById(markerId_);
+        if (!marker.has_value()) {
+            return CommandResult::fail("Marker does not exist.");
+        }
+        deletedMarker_ = *marker;
+    }
+
+    if (!project.removeMarkerById(deletedMarker_->id)) {
+        return CommandResult::fail("Marker could not be deleted.");
+    }
+
+    return CommandResult::ok();
+}
+
+void DeleteMarkerCommand::undo(Project& project)
+{
+    if (deletedMarker_.has_value()) {
+        project.insertExistingMarker(*deletedMarker_);
+    }
+}
+
 SetTrackPlaybackStateCommand::SetTrackPlaybackStateCommand(std::string trackId, TrackPlaybackState newState)
     : trackId_(std::move(trackId))
     , newState_(newState)
