@@ -274,6 +274,133 @@ void invalidAddClipCommandDoesNotModifyProject()
     require(!commands.canUndo(), "failed clip command should not enter undo stack");
 }
 
+void projectCanRenameClip()
+{
+    trackloom::Project project("Clips");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before rename");
+    require(project.renameClipById(clip->id, "Verse"), "clip rename should succeed");
+
+    const auto renamedClip = project.findClipById(clip->id);
+    require(renamedClip.has_value(), "renamed clip should still exist");
+    require(renamedClip->name == "Verse", "clip should keep renamed value");
+    require(renamedClip->trackId == track.id, "rename should not change track ownership");
+    require(renamedClip->type == trackloom::ClipType::Midi, "rename should not change clip type");
+    require(renamedClip->startTick == 0, "rename should not change start tick");
+    require(renamedClip->lengthTick == 960, "rename should not change length tick");
+
+    require(!project.renameClipById(clip->id, ""), "empty clip name should fail");
+    require(!project.renameClipById("missing-clip", "Name"), "missing clip rename should fail");
+    require(project.findClipById(clip->id)->name == "Verse", "failed rename should not modify clip");
+}
+
+void projectCanSetClipTiming()
+{
+    trackloom::Project project("Clips");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before timing update");
+    require(project.setClipTiming(clip->id, 480, 1920), "clip timing update should succeed");
+
+    const auto retimedClip = project.findClipById(clip->id);
+    require(retimedClip.has_value(), "retimed clip should still exist");
+    require(retimedClip->name == "Intro", "timing update should not change name");
+    require(retimedClip->trackId == track.id, "timing update should not change track ownership");
+    require(retimedClip->startTick == 480, "clip should keep new start tick");
+    require(retimedClip->lengthTick == 1920, "clip should keep new length tick");
+
+    require(!project.setClipTiming(clip->id, -1, 960), "negative start should fail");
+    require(!project.setClipTiming(clip->id, 0, 0), "zero length should fail");
+    require(!project.setClipTiming("missing-clip", 0, 960), "missing clip timing should fail");
+    require(project.findClipById(clip->id)->startTick == 480, "failed timing update should not change start tick");
+    require(project.findClipById(clip->id)->lengthTick == 1920, "failed timing update should not change length tick");
+}
+
+void renameClipCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before command rename");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::RenameClipCommand>(clip->id, "Verse"));
+
+    require(result.success, "rename clip command should succeed");
+    require(project.findClipById(clip->id)->name == "Verse", "command should rename clip");
+
+    require(commands.undo(project), "rename clip undo should be available");
+    require(project.findClipById(clip->id)->name == "Intro", "undo should restore old clip name");
+
+    require(commands.redo(project), "rename clip redo should be available");
+    require(project.findClipById(clip->id)->name == "Verse", "redo should restore new clip name");
+}
+
+void invalidRenameClipCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before invalid command rename");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::RenameClipCommand>(clip->id, ""));
+
+    require(!result.success, "empty clip rename command should fail");
+    require(project.findClipById(clip->id)->name == "Intro", "failed rename command should not modify clip");
+    require(!commands.canUndo(), "failed rename command should not enter undo stack");
+}
+
+void setClipTimingCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before command timing update");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetClipTimingCommand>(clip->id, 480, 1920));
+
+    require(result.success, "set clip timing command should succeed");
+    require(project.findClipById(clip->id)->startTick == 480, "command should update start tick");
+    require(project.findClipById(clip->id)->lengthTick == 1920, "command should update length tick");
+
+    require(commands.undo(project), "set clip timing undo should be available");
+    require(project.findClipById(clip->id)->startTick == 0, "undo should restore old start tick");
+    require(project.findClipById(clip->id)->lengthTick == 960, "undo should restore old length tick");
+
+    require(commands.redo(project), "set clip timing redo should be available");
+    require(project.findClipById(clip->id)->startTick == 480, "redo should restore new start tick");
+    require(project.findClipById(clip->id)->lengthTick == 1920, "redo should restore new length tick");
+}
+
+void invalidSetClipTimingCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before invalid command timing update");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetClipTimingCommand>(clip->id, 0, 0));
+
+    require(!result.success, "zero-length timing command should fail");
+    require(project.findClipById(clip->id)->startTick == 0, "failed timing command should not modify start tick");
+    require(project.findClipById(clip->id)->lengthTick == 960, "failed timing command should not modify length tick");
+    require(!commands.canUndo(), "failed timing command should not enter undo stack");
+}
+
 void newTrackPlaybackStateStartsDefault()
 {
     trackloom::Project project("Playback");
@@ -471,6 +598,27 @@ void projectCanRoundTripTimelineClips()
     require(audioClip.type == trackloom::ClipType::Audio, "loaded audio clip should keep type");
     require(audioClip.startTick == 960, "loaded audio clip should keep start tick");
     require(audioClip.lengthTick == 1920, "loaded audio clip should keep length tick");
+}
+
+void projectCanRoundTripTimelineClipEdits()
+{
+    trackloom::Project project("Edited Clip Song");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before edit round trip");
+    require(project.renameClipById(clip->id, "Verse"), "clip rename should succeed before save");
+    require(project.setClipTiming(clip->id, 480, 1920), "clip timing should update before save");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("clip " + clip->id + " " + track.id + " Midi 480 1920 Verse\n") != std::string::npos, "saved project should include edited clip record");
+    require(loaded.project.has_value(), "project with edited clip should load");
+    require(loaded.project->clips().size() == 1, "loaded project should keep edited clip");
+    require(loaded.project->clips().front().name == "Verse", "loaded edited clip should keep name");
+    require(loaded.project->clips().front().startTick == 480, "loaded edited clip should keep start tick");
+    require(loaded.project->clips().front().lengthTick == 1920, "loaded edited clip should keep length tick");
 }
 
 void versionOneProjectLoadsDefaultPlaybackState()
@@ -1700,6 +1848,12 @@ int main()
         removingTrackRemovesItsClips();
         addClipCommandSupportsUndoAndRedo();
         invalidAddClipCommandDoesNotModifyProject();
+        projectCanRenameClip();
+        projectCanSetClipTiming();
+        renameClipCommandSupportsUndoAndRedo();
+        invalidRenameClipCommandDoesNotModifyProject();
+        setClipTimingCommandSupportsUndoAndRedo();
+        invalidSetClipTimingCommandDoesNotModifyProject();
         newTrackPlaybackStateStartsDefault();
         setTrackPlaybackStateCommandSupportsUndoAndRedo();
         invalidPlaybackStateCommandDoesNotModifyProject();
@@ -1710,6 +1864,7 @@ int main()
         projectCanRoundTripTrackPlaybackState();
         projectCanRoundTripTrackMixState();
         projectCanRoundTripTimelineClips();
+        projectCanRoundTripTimelineClipEdits();
         versionOneProjectLoadsDefaultPlaybackState();
         versionTwoProjectLoadsDefaultMixState();
         versionThreeProjectLoadsDefaultPanState();

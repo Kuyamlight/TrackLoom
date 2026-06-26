@@ -106,6 +106,12 @@ public:
     bool insertExistingClip(const TimelineClip& clip);
     bool removeClipById(const std::string& id);
 
+    // renameClipById 只修改片段显示名称；片段不存在或名称为空时保持工程不变。
+    bool renameClipById(const std::string& id, std::string name);
+
+    // setClipTiming 只修改片段音乐时间范围；非法 tick 会被拒绝，避免坏命令污染工程。
+    bool setClipTiming(const std::string& id, std::int64_t startTick, std::int64_t lengthTick);
+
 private:
     int formatVersion_ = currentFormatVersion;
     std::string name_;

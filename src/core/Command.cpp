@@ -193,6 +193,114 @@ void AddClipCommand::undo(Project& project)
     }
 }
 
+RenameClipCommand::RenameClipCommand(std::string clipId, std::string newName)
+    : clipId_(std::move(clipId))
+    , newName_(std::move(newName))
+{
+}
+
+std::string RenameClipCommand::name() const
+{
+    return "RenameClip";
+}
+
+CommandResult RenameClipCommand::validate(const Project& project) const
+{
+    if (newName_.empty()) {
+        return CommandResult::fail("Clip name must not be empty.");
+    }
+
+    if (!project.findClipById(clipId_).has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult RenameClipCommand::execute(Project& project)
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    if (newName_.empty()) {
+        return CommandResult::fail("Clip name must not be empty.");
+    }
+
+    if (!oldName_.has_value()) {
+        oldName_ = clip->name;
+    }
+
+    if (!project.renameClipById(clipId_, newName_)) {
+        return CommandResult::fail("Clip could not be renamed.");
+    }
+
+    return CommandResult::ok();
+}
+
+void RenameClipCommand::undo(Project& project)
+{
+    if (oldName_.has_value()) {
+        project.renameClipById(clipId_, *oldName_);
+    }
+}
+
+SetClipTimingCommand::SetClipTimingCommand(std::string clipId, std::int64_t startTick, std::int64_t lengthTick)
+    : clipId_(std::move(clipId))
+    , startTick_(startTick)
+    , lengthTick_(lengthTick)
+{
+}
+
+std::string SetClipTimingCommand::name() const
+{
+    return "SetClipTiming";
+}
+
+CommandResult SetClipTimingCommand::validate(const Project& project) const
+{
+    if (!isValidClipTiming(startTick_, lengthTick_)) {
+        return CommandResult::fail("Clip timing is invalid.");
+    }
+
+    if (!project.findClipById(clipId_).has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult SetClipTimingCommand::execute(Project& project)
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    if (!isValidClipTiming(startTick_, lengthTick_)) {
+        return CommandResult::fail("Clip timing is invalid.");
+    }
+
+    if (!oldStartTick_.has_value() || !oldLengthTick_.has_value()) {
+        oldStartTick_ = clip->startTick;
+        oldLengthTick_ = clip->lengthTick;
+    }
+
+    if (!project.setClipTiming(clipId_, startTick_, lengthTick_)) {
+        return CommandResult::fail("Clip timing is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+void SetClipTimingCommand::undo(Project& project)
+{
+    if (oldStartTick_.has_value() && oldLengthTick_.has_value()) {
+        project.setClipTiming(clipId_, *oldStartTick_, *oldLengthTick_);
+    }
+}
+
 SetTrackPlaybackStateCommand::SetTrackPlaybackStateCommand(std::string trackId, TrackPlaybackState newState)
     : trackId_(std::move(trackId))
     , newState_(newState)

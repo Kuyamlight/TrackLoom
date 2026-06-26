@@ -89,6 +89,42 @@ private:
     std::optional<TimelineClip> createdClip_;
 };
 
+// RenameClipCommand 修改片段名称，并保存旧名称用于撤销。
+// 片段名称是用户和 AI 都会读写的可见标识，必须通过命令系统进入历史记录。
+class RenameClipCommand final : public Command {
+public:
+    RenameClipCommand(std::string clipId, std::string newName);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string clipId_;
+    std::string newName_;
+    std::optional<std::string> oldName_;
+};
+
+// SetClipTimingCommand 修改片段在音乐时间线上的起点和长度。
+// 它只处理片段外壳的 tick 范围，不负责 MIDI 事件、音频素材或播放调度。
+class SetClipTimingCommand final : public Command {
+public:
+    SetClipTimingCommand(std::string clipId, std::int64_t startTick, std::int64_t lengthTick);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string clipId_;
+    std::int64_t startTick_ = 0;
+    std::int64_t lengthTick_ = 0;
+    std::optional<std::int64_t> oldStartTick_;
+    std::optional<std::int64_t> oldLengthTick_;
+};
+
 // SetTrackPlaybackStateCommand 修改轨道播放状态，并保存旧状态用于撤销。
 // 静音、独奏和禁用属于播放开关，不负责表达音量或其他混音参数。
 class SetTrackPlaybackStateCommand final : public Command {

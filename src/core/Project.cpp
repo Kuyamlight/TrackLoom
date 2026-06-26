@@ -221,6 +221,43 @@ bool Project::removeClipById(const std::string& id)
     return clips_.size() != oldSize;
 }
 
+bool Project::renameClipById(const std::string& id, std::string name)
+{
+    if (name.empty()) {
+        return false;
+    }
+
+    const auto it = std::find_if(clips_.begin(), clips_.end(), [&](const TimelineClip& clip) {
+        return clip.id == id;
+    });
+
+    if (it == clips_.end()) {
+        return false;
+    }
+
+    it->name = std::move(name);
+    return true;
+}
+
+bool Project::setClipTiming(const std::string& id, std::int64_t startTick, std::int64_t lengthTick)
+{
+    if (!isValidClipTiming(startTick, lengthTick)) {
+        return false;
+    }
+
+    const auto it = std::find_if(clips_.begin(), clips_.end(), [&](const TimelineClip& clip) {
+        return clip.id == id;
+    });
+
+    if (it == clips_.end()) {
+        return false;
+    }
+
+    it->startTick = startTick;
+    it->lengthTick = lengthTick;
+    return true;
+}
+
 void Project::observeTrackId(const std::string& id)
 {
     constexpr std::string_view prefix = "track-";
