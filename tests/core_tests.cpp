@@ -489,6 +489,65 @@ void projectRejectsInvalidClipDuplicates()
     require(project.findClipById(clip->id)->lengthTick == 480, "failed duplicate should not change source length");
 }
 
+void projectCanTrimClipStartWithinExistingRange()
+{
+    trackloom::Project project("Clips");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before start trim");
+    require(project.trimClipStartToTick(clip->id, 240), "clip start trim should succeed");
+
+    const auto trimmedClip = project.findClipById(clip->id);
+    require(trimmedClip.has_value(), "trimmed clip should still exist");
+    require(trimmedClip->id == clip->id, "start trim should keep clip id");
+    require(trimmedClip->trackId == track.id, "start trim should keep track");
+    require(trimmedClip->name == "Intro", "start trim should keep name");
+    require(trimmedClip->type == trackloom::ClipType::Midi, "start trim should keep type");
+    require(trimmedClip->startTick == 240, "start trim should update start tick");
+    require(trimmedClip->lengthTick == 720, "start trim should preserve old end tick");
+}
+
+void projectCanTrimClipEndWithinExistingRange()
+{
+    trackloom::Project project("Clips");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 120, 960);
+
+    require(clip.has_value(), "clip should be created before end trim");
+    require(project.trimClipEndToTick(clip->id, 600), "clip end trim should succeed");
+
+    const auto trimmedClip = project.findClipById(clip->id);
+    require(trimmedClip.has_value(), "end-trimmed clip should still exist");
+    require(trimmedClip->startTick == 120, "end trim should keep start tick");
+    require(trimmedClip->lengthTick == 480, "end trim should update length");
+    require(trimmedClip->name == "Intro", "end trim should keep name");
+}
+
+void projectRejectsInvalidClipTrims()
+{
+    trackloom::Project project("Clips");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 120, 480);
+
+    require(clip.has_value(), "clip should be created before invalid trims");
+    require(!project.trimClipStartToTick("missing-clip", 240), "missing clip start trim should fail");
+    require(!project.trimClipEndToTick("missing-clip", 240), "missing clip end trim should fail");
+    require(!project.trimClipStartToTick(clip->id, 119), "start trim before start should fail");
+    require(!project.trimClipStartToTick(clip->id, 120), "start trim at start should fail");
+    require(!project.trimClipStartToTick(clip->id, 600), "start trim at end should fail");
+    require(!project.trimClipStartToTick(clip->id, 601), "start trim after end should fail");
+    require(!project.trimClipEndToTick(clip->id, 119), "end trim before start should fail");
+    require(!project.trimClipEndToTick(clip->id, 120), "end trim at start should fail");
+    require(!project.trimClipEndToTick(clip->id, 600), "end trim at end should fail");
+    require(!project.trimClipEndToTick(clip->id, 601), "end trim after end should fail");
+
+    const auto unchangedClip = project.findClipById(clip->id);
+    require(unchangedClip.has_value(), "failed trim should keep original clip");
+    require(unchangedClip->startTick == 120, "failed trim should not change start tick");
+    require(unchangedClip->lengthTick == 480, "failed trim should not change length tick");
+}
+
 void renameClipCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Clips");
@@ -761,6 +820,74 @@ void invalidDuplicateClipCommandDoesNotModifyProject()
     require(project.clips().size() == 1, "failed duplicate command should not add clips");
     require(project.findClipById(clip->id)->trackId == instrument.id, "failed duplicate command should not move source");
     require(!commands.canUndo(), "failed duplicate command should not enter undo stack");
+}
+
+void trimClipStartCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before command start trim");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::TrimClipStartCommand>(clip->id, 240));
+
+    require(result.success, "trim clip start command should succeed");
+    require(project.findClipById(clip->id)->startTick == 240, "start trim command should update start");
+    require(project.findClipById(clip->id)->lengthTick == 720, "start trim command should preserve old end");
+
+    require(commands.undo(project), "trim clip start undo should be available");
+    require(project.findClipById(clip->id)->startTick == 0, "undo should restore original start");
+    require(project.findClipById(clip->id)->lengthTick == 960, "undo should restore original length");
+
+    require(commands.redo(project), "trim clip start redo should be available");
+    require(project.findClipById(clip->id)->startTick == 240, "redo should restore trimmed start");
+    require(project.findClipById(clip->id)->lengthTick == 720, "redo should restore trimmed length");
+}
+
+void trimClipEndCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 120, 960);
+
+    require(clip.has_value(), "clip should be created before command end trim");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::TrimClipEndCommand>(clip->id, 600));
+
+    require(result.success, "trim clip end command should succeed");
+    require(project.findClipById(clip->id)->startTick == 120, "end trim command should keep start");
+    require(project.findClipById(clip->id)->lengthTick == 480, "end trim command should update length");
+
+    require(commands.undo(project), "trim clip end undo should be available");
+    require(project.findClipById(clip->id)->startTick == 120, "undo should keep original start");
+    require(project.findClipById(clip->id)->lengthTick == 960, "undo should restore original length");
+
+    require(commands.redo(project), "trim clip end redo should be available");
+    require(project.findClipById(clip->id)->startTick == 120, "redo should keep start");
+    require(project.findClipById(clip->id)->lengthTick == 480, "redo should restore trimmed length");
+}
+
+void invalidTrimClipCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before invalid command trim");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::TrimClipStartCommand>(clip->id, 960));
+
+    require(!result.success, "trim at clip end should fail validation");
+    require(project.findClipById(clip->id)->startTick == 0, "failed trim command should not change start");
+    require(project.findClipById(clip->id)->lengthTick == 960, "failed trim command should not change length");
+    require(!commands.canUndo(), "failed trim command should not enter undo stack");
 }
 
 void newTrackPlaybackStateStartsDefault()
@@ -1069,6 +1196,30 @@ void projectCanRoundTripTimelineClipDuplicate()
     require(loaded.project->findClipById(duplicate->id)->trackId == targetTrack.id, "loaded duplicate should keep target track");
     require(loaded.project->findClipById(duplicate->id)->startTick == 1920, "loaded duplicate should keep start tick");
     require(loaded.project->findClipById(duplicate->id)->lengthTick == 960, "loaded duplicate should keep source length");
+}
+
+void projectCanRoundTripTimelineClipTrim()
+{
+    trackloom::Project project("Trim Clip Song");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto startTrimmedClip = project.createClip(track.id, "Start Trimmed", trackloom::ClipType::Midi, 0, 960);
+    const auto endTrimmedClip = project.createClip(track.id, "End Trimmed", trackloom::ClipType::Midi, 960, 960);
+
+    require(startTrimmedClip.has_value(), "start-trimmed clip should be created before round trip");
+    require(endTrimmedClip.has_value(), "end-trimmed clip should be created before round trip");
+    require(project.trimClipStartToTick(startTrimmedClip->id, 240), "start trim should succeed before save");
+    require(project.trimClipEndToTick(endTrimmedClip->id, 1440), "end trim should succeed before save");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("clip " + startTrimmedClip->id + " " + track.id + " Midi 240 720 Start Trimmed\n") != std::string::npos, "saved project should include start-trimmed clip");
+    require(saved.find("clip " + endTrimmedClip->id + " " + track.id + " Midi 960 480 End Trimmed\n") != std::string::npos, "saved project should include end-trimmed clip");
+    require(loaded.project.has_value(), "project with trimmed clips should load");
+    require(loaded.project->findClipById(startTrimmedClip->id)->startTick == 240, "loaded start-trimmed clip should keep start");
+    require(loaded.project->findClipById(startTrimmedClip->id)->lengthTick == 720, "loaded start-trimmed clip should keep length");
+    require(loaded.project->findClipById(endTrimmedClip->id)->startTick == 960, "loaded end-trimmed clip should keep start");
+    require(loaded.project->findClipById(endTrimmedClip->id)->lengthTick == 480, "loaded end-trimmed clip should keep length");
 }
 
 void versionOneProjectLoadsDefaultPlaybackState()
@@ -2309,6 +2460,9 @@ int main()
         projectCanDuplicateMidiClipToInstrumentTrack();
         projectCanDuplicateAudioClipToAudioTrack();
         projectRejectsInvalidClipDuplicates();
+        projectCanTrimClipStartWithinExistingRange();
+        projectCanTrimClipEndWithinExistingRange();
+        projectRejectsInvalidClipTrims();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
@@ -2321,6 +2475,9 @@ int main()
         invalidSplitClipCommandDoesNotModifyProject();
         duplicateClipCommandSupportsUndoAndRedo();
         invalidDuplicateClipCommandDoesNotModifyProject();
+        trimClipStartCommandSupportsUndoAndRedo();
+        trimClipEndCommandSupportsUndoAndRedo();
+        invalidTrimClipCommandDoesNotModifyProject();
         newTrackPlaybackStateStartsDefault();
         setTrackPlaybackStateCommandSupportsUndoAndRedo();
         invalidPlaybackStateCommandDoesNotModifyProject();
@@ -2336,6 +2493,7 @@ int main()
         projectCanRoundTripTimelineClipTrackMove();
         projectCanRoundTripTimelineClipSplit();
         projectCanRoundTripTimelineClipDuplicate();
+        projectCanRoundTripTimelineClipTrim();
         versionOneProjectLoadsDefaultPlaybackState();
         versionTwoProjectLoadsDefaultMixState();
         versionThreeProjectLoadsDefaultPanState();

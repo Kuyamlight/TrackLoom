@@ -124,6 +124,12 @@ public:
         std::string targetTrackId,
         std::int64_t startTick);
 
+    // trimClipStartToTick 向内移动片段左边界，并保持旧终点不变。
+    bool trimClipStartToTick(const std::string& clipId, std::int64_t startTick);
+
+    // trimClipEndToTick 向内移动片段右边界，并保持旧起点不变。
+    bool trimClipEndToTick(const std::string& clipId, std::int64_t endTick);
+
 private:
     int formatVersion_ = currentFormatVersion;
     std::string name_;

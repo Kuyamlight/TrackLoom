@@ -528,6 +528,110 @@ void DuplicateClipCommand::undo(Project& project)
     }
 }
 
+TrimClipStartCommand::TrimClipStartCommand(std::string clipId, std::int64_t startTick)
+    : clipId_(std::move(clipId))
+    , startTick_(startTick)
+{
+}
+
+std::string TrimClipStartCommand::name() const
+{
+    return "TrimClipStart";
+}
+
+CommandResult TrimClipStartCommand::validate(const Project& project) const
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    const auto clipEndTick = clip->startTick + clip->lengthTick;
+    if (startTick_ <= clip->startTick || startTick_ >= clipEndTick) {
+        return CommandResult::fail("Trim start tick must be inside the clip.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult TrimClipStartCommand::execute(Project& project)
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    if (!oldStartTick_.has_value() || !oldLengthTick_.has_value()) {
+        oldStartTick_ = clip->startTick;
+        oldLengthTick_ = clip->lengthTick;
+    }
+
+    if (!project.trimClipStartToTick(clipId_, startTick_)) {
+        return CommandResult::fail("Clip start could not be trimmed.");
+    }
+
+    return CommandResult::ok();
+}
+
+void TrimClipStartCommand::undo(Project& project)
+{
+    if (oldStartTick_.has_value() && oldLengthTick_.has_value()) {
+        project.setClipTiming(clipId_, *oldStartTick_, *oldLengthTick_);
+    }
+}
+
+TrimClipEndCommand::TrimClipEndCommand(std::string clipId, std::int64_t endTick)
+    : clipId_(std::move(clipId))
+    , endTick_(endTick)
+{
+}
+
+std::string TrimClipEndCommand::name() const
+{
+    return "TrimClipEnd";
+}
+
+CommandResult TrimClipEndCommand::validate(const Project& project) const
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    const auto clipEndTick = clip->startTick + clip->lengthTick;
+    if (endTick_ <= clip->startTick || endTick_ >= clipEndTick) {
+        return CommandResult::fail("Trim end tick must be inside the clip.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult TrimClipEndCommand::execute(Project& project)
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    if (!oldStartTick_.has_value() || !oldLengthTick_.has_value()) {
+        oldStartTick_ = clip->startTick;
+        oldLengthTick_ = clip->lengthTick;
+    }
+
+    if (!project.trimClipEndToTick(clipId_, endTick_)) {
+        return CommandResult::fail("Clip end could not be trimmed.");
+    }
+
+    return CommandResult::ok();
+}
+
+void TrimClipEndCommand::undo(Project& project)
+{
+    if (oldStartTick_.has_value() && oldLengthTick_.has_value()) {
+        project.setClipTiming(clipId_, *oldStartTick_, *oldLengthTick_);
+    }
+}
+
 SetTrackPlaybackStateCommand::SetTrackPlaybackStateCommand(std::string trackId, TrackPlaybackState newState)
     : trackId_(std::move(trackId))
     , newState_(newState)

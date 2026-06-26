@@ -194,6 +194,40 @@ private:
     std::optional<TimelineClip> createdClip_;
 };
 
+// TrimClipStartCommand 向内修剪片段左边界，并保存旧时间范围用于撤销。
+class TrimClipStartCommand final : public Command {
+public:
+    TrimClipStartCommand(std::string clipId, std::int64_t startTick);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string clipId_;
+    std::int64_t startTick_ = 0;
+    std::optional<std::int64_t> oldStartTick_;
+    std::optional<std::int64_t> oldLengthTick_;
+};
+
+// TrimClipEndCommand 向内修剪片段右边界，并保存旧时间范围用于撤销。
+class TrimClipEndCommand final : public Command {
+public:
+    TrimClipEndCommand(std::string clipId, std::int64_t endTick);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string clipId_;
+    std::int64_t endTick_ = 0;
+    std::optional<std::int64_t> oldStartTick_;
+    std::optional<std::int64_t> oldLengthTick_;
+};
+
 // SetTrackPlaybackStateCommand 修改轨道播放状态，并保存旧状态用于撤销。
 // 静音、独奏和禁用属于播放开关，不负责表达音量或其他混音参数。
 class SetTrackPlaybackStateCommand final : public Command {

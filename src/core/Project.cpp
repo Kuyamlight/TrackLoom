@@ -344,6 +344,56 @@ std::optional<TimelineClip> Project::duplicateClipToTrackAtTick(
     return duplicate;
 }
 
+bool Project::trimClipStartToTick(const std::string& clipId, std::int64_t startTick)
+{
+    const auto it = std::find_if(clips_.begin(), clips_.end(), [&](const TimelineClip& clip) {
+        return clip.id == clipId;
+    });
+
+    if (it == clips_.end()) {
+        return false;
+    }
+
+    const auto oldEndTick = it->startTick + it->lengthTick;
+    if (startTick <= it->startTick || startTick >= oldEndTick) {
+        return false;
+    }
+
+    const auto newLength = oldEndTick - startTick;
+    if (!isValidClipTiming(startTick, newLength)) {
+        return false;
+    }
+
+    // 当前没有素材偏移模型，所以修剪只向内缩短片段外壳，不表达向外扩展。
+    it->startTick = startTick;
+    it->lengthTick = newLength;
+    return true;
+}
+
+bool Project::trimClipEndToTick(const std::string& clipId, std::int64_t endTick)
+{
+    const auto it = std::find_if(clips_.begin(), clips_.end(), [&](const TimelineClip& clip) {
+        return clip.id == clipId;
+    });
+
+    if (it == clips_.end()) {
+        return false;
+    }
+
+    const auto oldEndTick = it->startTick + it->lengthTick;
+    if (endTick <= it->startTick || endTick >= oldEndTick) {
+        return false;
+    }
+
+    const auto newLength = endTick - it->startTick;
+    if (!isValidClipTiming(it->startTick, newLength)) {
+        return false;
+    }
+
+    it->lengthTick = newLength;
+    return true;
+}
+
 void Project::observeTrackId(const std::string& id)
 {
     constexpr std::string_view prefix = "track-";
