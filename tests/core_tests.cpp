@@ -401,6 +401,59 @@ void invalidSetClipTimingCommandDoesNotModifyProject()
     require(!commands.canUndo(), "failed timing command should not enter undo stack");
 }
 
+void deleteClipCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto firstTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto secondTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto firstClip = project.createClip(firstTrack.id, "Lead Intro", trackloom::ClipType::Midi, 0, 960);
+    const auto secondClip = project.createClip(secondTrack.id, "Pad Intro", trackloom::ClipType::Midi, 960, 1920);
+
+    require(firstClip.has_value(), "first clip should be created before delete");
+    require(secondClip.has_value(), "second clip should be created before delete");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteClipCommand>(firstClip->id));
+
+    require(result.success, "delete clip command should succeed");
+    require(!project.findClipById(firstClip->id).has_value(), "delete command should remove target clip");
+    require(project.findClipById(secondClip->id).has_value(), "delete command should keep unrelated clip");
+    require(project.clips().size() == 1, "delete command should remove only one clip");
+
+    require(commands.undo(project), "delete clip undo should be available");
+    const auto restoredClip = project.findClipById(firstClip->id);
+    require(restoredClip.has_value(), "undo should restore deleted clip");
+    require(restoredClip->trackId == firstTrack.id, "undo should restore clip track id");
+    require(restoredClip->name == "Lead Intro", "undo should restore clip name");
+    require(restoredClip->type == trackloom::ClipType::Midi, "undo should restore clip type");
+    require(restoredClip->startTick == 0, "undo should restore clip start tick");
+    require(restoredClip->lengthTick == 960, "undo should restore clip length tick");
+    require(project.findClipById(secondClip->id).has_value(), "undo should keep unrelated clip");
+
+    require(commands.redo(project), "delete clip redo should be available");
+    require(!project.findClipById(firstClip->id).has_value(), "redo should remove target clip again");
+    require(project.findClipById(secondClip->id).has_value(), "redo should still keep unrelated clip");
+}
+
+void invalidDeleteClipCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before invalid delete");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteClipCommand>("missing-clip"));
+
+    require(!result.success, "missing clip delete command should fail");
+    require(project.findClipById(clip->id).has_value(), "failed delete command should not remove clip");
+    require(project.clips().size() == 1, "failed delete command should not change clip count");
+    require(!commands.canUndo(), "failed delete command should not enter undo stack");
+}
+
 void newTrackPlaybackStateStartsDefault()
 {
     trackloom::Project project("Playback");
@@ -619,6 +672,29 @@ void projectCanRoundTripTimelineClipEdits()
     require(loaded.project->clips().front().name == "Verse", "loaded edited clip should keep name");
     require(loaded.project->clips().front().startTick == 480, "loaded edited clip should keep start tick");
     require(loaded.project->clips().front().lengthTick == 1920, "loaded edited clip should keep length tick");
+}
+
+void projectCanSaveAfterTimelineClipDeletion()
+{
+    trackloom::Project project("Deleted Clip Song");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto firstClip = project.createClip(track.id, "Deleted Intro", trackloom::ClipType::Midi, 0, 960);
+    const auto secondClip = project.createClip(track.id, "Kept Verse", trackloom::ClipType::Midi, 960, 960);
+
+    require(firstClip.has_value(), "first clip should be created before save-delete test");
+    require(secondClip.has_value(), "second clip should be created before save-delete test");
+    require(commands.execute(project, std::make_unique<trackloom::DeleteClipCommand>(firstClip->id)).success, "delete should succeed before save");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("clip " + firstClip->id + " ") == std::string::npos, "saved project should omit deleted clip record");
+    require(saved.find("clip " + secondClip->id + " " + track.id + " Midi 960 960 Kept Verse\n") != std::string::npos, "saved project should keep unrelated clip record");
+    require(loaded.project.has_value(), "project saved after clip deletion should load");
+    require(!loaded.project->findClipById(firstClip->id).has_value(), "loaded project should not contain deleted clip");
+    require(loaded.project->findClipById(secondClip->id).has_value(), "loaded project should contain kept clip");
+    require(loaded.project->clips().size() == 1, "loaded project should contain only kept clip");
 }
 
 void versionOneProjectLoadsDefaultPlaybackState()
@@ -1854,6 +1930,8 @@ int main()
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
         invalidSetClipTimingCommandDoesNotModifyProject();
+        deleteClipCommandSupportsUndoAndRedo();
+        invalidDeleteClipCommandDoesNotModifyProject();
         newTrackPlaybackStateStartsDefault();
         setTrackPlaybackStateCommandSupportsUndoAndRedo();
         invalidPlaybackStateCommandDoesNotModifyProject();
@@ -1865,6 +1943,7 @@ int main()
         projectCanRoundTripTrackMixState();
         projectCanRoundTripTimelineClips();
         projectCanRoundTripTimelineClipEdits();
+        projectCanSaveAfterTimelineClipDeletion();
         versionOneProjectLoadsDefaultPlaybackState();
         versionTwoProjectLoadsDefaultMixState();
         versionThreeProjectLoadsDefaultPanState();

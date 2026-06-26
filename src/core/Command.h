@@ -125,6 +125,22 @@ private:
     std::optional<std::int64_t> oldLengthTick_;
 };
 
+// DeleteClipCommand 删除时间线片段外壳，并保存完整片段用于撤销。
+// 当前片段还没有外部素材引用；后续如果加入音频文件或缓存，删除素材必须单独设计。
+class DeleteClipCommand final : public Command {
+public:
+    explicit DeleteClipCommand(std::string clipId);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string clipId_;
+    std::optional<TimelineClip> deletedClip_;
+};
+
 // SetTrackPlaybackStateCommand 修改轨道播放状态，并保存旧状态用于撤销。
 // 静音、独奏和禁用属于播放开关，不负责表达音量或其他混音参数。
 class SetTrackPlaybackStateCommand final : public Command {

@@ -301,6 +301,49 @@ void SetClipTimingCommand::undo(Project& project)
     }
 }
 
+DeleteClipCommand::DeleteClipCommand(std::string clipId)
+    : clipId_(std::move(clipId))
+{
+}
+
+std::string DeleteClipCommand::name() const
+{
+    return "DeleteClip";
+}
+
+CommandResult DeleteClipCommand::validate(const Project& project) const
+{
+    if (!project.findClipById(clipId_).has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult DeleteClipCommand::execute(Project& project)
+{
+    if (!deletedClip_.has_value()) {
+        const auto clip = project.findClipById(clipId_);
+        if (!clip.has_value()) {
+            return CommandResult::fail("Clip does not exist.");
+        }
+        deletedClip_ = *clip;
+    }
+
+    if (!project.removeClipById(deletedClip_->id)) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+void DeleteClipCommand::undo(Project& project)
+{
+    if (deletedClip_.has_value()) {
+        project.insertExistingClip(*deletedClip_);
+    }
+}
+
 SetTrackPlaybackStateCommand::SetTrackPlaybackStateCommand(std::string trackId, TrackPlaybackState newState)
     : trackId_(std::move(trackId))
     , newState_(newState)
