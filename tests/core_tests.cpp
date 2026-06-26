@@ -1,4 +1,5 @@
 #include "AudioDisable.h"
+#include "AudioPan.h"
 #include "AudioProjectGraph.h"
 #include "AudioSolo.h"
 #include "AudioTrackPlayback.h"
@@ -47,6 +48,17 @@ bool allSamplesNear(const std::vector<float>& samples, float expected)
             return false;
         }
     }
+    return true;
+}
+
+bool channelSamplesNear(const trackloom::AudioBlock& block, int channel, float expected)
+{
+    for (int frame = 0; frame < block.frameCount(); ++frame) {
+        if (std::fabs(block.sampleAt(channel, frame) - expected) > 0.000001f) {
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -222,6 +234,7 @@ void newTrackMixStateStartsDefault()
     const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
 
     require(track.mix.gain == 1.0f, "new track should start at unity gain");
+    require(track.mix.pan == 0.0f, "new track should start centered");
 }
 
 void setTrackMixStateCommandSupportsUndoAndRedo()
@@ -232,6 +245,7 @@ void setTrackMixStateCommandSupportsUndoAndRedo()
 
     trackloom::TrackMixState state;
     state.gain = 0.25f;
+    state.pan = -0.5f;
 
     auto result = commands.execute(
         project,
@@ -254,14 +268,15 @@ void invalidTrackMixStateCommandDoesNotModifyProject()
     const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
 
     trackloom::TrackMixState state;
-    state.gain = -1.0f;
+    state.pan = 1.5f;
 
     auto result = commands.execute(
         project,
         std::make_unique<trackloom::SetTrackMixStateCommand>(track.id, state));
 
-    require(!result.success, "negative gain mix command should fail");
+    require(!result.success, "out-of-range pan mix command should fail");
     require(project.findTrackById(track.id)->mix.gain == 1.0f, "failed command should not modify mix state");
+    require(project.findTrackById(track.id)->mix.pan == 0.0f, "failed command should not modify pan state");
     require(!commands.canUndo(), "failed mix command should not enter undo stack");
 }
 
@@ -294,7 +309,7 @@ void projectCanRoundTripTrackPlaybackState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 3\n") == 0, "saved project should use format version 3");
+    require(saved.find("trackloom_project 4\n") == 0, "saved project should use format version 4");
     require(loaded.project.has_value(), "project with playback state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
     require(loadedTrack.has_value(), "loaded project should contain track");
@@ -307,14 +322,15 @@ void projectCanRoundTripTrackMixState()
     const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
     trackloom::TrackMixState state;
     state.gain = 0.25f;
+    state.pan = -0.5f;
 
     require(project.setTrackMixState(track.id, state), "project should accept mix state update");
 
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 3\n") == 0, "saved mix project should use format version 3");
-    require(saved.find("track_mix_state " + track.id + " gain=0.25\n") != std::string::npos, "saved project should include track mix state");
+    require(saved.find("trackloom_project 4\n") == 0, "saved mix project should use format version 4");
+    require(saved.find("track_mix_state " + track.id + " gain=0.25 pan=-0.5\n") != std::string::npos, "saved project should include track mix state");
     require(loaded.project.has_value(), "project with mix state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
     require(loadedTrack.has_value(), "loaded project should contain mixed track");
@@ -337,6 +353,7 @@ void versionOneProjectLoadsDefaultPlaybackState()
     require(!track->playback.soloed, "version 1 track should default to unsoloed");
     require(!track->playback.disabled, "version 1 track should default to enabled");
     require(track->mix.gain == 1.0f, "version 1 track should default to unity gain");
+    require(track->mix.pan == 0.0f, "version 1 track should default to centered pan");
 }
 
 void versionTwoProjectLoadsDefaultMixState()
@@ -354,6 +371,25 @@ void versionTwoProjectLoadsDefaultMixState()
     require(track.has_value(), "version 2 track should load");
     require(track->playback.muted, "version 2 playback state should still load");
     require(track->mix.gain == 1.0f, "version 2 track should default to unity gain");
+    require(track->mix.pan == 0.0f, "version 2 track should default to centered pan");
+}
+
+void versionThreeProjectLoadsDefaultPanState()
+{
+    const std::string text =
+        "trackloom_project 3\n"
+        "name Gain Song\n"
+        "track track-1 Instrument Lead Piano\n"
+        "track_playback_state track-1 muted=0 soloed=0 disabled=0\n"
+        "track_mix_state track-1 gain=0.25\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(loaded.project.has_value(), "version 3 project should still load");
+    const auto track = loaded.project->findTrackById("track-1");
+    require(track.has_value(), "version 3 track should load");
+    require(track->mix.gain == 0.25f, "version 3 mix gain should still load");
+    require(track->mix.pan == 0.0f, "version 3 track should default to centered pan");
 }
 
 void invalidTrackPlaybackStateRecordIsRejected()
@@ -372,15 +408,15 @@ void invalidTrackPlaybackStateRecordIsRejected()
 void invalidTrackMixStateRecordIsRejected()
 {
     const std::string text =
-        "trackloom_project 3\n"
+        "trackloom_project 4\n"
         "name Broken Mix Song\n"
         "track track-1 Instrument Lead Piano\n"
         "track_playback_state track-1 muted=0 soloed=0 disabled=0\n"
-        "track_mix_state track-1 gain=-1\n";
+        "track_mix_state track-1 gain=1 pan=1.5\n";
 
     const auto loaded = trackloom::loadProjectFromText(text);
 
-    require(!loaded.project.has_value(), "negative track mix state should fail");
+    require(!loaded.project.has_value(), "out-of-range track pan state should fail");
     require(!loaded.error.empty(), "invalid mix state should report an error");
 }
 
@@ -823,6 +859,111 @@ void sourceMixerSumsGainWrappedSources()
     require(mixer.render(block, 48000.0), "mixer should render gain-wrapped sources");
 
     require(allSamplesNear(samples, 0.75f), "mixer should sum gain-wrapped source outputs");
+}
+
+void panAudioSourcePassesThroughCenteredByDefault()
+{
+    ConstantAudioSource source(0.50f);
+    trackloom::PanAudioSource pan;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(pan.setSource(&source), "pan source should accept a valid source");
+    require(pan.pan() == 0.0f, "pan source should start centered");
+    require(pan.render(block, 48000.0), "centered pan render should succeed");
+
+    require(channelSamplesNear(block, 0, 0.50f), "centered pan should preserve left channel");
+    require(channelSamplesNear(block, 1, 0.50f), "centered pan should preserve right channel");
+}
+
+void panAudioSourceCanMoveFullyLeft()
+{
+    ConstantAudioSource source(0.50f);
+    trackloom::PanAudioSource pan;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(pan.setSource(&source), "pan source should accept a valid source");
+    require(pan.setPan(-1.0f), "full-left pan should be accepted");
+    require(pan.render(block, 48000.0), "full-left pan render should succeed");
+
+    require(channelSamplesNear(block, 0, 0.50f), "full-left pan should keep left channel");
+    require(channelSamplesNear(block, 1, 0.0f), "full-left pan should mute right channel");
+}
+
+void panAudioSourceCanMoveFullyRight()
+{
+    ConstantAudioSource source(0.50f);
+    trackloom::PanAudioSource pan;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(pan.setSource(&source), "pan source should accept a valid source");
+    require(pan.setPan(1.0f), "full-right pan should be accepted");
+    require(pan.render(block, 48000.0), "full-right pan render should succeed");
+
+    require(channelSamplesNear(block, 0, 0.0f), "full-right pan should mute left channel");
+    require(channelSamplesNear(block, 1, 0.50f), "full-right pan should keep right channel");
+}
+
+void panAudioSourceCanMoveHalfLeft()
+{
+    ConstantAudioSource source(0.50f);
+    trackloom::PanAudioSource pan;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(pan.setSource(&source), "pan source should accept a valid source");
+    require(pan.setPan(-0.5f), "half-left pan should be accepted");
+    require(pan.render(block, 48000.0), "half-left pan render should succeed");
+
+    require(channelSamplesNear(block, 0, 0.50f), "half-left pan should keep left channel");
+    require(channelSamplesNear(block, 1, 0.25f), "half-left pan should reduce right channel");
+}
+
+void panAudioSourceRejectsInvalidSetup()
+{
+    ConstantAudioSource source(0.50f);
+    trackloom::PanAudioSource pan;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(!pan.render(block, 48000.0), "pan source without input source should fail");
+    require(!pan.setSource(nullptr), "null pan input source should be rejected");
+    require(pan.setSource(&source), "valid pan input source should be accepted");
+    require(pan.setPan(0.25f), "initial valid pan should be accepted");
+
+    require(!pan.setPan(-1.1f), "pan less than full-left should be rejected");
+    require(!pan.setPan(1.1f), "pan greater than full-right should be rejected");
+    require(!pan.setPan(std::numeric_limits<float>::infinity()), "infinite pan should be rejected");
+    require(pan.render(block, 48000.0), "render after rejected pan should still succeed");
+
+    require(channelSamplesNear(block, 0, 0.375f), "rejected pan should not replace previous left scale");
+    require(channelSamplesNear(block, 1, 0.50f), "rejected pan should not replace previous right scale");
+}
+
+void sourceMixerSumsPanWrappedSources()
+{
+    ConstantAudioSource firstSource(1.0f);
+    ConstantAudioSource secondSource(1.0f);
+    trackloom::PanAudioSource firstPan;
+    trackloom::PanAudioSource secondPan;
+    trackloom::SourceMixer mixer;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(firstPan.setSource(&firstSource), "first pan source should accept input");
+    require(secondPan.setSource(&secondSource), "second pan source should accept input");
+    require(firstPan.setPan(-1.0f), "first source should pan left");
+    require(secondPan.setPan(1.0f), "second source should pan right");
+    require(mixer.prepare(2, 8), "mixer prepare should succeed");
+    require(mixer.addSource(&firstPan), "first pan source should be mixable");
+    require(mixer.addSource(&secondPan), "second pan source should be mixable");
+
+    require(mixer.render(block, 48000.0), "mixer should render pan-wrapped sources");
+
+    require(channelSamplesNear(block, 0, 1.0f), "mixer should keep left-panned source in left channel");
+    require(channelSamplesNear(block, 1, 1.0f), "mixer should keep right-panned source in right channel");
 }
 
 void muteAudioSourcePassesThroughByDefault()
@@ -1326,6 +1467,27 @@ void projectPlaybackGraphAppliesTrackGain()
     require(allSamplesNear(samples, 0.125f), "project graph should apply track gain before mixing");
 }
 
+void projectPlaybackGraphAppliesTrackPanAfterGain()
+{
+    trackloom::Project project("Graph");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    ConstantAudioSource source(0.50f);
+    trackloom::TrackMixState mix;
+    trackloom::ProjectPlaybackGraph graph;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    mix.gain = 0.50f;
+    mix.pan = -0.5f;
+    require(project.setTrackMixState(track.id, mix), "project should set graph track pan");
+    require(graph.prepare(2, 8), "project graph prepare should succeed");
+    require(graph.rebuild(project, { { track.id, &source } }), "project graph rebuild should accept panned binding");
+    require(graph.render(block, 48000.0), "project graph panned render should succeed");
+
+    require(channelSamplesNear(block, 0, 0.25f), "project graph should keep gained left channel for half-left pan");
+    require(channelSamplesNear(block, 1, 0.125f), "project graph should reduce gained right channel for half-left pan");
+}
+
 void projectPlaybackGraphRendersSilenceWhenEmpty()
 {
     trackloom::Project project("Graph");
@@ -1376,6 +1538,7 @@ int main()
         projectCanRoundTripTrackMixState();
         versionOneProjectLoadsDefaultPlaybackState();
         versionTwoProjectLoadsDefaultMixState();
+        versionThreeProjectLoadsDefaultPanState();
         invalidTrackPlaybackStateRecordIsRejected();
         invalidTrackMixStateRecordIsRejected();
         projectCanRoundTripNamesWithSpaces();
@@ -1409,6 +1572,12 @@ int main()
         gainAudioSourceCanMuteWithZeroGain();
         gainAudioSourceRejectsInvalidSetup();
         sourceMixerSumsGainWrappedSources();
+        panAudioSourcePassesThroughCenteredByDefault();
+        panAudioSourceCanMoveFullyLeft();
+        panAudioSourceCanMoveFullyRight();
+        panAudioSourceCanMoveHalfLeft();
+        panAudioSourceRejectsInvalidSetup();
+        sourceMixerSumsPanWrappedSources();
         muteAudioSourcePassesThroughByDefault();
         muteAudioSourceClearsOutputWhenMuted();
         muteAudioSourceStillProcessesWrappedSourceWhenMuted();
@@ -1438,6 +1607,7 @@ int main()
         projectPlaybackGraphAppliesDisabledState();
         projectPlaybackGraphAppliesMutedState();
         projectPlaybackGraphAppliesTrackGain();
+        projectPlaybackGraphAppliesTrackPanAfterGain();
         projectPlaybackGraphRendersSilenceWhenEmpty();
         projectPlaybackGraphRejectsInvalidBindings();
     } catch (const std::exception& error) {

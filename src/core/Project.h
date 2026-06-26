@@ -28,6 +28,7 @@ struct TrackPlaybackState {
 // 当前只包含线性音量；后续声像、自动化和总线发送可以沿着这个独立结构继续扩展。
 struct TrackMixState {
     float gain = 1.0f;
+    float pan = 0.0f;
 
     bool operator==(const TrackMixState&) const = default;
 };
@@ -46,7 +47,7 @@ struct Track {
 // 后续 UI、AI 和导入器都应通过命令系统修改它，避免绕过验证、撤销和历史记录。
 class Project {
 public:
-    static constexpr int currentFormatVersion = 3;
+    static constexpr int currentFormatVersion = 4;
 
     explicit Project(std::string name = "Untitled");
 

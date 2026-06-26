@@ -75,6 +75,7 @@ std::string saveProjectToText(const Project& project)
                << '\n';
         output << "track_mix_state " << track.id
                << " gain=" << track.mix.gain
+               << " pan=" << track.mix.pan
                << '\n';
     }
 
@@ -146,6 +147,7 @@ LoadProjectResult loadProjectFromText(const std::string& text)
             std::istringstream mixLine(line);
             std::string trackId;
             std::string gainToken;
+            std::string panToken;
             TrackMixState state;
 
             if (!(mixLine >> keyword >> trackId >> gainToken)) {
@@ -153,6 +155,11 @@ LoadProjectResult loadProjectFromText(const std::string& text)
             }
             if (!parseFloatToken(gainToken, "gain", state.gain) || !isValidTrackMixState(state)) {
                 return LoadProjectResult::fail("Invalid track mix state value.");
+            }
+            if (version >= 4) {
+                if (!(mixLine >> panToken) || !parseFloatToken(panToken, "pan", state.pan) || !isValidTrackMixState(state)) {
+                    return LoadProjectResult::fail("Invalid track mix state value.");
+                }
             }
             if (!project.setTrackMixState(trackId, state)) {
                 return LoadProjectResult::fail("Track mix state references unknown track.");

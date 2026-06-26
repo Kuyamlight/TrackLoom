@@ -75,11 +75,16 @@ bool ProjectPlaybackGraph::rebuild(const Project& project, const std::vector<Tra
             return false;
         }
 
-        if (!nextMixer.addSource(gainSource.get())) {
+        auto panSource = std::make_unique<PanAudioSource>();
+        if (!panSource->setSource(gainSource.get()) || !panSource->setPan(track->mix.pan)) {
             return false;
         }
 
-        nextSources.push_back({ std::move(playbackSource), std::move(gainSource) });
+        if (!nextMixer.addSource(panSource.get())) {
+            return false;
+        }
+
+        nextSources.push_back({ std::move(playbackSource), std::move(gainSource), std::move(panSource) });
     }
 
     soloModeActive_ = nextSoloModeActive;

@@ -169,7 +169,11 @@ std::optional<TrackType> trackTypeFromString(const std::string& value)
 
 bool isValidTrackMixState(TrackMixState state)
 {
-    return std::isfinite(state.gain) && state.gain >= 0.0f;
+    return std::isfinite(state.gain)
+        && state.gain >= 0.0f
+        && std::isfinite(state.pan)
+        && state.pan >= -1.0f
+        && state.pan <= 1.0f;
 }
 
 }

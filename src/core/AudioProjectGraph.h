@@ -2,6 +2,7 @@
 
 #include "AudioGain.h"
 #include "AudioMixer.h"
+#include "AudioPan.h"
 #include "AudioTrackPlayback.h"
 #include "Project.h"
 
@@ -33,6 +34,7 @@ private:
     struct SourceNode {
         std::unique_ptr<TrackPlaybackAudioSource> playback;
         std::unique_ptr<GainAudioSource> gain;
+        std::unique_ptr<PanAudioSource> pan;
     };
 
     bool prepared_ = false;
