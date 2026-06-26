@@ -469,6 +469,65 @@ void SplitClipCommand::undo(Project& project)
     project.setClipTiming(clipId_, originalClip_->startTick, originalClip_->lengthTick);
 }
 
+DuplicateClipCommand::DuplicateClipCommand(std::string clipId, std::string targetTrackId, std::int64_t startTick)
+    : clipId_(std::move(clipId))
+    , targetTrackId_(std::move(targetTrackId))
+    , startTick_(startTick)
+{
+}
+
+std::string DuplicateClipCommand::name() const
+{
+    return "DuplicateClip";
+}
+
+CommandResult DuplicateClipCommand::validate(const Project& project) const
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    if (startTick_ < 0) {
+        return CommandResult::fail("Duplicate start tick is invalid.");
+    }
+
+    const auto targetTrack = project.findTrackById(targetTrackId_);
+    if (!targetTrack.has_value()) {
+        return CommandResult::fail("Target track does not exist.");
+    }
+
+    if (!trackTypeAcceptsClip(targetTrack->type, clip->type)) {
+        return CommandResult::fail("Clip type is not compatible with target track type.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult DuplicateClipCommand::execute(Project& project)
+{
+    if (createdClip_.has_value()) {
+        if (!project.insertExistingClip(*createdClip_)) {
+            return CommandResult::fail("Duplicate clip could not be restored.");
+        }
+        return CommandResult::ok();
+    }
+
+    createdClip_ = project.duplicateClipToTrackAtTick(clipId_, targetTrackId_, startTick_);
+    if (!createdClip_.has_value()) {
+        return CommandResult::fail("Clip could not be duplicated.");
+    }
+
+    return CommandResult::ok();
+}
+
+void DuplicateClipCommand::undo(Project& project)
+{
+    if (createdClip_.has_value()) {
+        project.removeClipById(createdClip_->id);
+    }
+}
+
 SetTrackPlaybackStateCommand::SetTrackPlaybackStateCommand(std::string trackId, TrackPlaybackState newState)
     : trackId_(std::move(trackId))
     , newState_(newState)

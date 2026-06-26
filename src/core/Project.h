@@ -118,6 +118,12 @@ public:
     // splitClipAtTick 在片段内部切开时间范围；左段复用原 ID，右段获得新的稳定 ID。
     std::optional<TimelineClip> splitClipAtTick(const std::string& clipId, std::int64_t splitTick);
 
+    // duplicateClipToTrackAtTick 复制片段外壳；新片段获得新 ID，并放到指定兼容轨道和起点。
+    std::optional<TimelineClip> duplicateClipToTrackAtTick(
+        const std::string& clipId,
+        std::string targetTrackId,
+        std::int64_t startTick);
+
 private:
     int formatVersion_ = currentFormatVersion;
     std::string name_;

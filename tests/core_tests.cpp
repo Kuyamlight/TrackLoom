@@ -431,6 +431,64 @@ void projectRejectsInvalidClipSplits()
     require(project.clips().size() == 1, "failed split should not add clips");
 }
 
+void projectCanDuplicateMidiClipToInstrumentTrack()
+{
+    trackloom::Project project("Clips");
+    const auto sourceTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto targetTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(sourceTrack.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "midi clip should be created before duplicate");
+    const auto duplicate = project.duplicateClipToTrackAtTick(clip->id, targetTrack.id, 1920);
+
+    require(duplicate.has_value(), "midi clip duplicate should be created");
+    require(duplicate->id == "clip-2", "duplicate should receive next stable clip id");
+    require(duplicate->trackId == targetTrack.id, "duplicate should use target track");
+    require(duplicate->name == "Intro", "duplicate should keep source name");
+    require(duplicate->type == trackloom::ClipType::Midi, "duplicate should keep midi type");
+    require(duplicate->startTick == 1920, "duplicate should use requested start tick");
+    require(duplicate->lengthTick == 960, "duplicate should keep source length");
+    require(project.findClipById(clip->id)->trackId == sourceTrack.id, "duplicate should not move source clip");
+    require(project.clips().size() == 2, "project should contain source and duplicate clips");
+}
+
+void projectCanDuplicateAudioClipToAudioTrack()
+{
+    trackloom::Project project("Clips");
+    const auto sourceTrack = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto targetTrack = project.createTrack("Double", trackloom::TrackType::Audio);
+    const auto clip = project.createClip(sourceTrack.id, "Take", trackloom::ClipType::Audio, 480, 1920);
+
+    require(clip.has_value(), "audio clip should be created before duplicate");
+    const auto duplicate = project.duplicateClipToTrackAtTick(clip->id, targetTrack.id, 3000);
+
+    require(duplicate.has_value(), "audio clip duplicate should be created");
+    require(duplicate->trackId == targetTrack.id, "audio duplicate should use target track");
+    require(duplicate->type == trackloom::ClipType::Audio, "audio duplicate should keep audio type");
+    require(duplicate->startTick == 3000, "audio duplicate should use requested start tick");
+    require(duplicate->lengthTick == 1920, "audio duplicate should keep source length");
+}
+
+void projectRejectsInvalidClipDuplicates()
+{
+    trackloom::Project project("Clips");
+    const auto instrument = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audio = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto folder = project.createTrack("Folder", trackloom::TrackType::Folder);
+    const auto clip = project.createClip(instrument.id, "Intro", trackloom::ClipType::Midi, 120, 480);
+
+    require(clip.has_value(), "clip should be created before invalid duplicates");
+    require(!project.duplicateClipToTrackAtTick("missing-clip", instrument.id, 240).has_value(), "missing clip duplicate should fail");
+    require(!project.duplicateClipToTrackAtTick(clip->id, "missing-track", 240).has_value(), "missing target track duplicate should fail");
+    require(!project.duplicateClipToTrackAtTick(clip->id, audio.id, 240).has_value(), "incompatible target track duplicate should fail");
+    require(!project.duplicateClipToTrackAtTick(clip->id, folder.id, 240).has_value(), "folder target duplicate should fail");
+    require(!project.duplicateClipToTrackAtTick(clip->id, instrument.id, -1).has_value(), "negative start duplicate should fail");
+
+    require(project.clips().size() == 1, "failed duplicate should not add clips");
+    require(project.findClipById(clip->id)->startTick == 120, "failed duplicate should not change source start tick");
+    require(project.findClipById(clip->id)->lengthTick == 480, "failed duplicate should not change source length");
+}
+
 void renameClipCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Clips");
@@ -653,6 +711,56 @@ void invalidSplitClipCommandDoesNotModifyProject()
     require(project.clips().size() == 1, "failed split command should not add clips");
     require(project.findClipById(clip->id)->lengthTick == 960, "failed split command should not change length");
     require(!commands.canUndo(), "failed split command should not enter undo stack");
+}
+
+void duplicateClipCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto sourceTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto targetTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(sourceTrack.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before command duplicate");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DuplicateClipCommand>(clip->id, targetTrack.id, 1920));
+
+    require(result.success, "duplicate clip command should succeed");
+    require(project.clips().size() == 2, "duplicate command should create one new clip");
+    const auto duplicateId = project.clips().back().id;
+    require(project.findClipById(duplicateId)->trackId == targetTrack.id, "duplicate command should use target track");
+    require(project.findClipById(duplicateId)->startTick == 1920, "duplicate command should use requested start tick");
+    require(project.findClipById(clip->id)->trackId == sourceTrack.id, "duplicate command should not move source clip");
+
+    require(commands.undo(project), "duplicate clip undo should be available");
+    require(project.clips().size() == 1, "undo should remove duplicate clip");
+    require(!project.findClipById(duplicateId).has_value(), "undo should remove created duplicate");
+    require(project.findClipById(clip->id).has_value(), "undo should keep source clip");
+
+    require(commands.redo(project), "duplicate clip redo should be available");
+    require(project.clips().size() == 2, "redo should restore duplicate clip");
+    require(project.findClipById(duplicateId).has_value(), "redo should reuse duplicate clip id");
+    require(project.findClipById(duplicateId)->lengthTick == 960, "redo should restore duplicate length");
+}
+
+void invalidDuplicateClipCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto instrument = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audio = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = project.createClip(instrument.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before invalid command duplicate");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DuplicateClipCommand>(clip->id, audio.id, 1920));
+
+    require(!result.success, "incompatible duplicate command should fail validation");
+    require(project.clips().size() == 1, "failed duplicate command should not add clips");
+    require(project.findClipById(clip->id)->trackId == instrument.id, "failed duplicate command should not move source");
+    require(!commands.canUndo(), "failed duplicate command should not enter undo stack");
 }
 
 void newTrackPlaybackStateStartsDefault()
@@ -938,6 +1046,29 @@ void projectCanRoundTripTimelineClipSplit()
     require(loaded.project->findClipById(clip->id)->lengthTick == 360, "loaded left split should keep shortened length");
     require(loaded.project->findClipById(rightClip->id)->startTick == 360, "loaded right split should keep start tick");
     require(loaded.project->findClipById(rightClip->id)->lengthTick == 600, "loaded right split should keep length");
+}
+
+void projectCanRoundTripTimelineClipDuplicate()
+{
+    trackloom::Project project("Duplicate Clip Song");
+    const auto sourceTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto targetTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(sourceTrack.id, "Copied Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before duplicate round trip");
+    const auto duplicate = project.duplicateClipToTrackAtTick(clip->id, targetTrack.id, 1920);
+    require(duplicate.has_value(), "clip should duplicate before save");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("clip " + clip->id + " " + sourceTrack.id + " Midi 0 960 Copied Intro\n") != std::string::npos, "saved project should include source clip");
+    require(saved.find("clip " + duplicate->id + " " + targetTrack.id + " Midi 1920 960 Copied Intro\n") != std::string::npos, "saved project should include duplicate clip");
+    require(loaded.project.has_value(), "project with duplicated clips should load");
+    require(loaded.project->clips().size() == 2, "loaded project should keep source and duplicate clips");
+    require(loaded.project->findClipById(duplicate->id)->trackId == targetTrack.id, "loaded duplicate should keep target track");
+    require(loaded.project->findClipById(duplicate->id)->startTick == 1920, "loaded duplicate should keep start tick");
+    require(loaded.project->findClipById(duplicate->id)->lengthTick == 960, "loaded duplicate should keep source length");
 }
 
 void versionOneProjectLoadsDefaultPlaybackState()
@@ -2175,6 +2306,9 @@ int main()
         projectCanSplitMidiClipAtInteriorTick();
         projectCanSplitAudioClipAtInteriorTick();
         projectRejectsInvalidClipSplits();
+        projectCanDuplicateMidiClipToInstrumentTrack();
+        projectCanDuplicateAudioClipToAudioTrack();
+        projectRejectsInvalidClipDuplicates();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
@@ -2185,6 +2319,8 @@ int main()
         invalidMoveClipToTrackCommandDoesNotModifyProject();
         splitClipCommandSupportsUndoAndRedo();
         invalidSplitClipCommandDoesNotModifyProject();
+        duplicateClipCommandSupportsUndoAndRedo();
+        invalidDuplicateClipCommandDoesNotModifyProject();
         newTrackPlaybackStateStartsDefault();
         setTrackPlaybackStateCommandSupportsUndoAndRedo();
         invalidPlaybackStateCommandDoesNotModifyProject();
@@ -2199,6 +2335,7 @@ int main()
         projectCanSaveAfterTimelineClipDeletion();
         projectCanRoundTripTimelineClipTrackMove();
         projectCanRoundTripTimelineClipSplit();
+        projectCanRoundTripTimelineClipDuplicate();
         versionOneProjectLoadsDefaultPlaybackState();
         versionTwoProjectLoadsDefaultMixState();
         versionThreeProjectLoadsDefaultPanState();

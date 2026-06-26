@@ -314,6 +314,36 @@ std::optional<TimelineClip> Project::splitClipAtTick(const std::string& clipId, 
     return rightClip;
 }
 
+std::optional<TimelineClip> Project::duplicateClipToTrackAtTick(
+    const std::string& clipId,
+    std::string targetTrackId,
+    std::int64_t startTick)
+{
+    const auto sourceClip = findClipById(clipId);
+    if (!sourceClip.has_value() || startTick < 0 || !isValidClipTiming(startTick, sourceClip->lengthTick)) {
+        return std::nullopt;
+    }
+
+    const auto targetTrack = findTrackById(targetTrackId);
+    if (!targetTrack.has_value() || !trackCanOwnClip(*targetTrack, sourceClip->type)) {
+        return std::nullopt;
+    }
+
+    TimelineClip duplicate {
+        "clip-" + std::to_string(nextClipNumber_),
+        std::move(targetTrackId),
+        sourceClip->name,
+        sourceClip->type,
+        startTick,
+        sourceClip->lengthTick
+    };
+
+    // 复制只产生新的片段外壳，不修改源片段；未来素材引用复制需要在更高层单独定义。
+    clips_.push_back(duplicate);
+    observeClipId(duplicate.id);
+    return duplicate;
+}
+
 void Project::observeTrackId(const std::string& id)
 {
     constexpr std::string_view prefix = "track-";

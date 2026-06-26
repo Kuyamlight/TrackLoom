@@ -176,6 +176,24 @@ private:
     std::optional<TimelineClip> rightClip_;
 };
 
+// DuplicateClipCommand 复制片段外壳到兼容轨道和指定起点，并保存新片段用于撤销重做。
+// 当前只复制 TimelineClip 元数据，不复制 MIDI 事件、音频文件或素材引用。
+class DuplicateClipCommand final : public Command {
+public:
+    DuplicateClipCommand(std::string clipId, std::string targetTrackId, std::int64_t startTick);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string clipId_;
+    std::string targetTrackId_;
+    std::int64_t startTick_ = 0;
+    std::optional<TimelineClip> createdClip_;
+};
+
 // SetTrackPlaybackStateCommand 修改轨道播放状态，并保存旧状态用于撤销。
 // 静音、独奏和禁用属于播放开关，不负责表达音量或其他混音参数。
 class SetTrackPlaybackStateCommand final : public Command {
