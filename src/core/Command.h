@@ -141,6 +141,23 @@ private:
     std::optional<TimelineClip> deletedClip_;
 };
 
+// MoveClipToTrackCommand 把片段移动到另一条兼容轨道，并保存旧轨道用于撤销。
+// 它只改变片段归属，不改变片段时间、长度、类型或内容。
+class MoveClipToTrackCommand final : public Command {
+public:
+    MoveClipToTrackCommand(std::string clipId, std::string targetTrackId);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string clipId_;
+    std::string targetTrackId_;
+    std::optional<std::string> oldTrackId_;
+};
+
 // SetTrackPlaybackStateCommand 修改轨道播放状态，并保存旧状态用于撤销。
 // 静音、独奏和禁用属于播放开关，不负责表达音量或其他混音参数。
 class SetTrackPlaybackStateCommand final : public Command {

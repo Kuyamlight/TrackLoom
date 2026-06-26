@@ -319,6 +319,54 @@ void projectCanSetClipTiming()
     require(project.findClipById(clip->id)->lengthTick == 1920, "failed timing update should not change length tick");
 }
 
+void projectCanMoveMidiClipBetweenInstrumentTracks()
+{
+    trackloom::Project project("Clips");
+    const auto sourceTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto targetTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(sourceTrack.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "midi clip should be created before track move");
+    require(project.moveClipToTrack(clip->id, targetTrack.id), "midi clip should move to instrument track");
+
+    const auto movedClip = project.findClipById(clip->id);
+    require(movedClip.has_value(), "moved midi clip should still exist");
+    require(movedClip->id == clip->id, "move should keep clip id");
+    require(movedClip->trackId == targetTrack.id, "move should update clip track id");
+    require(movedClip->name == "Intro", "move should keep clip name");
+    require(movedClip->type == trackloom::ClipType::Midi, "move should keep clip type");
+    require(movedClip->startTick == 0, "move should keep start tick");
+    require(movedClip->lengthTick == 960, "move should keep length tick");
+}
+
+void projectCanMoveAudioClipBetweenAudioTracks()
+{
+    trackloom::Project project("Clips");
+    const auto sourceTrack = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto targetTrack = project.createTrack("Guitar", trackloom::TrackType::Audio);
+    const auto clip = project.createClip(sourceTrack.id, "Take", trackloom::ClipType::Audio, 480, 1920);
+
+    require(clip.has_value(), "audio clip should be created before track move");
+    require(project.moveClipToTrack(clip->id, targetTrack.id), "audio clip should move to audio track");
+    require(project.findClipById(clip->id)->trackId == targetTrack.id, "audio clip should keep target audio track");
+}
+
+void projectRejectsInvalidClipTrackMoves()
+{
+    trackloom::Project project("Clips");
+    const auto instrument = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audio = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto folder = project.createTrack("Folder", trackloom::TrackType::Folder);
+    const auto clip = project.createClip(instrument.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before invalid track moves");
+    require(!project.moveClipToTrack("missing-clip", instrument.id), "missing clip move should fail");
+    require(!project.moveClipToTrack(clip->id, "missing-track"), "missing target track move should fail");
+    require(!project.moveClipToTrack(clip->id, folder.id), "folder target move should fail");
+    require(!project.moveClipToTrack(clip->id, audio.id), "incompatible target track move should fail");
+    require(project.findClipById(clip->id)->trackId == instrument.id, "failed moves should not change clip track");
+}
+
 void renameClipCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Clips");
@@ -452,6 +500,47 @@ void invalidDeleteClipCommandDoesNotModifyProject()
     require(project.findClipById(clip->id).has_value(), "failed delete command should not remove clip");
     require(project.clips().size() == 1, "failed delete command should not change clip count");
     require(!commands.canUndo(), "failed delete command should not enter undo stack");
+}
+
+void moveClipToTrackCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto sourceTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto targetTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(sourceTrack.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before command track move");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::MoveClipToTrackCommand>(clip->id, targetTrack.id));
+
+    require(result.success, "move clip to track command should succeed");
+    require(project.findClipById(clip->id)->trackId == targetTrack.id, "command should move clip to target track");
+
+    require(commands.undo(project), "move clip to track undo should be available");
+    require(project.findClipById(clip->id)->trackId == sourceTrack.id, "undo should restore source track");
+
+    require(commands.redo(project), "move clip to track redo should be available");
+    require(project.findClipById(clip->id)->trackId == targetTrack.id, "redo should restore target track");
+}
+
+void invalidMoveClipToTrackCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Clips");
+    trackloom::CommandStack commands;
+    const auto instrument = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audio = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = project.createClip(instrument.id, "Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before invalid command track move");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::MoveClipToTrackCommand>(clip->id, audio.id));
+
+    require(!result.success, "incompatible move clip to track command should fail");
+    require(project.findClipById(clip->id)->trackId == instrument.id, "failed move command should not modify clip track");
+    require(!commands.canUndo(), "failed move command should not enter undo stack");
 }
 
 void newTrackPlaybackStateStartsDefault()
@@ -695,6 +784,26 @@ void projectCanSaveAfterTimelineClipDeletion()
     require(!loaded.project->findClipById(firstClip->id).has_value(), "loaded project should not contain deleted clip");
     require(loaded.project->findClipById(secondClip->id).has_value(), "loaded project should contain kept clip");
     require(loaded.project->clips().size() == 1, "loaded project should contain only kept clip");
+}
+
+void projectCanRoundTripTimelineClipTrackMove()
+{
+    trackloom::Project project("Moved Clip Song");
+    const auto sourceTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto targetTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(sourceTrack.id, "Moved Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before track move round trip");
+    require(project.moveClipToTrack(clip->id, targetTrack.id), "clip should move before save");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("clip " + clip->id + " " + targetTrack.id + " Midi 0 960 Moved Intro\n") != std::string::npos, "saved project should include moved clip target track");
+    require(loaded.project.has_value(), "project with moved clip should load");
+    const auto loadedClip = loaded.project->findClipById(clip->id);
+    require(loadedClip.has_value(), "loaded project should keep moved clip");
+    require(loadedClip->trackId == targetTrack.id, "loaded moved clip should keep target track");
 }
 
 void versionOneProjectLoadsDefaultPlaybackState()
@@ -1926,12 +2035,17 @@ int main()
         invalidAddClipCommandDoesNotModifyProject();
         projectCanRenameClip();
         projectCanSetClipTiming();
+        projectCanMoveMidiClipBetweenInstrumentTracks();
+        projectCanMoveAudioClipBetweenAudioTracks();
+        projectRejectsInvalidClipTrackMoves();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
         invalidSetClipTimingCommandDoesNotModifyProject();
         deleteClipCommandSupportsUndoAndRedo();
         invalidDeleteClipCommandDoesNotModifyProject();
+        moveClipToTrackCommandSupportsUndoAndRedo();
+        invalidMoveClipToTrackCommandDoesNotModifyProject();
         newTrackPlaybackStateStartsDefault();
         setTrackPlaybackStateCommandSupportsUndoAndRedo();
         invalidPlaybackStateCommandDoesNotModifyProject();
@@ -1944,6 +2058,7 @@ int main()
         projectCanRoundTripTimelineClips();
         projectCanRoundTripTimelineClipEdits();
         projectCanSaveAfterTimelineClipDeletion();
+        projectCanRoundTripTimelineClipTrackMove();
         versionOneProjectLoadsDefaultPlaybackState();
         versionTwoProjectLoadsDefaultMixState();
         versionThreeProjectLoadsDefaultPanState();

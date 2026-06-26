@@ -112,6 +112,9 @@ public:
     // setClipTiming 只修改片段音乐时间范围；非法 tick 会被拒绝，避免坏命令污染工程。
     bool setClipTiming(const std::string& id, std::int64_t startTick, std::int64_t lengthTick);
 
+    // moveClipToTrack 只修改片段所属轨道；目标轨道必须存在并兼容片段类型。
+    bool moveClipToTrack(const std::string& clipId, std::string targetTrackId);
+
 private:
     int formatVersion_ = currentFormatVersion;
     std::string name_;

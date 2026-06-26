@@ -344,6 +344,61 @@ void DeleteClipCommand::undo(Project& project)
     }
 }
 
+MoveClipToTrackCommand::MoveClipToTrackCommand(std::string clipId, std::string targetTrackId)
+    : clipId_(std::move(clipId))
+    , targetTrackId_(std::move(targetTrackId))
+{
+}
+
+std::string MoveClipToTrackCommand::name() const
+{
+    return "MoveClipToTrack";
+}
+
+CommandResult MoveClipToTrackCommand::validate(const Project& project) const
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    const auto targetTrack = project.findTrackById(targetTrackId_);
+    if (!targetTrack.has_value()) {
+        return CommandResult::fail("Target track does not exist.");
+    }
+
+    if (!trackTypeAcceptsClip(targetTrack->type, clip->type)) {
+        return CommandResult::fail("Clip type is not compatible with target track type.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult MoveClipToTrackCommand::execute(Project& project)
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    if (!oldTrackId_.has_value()) {
+        oldTrackId_ = clip->trackId;
+    }
+
+    if (!project.moveClipToTrack(clipId_, targetTrackId_)) {
+        return CommandResult::fail("Clip could not be moved to target track.");
+    }
+
+    return CommandResult::ok();
+}
+
+void MoveClipToTrackCommand::undo(Project& project)
+{
+    if (oldTrackId_.has_value()) {
+        project.moveClipToTrack(clipId_, *oldTrackId_);
+    }
+}
+
 SetTrackPlaybackStateCommand::SetTrackPlaybackStateCommand(std::string trackId, TrackPlaybackState newState)
     : trackId_(std::move(trackId))
     , newState_(newState)

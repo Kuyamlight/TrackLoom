@@ -258,6 +258,25 @@ bool Project::setClipTiming(const std::string& id, std::int64_t startTick, std::
     return true;
 }
 
+bool Project::moveClipToTrack(const std::string& clipId, std::string targetTrackId)
+{
+    const auto clipIt = std::find_if(clips_.begin(), clips_.end(), [&](const TimelineClip& clip) {
+        return clip.id == clipId;
+    });
+
+    if (clipIt == clips_.end()) {
+        return false;
+    }
+
+    const auto targetTrack = findTrackById(targetTrackId);
+    if (!targetTrack.has_value() || !trackCanOwnClip(*targetTrack, clipIt->type)) {
+        return false;
+    }
+
+    clipIt->trackId = std::move(targetTrackId);
+    return true;
+}
+
 void Project::observeTrackId(const std::string& id)
 {
     constexpr std::string_view prefix = "track-";
