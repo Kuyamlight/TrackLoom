@@ -236,6 +236,68 @@ void DeleteTrackCommand::undo(Project& project)
     }
 }
 
+MoveTrackCommand::MoveTrackCommand(std::string trackId, std::size_t targetIndex)
+    : trackId_(std::move(trackId))
+    , targetIndex_(targetIndex)
+{
+}
+
+std::string MoveTrackCommand::name() const
+{
+    return "MoveTrack";
+}
+
+CommandResult MoveTrackCommand::validate(const Project& project) const
+{
+    const auto currentIndex = project.trackIndexById(trackId_);
+    if (!currentIndex.has_value()) {
+        return CommandResult::fail("Track does not exist.");
+    }
+
+    if (targetIndex_ >= project.tracks().size()) {
+        return CommandResult::fail("Track target index is invalid.");
+    }
+
+    if (*currentIndex == targetIndex_) {
+        return CommandResult::fail("Track is already at target index.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult MoveTrackCommand::execute(Project& project)
+{
+    const auto currentIndex = project.trackIndexById(trackId_);
+    if (!currentIndex.has_value()) {
+        return CommandResult::fail("Track does not exist.");
+    }
+
+    if (targetIndex_ >= project.tracks().size()) {
+        return CommandResult::fail("Track target index is invalid.");
+    }
+
+    if (*currentIndex == targetIndex_) {
+        return CommandResult::fail("Track is already at target index.");
+    }
+
+    if (!oldIndex_.has_value()) {
+        oldIndex_ = *currentIndex;
+    }
+
+    if (!project.moveTrackToIndex(trackId_, targetIndex_)) {
+        return CommandResult::fail("Track could not be moved.");
+    }
+
+    return CommandResult::ok();
+}
+
+void MoveTrackCommand::undo(Project& project)
+{
+    if (oldIndex_.has_value()) {
+        project.moveTrackToIndex(trackId_, *oldIndex_);
+    }
+}
+
 AddClipCommand::AddClipCommand(
     std::string trackId,
     std::string clipName,

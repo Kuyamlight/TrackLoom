@@ -202,6 +202,54 @@ void projectCanRenameTrack()
     require(project.findTrackById(track.id)->name == "Lead", "failed rename should not change track");
 }
 
+void projectCanMoveTrackToIndex()
+{
+    trackloom::Project project("Tracks");
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto padTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto vocalTrack = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    trackloom::TrackPlaybackState padPlayback;
+    trackloom::TrackMixState padMix;
+
+    padPlayback.soloed = true;
+    padMix.gain = 0.50f;
+    padMix.pan = -0.25f;
+    require(project.setTrackPlaybackState(padTrack.id, padPlayback), "project should set playback before track move");
+    require(project.setTrackMixState(padTrack.id, padMix), "project should set mix before track move");
+    const auto padClip = project.createClip(padTrack.id, "Pad Intro", trackloom::ClipType::Midi, 0, 960);
+    require(padClip.has_value(), "pad clip should exist before track move");
+
+    require(project.moveTrackToIndex(padTrack.id, 0), "track move should accept first index");
+
+    require(project.tracks()[0].id == padTrack.id, "moved track should become first");
+    require(project.tracks()[1].id == leadTrack.id, "previous first track should shift right");
+    require(project.tracks()[2].id == vocalTrack.id, "later track should keep relative order");
+    require(project.findTrackById(padTrack.id)->playback == padPlayback, "track move should keep playback state");
+    require(project.findTrackById(padTrack.id)->mix == padMix, "track move should keep mix state");
+    require(project.findClipById(padClip->id)->trackId == padTrack.id, "track move should not rewrite clip ownership");
+
+    require(project.moveTrackToIndex(padTrack.id, 2), "track move should accept last index");
+    require(project.tracks()[0].id == leadTrack.id, "moving to end should shift lead left");
+    require(project.tracks()[1].id == vocalTrack.id, "moving to end should shift vocal left");
+    require(project.tracks()[2].id == padTrack.id, "moved track should become last");
+}
+
+void projectRejectsInvalidTrackMoves()
+{
+    trackloom::Project project("Tracks");
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto padTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto vocalTrack = project.createTrack("Vocal", trackloom::TrackType::Audio);
+
+    require(!project.moveTrackToIndex("missing-track", 0), "missing track move should fail");
+    require(!project.moveTrackToIndex(padTrack.id, 3), "out-of-range track index should fail");
+    require(!project.moveTrackToIndex(padTrack.id, 1), "moving track to current index should fail");
+
+    require(project.tracks()[0].id == leadTrack.id, "failed track moves should keep first track");
+    require(project.tracks()[1].id == padTrack.id, "failed track moves should keep second track");
+    require(project.tracks()[2].id == vocalTrack.id, "failed track moves should keep third track");
+}
+
 void projectCreatesMidiClipOnInstrumentTrack()
 {
     trackloom::Project project("Clips");
@@ -1030,6 +1078,59 @@ void invalidDeleteTrackCommandDoesNotModifyProject()
     require(!commands.canUndo(), "failed track delete should not enter undo stack");
 }
 
+void moveTrackCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Tracks");
+    trackloom::CommandStack commands;
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto padTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto vocalTrack = project.createTrack("Vocal", trackloom::TrackType::Audio);
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::MoveTrackCommand>(vocalTrack.id, 0));
+
+    require(result.success, "move track command should succeed");
+    require(project.tracks()[0].id == vocalTrack.id, "move command should place track at target index");
+    require(project.tracks()[1].id == leadTrack.id, "move command should shift earlier tracks right");
+    require(project.tracks()[2].id == padTrack.id, "move command should keep relative shifted order");
+
+    require(commands.undo(project), "move track undo should be available");
+    require(project.tracks()[0].id == leadTrack.id, "undo should restore first track");
+    require(project.tracks()[1].id == padTrack.id, "undo should restore second track");
+    require(project.tracks()[2].id == vocalTrack.id, "undo should restore moved track");
+
+    require(commands.redo(project), "move track redo should be available");
+    require(project.tracks()[0].id == vocalTrack.id, "redo should move track to target index again");
+    require(project.tracks()[1].id == leadTrack.id, "redo should shift first track right again");
+    require(project.tracks()[2].id == padTrack.id, "redo should shift second track right again");
+}
+
+void invalidMoveTrackCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Tracks");
+    trackloom::CommandStack commands;
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto padTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+
+    auto sameIndexResult = commands.execute(
+        project,
+        std::make_unique<trackloom::MoveTrackCommand>(padTrack.id, 1));
+    auto missingTrackResult = commands.execute(
+        project,
+        std::make_unique<trackloom::MoveTrackCommand>("missing-track", 0));
+    auto outOfRangeResult = commands.execute(
+        project,
+        std::make_unique<trackloom::MoveTrackCommand>(padTrack.id, 2));
+
+    require(!sameIndexResult.success, "same-index track move command should fail validation");
+    require(!missingTrackResult.success, "missing track move command should fail validation");
+    require(!outOfRangeResult.success, "out-of-range track move command should fail validation");
+    require(project.tracks()[0].id == leadTrack.id, "failed track move should keep first track");
+    require(project.tracks()[1].id == padTrack.id, "failed track move should keep second track");
+    require(!commands.canUndo(), "failed track move should not enter undo stack");
+}
+
 void newTrackPlaybackStateStartsDefault()
 {
     trackloom::Project project("Playback");
@@ -1197,6 +1298,28 @@ void projectCanSaveAfterTrackDeletion()
     require(loaded.project->clips().size() == 1, "loaded project should keep only undeleted track clips");
     require(loaded.project->findClipById(leadClip->id).has_value(), "loaded project should keep undeleted clip");
     require(!loaded.project->findClipById(padClip->id).has_value(), "loaded project should not keep deleted track clip");
+}
+
+void projectCanRoundTripTrackReorder()
+{
+    trackloom::Project project("Reordered Track Song");
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto padTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto vocalTrack = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto padClip = project.createClip(padTrack.id, "Pad Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(padClip.has_value(), "pad clip should exist before track reorder save");
+    require(project.moveTrackToIndex(padTrack.id, 2), "track should reorder before save");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("trackloom_project 5\n") == 0, "track reorder should not change project format version");
+    require(loaded.project.has_value(), "project with reordered tracks should load");
+    require(loaded.project->tracks()[0].id == leadTrack.id, "loaded project should keep first track order");
+    require(loaded.project->tracks()[1].id == vocalTrack.id, "loaded project should keep shifted track order");
+    require(loaded.project->tracks()[2].id == padTrack.id, "loaded project should keep moved track order");
+    require(loaded.project->findClipById(padClip->id)->trackId == padTrack.id, "loaded reordered project should keep clip ownership");
 }
 
 void projectCanRoundTripTrackPlaybackState()
@@ -2630,6 +2753,8 @@ int main()
         addTrackCommandSupportsUndoAndRedo();
         invalidCommandDoesNotModifyProject();
         projectCanRenameTrack();
+        projectCanMoveTrackToIndex();
+        projectRejectsInvalidTrackMoves();
         projectCreatesMidiClipOnInstrumentTrack();
         projectCreatesAudioClipOnAudioTrack();
         projectRejectsInvalidClipRequests();
@@ -2669,6 +2794,8 @@ int main()
         invalidRenameTrackCommandDoesNotModifyProject();
         deleteTrackCommandSupportsUndoAndRedo();
         invalidDeleteTrackCommandDoesNotModifyProject();
+        moveTrackCommandSupportsUndoAndRedo();
+        invalidMoveTrackCommandDoesNotModifyProject();
         newTrackPlaybackStateStartsDefault();
         setTrackPlaybackStateCommandSupportsUndoAndRedo();
         invalidPlaybackStateCommandDoesNotModifyProject();
@@ -2678,6 +2805,7 @@ int main()
         projectCanRoundTripThroughText();
         projectCanRoundTripTrackRename();
         projectCanSaveAfterTrackDeletion();
+        projectCanRoundTripTrackReorder();
         projectCanRoundTripTrackPlaybackState();
         projectCanRoundTripTrackMixState();
         projectCanRoundTripTimelineClips();

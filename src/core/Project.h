@@ -105,6 +105,9 @@ public:
     // clipsForTrack 返回轨道当前拥有的片段副本，删除轨道命令用它保存可撤销状态。
     std::vector<TimelineClip> clipsForTrack(const std::string& trackId) const;
 
+    // moveTrackToIndex 调整轨道显示顺序；片段仍通过稳定 trackId 归属轨道。
+    bool moveTrackToIndex(const std::string& id, std::size_t targetIndex);
+
     // createClip 创建新的时间线片段，并验证片段类型是否允许放在目标轨道上。
     std::optional<TimelineClip> createClip(
         std::string trackId,

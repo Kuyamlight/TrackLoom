@@ -219,6 +219,32 @@ std::vector<TimelineClip> Project::clipsForTrack(const std::string& trackId) con
     return result;
 }
 
+bool Project::moveTrackToIndex(const std::string& id, std::size_t targetIndex)
+{
+    if (targetIndex >= tracks_.size()) {
+        return false;
+    }
+
+    const auto it = std::find_if(tracks_.begin(), tracks_.end(), [&](const Track& track) {
+        return track.id == id;
+    });
+
+    if (it == tracks_.end()) {
+        return false;
+    }
+
+    const auto oldIndex = static_cast<std::size_t>(std::distance(tracks_.begin(), it));
+    if (oldIndex == targetIndex) {
+        return false;
+    }
+
+    // 轨道顺序只影响工程里的排列；片段使用 trackId 关联轨道，所以不需要重写片段。
+    auto movedTrack = std::move(*it);
+    tracks_.erase(it);
+    tracks_.insert(tracks_.begin() + static_cast<std::vector<Track>::difference_type>(targetIndex), std::move(movedTrack));
+    return true;
+}
+
 std::optional<TimelineClip> Project::createClip(
     std::string trackId,
     std::string name,

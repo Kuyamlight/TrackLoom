@@ -100,6 +100,23 @@ private:
     std::vector<TimelineClip> deletedClips_;
 };
 
+// MoveTrackCommand 调整轨道顺序，并保存旧索引用于撤销。
+// 它只移动轨道在列表中的位置，不改变轨道 ID、片段归属、路由或混音状态。
+class MoveTrackCommand final : public Command {
+public:
+    MoveTrackCommand(std::string trackId, std::size_t targetIndex);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string trackId_;
+    std::size_t targetIndex_ = 0;
+    std::optional<std::size_t> oldIndex_;
+};
+
 // AddClipCommand 负责把新的时间线片段加入工程。
 // 它保存创建出的 TimelineClip，因此撤销后再重做时能恢复同一个稳定 ID。
 class AddClipCommand final : public Command {
