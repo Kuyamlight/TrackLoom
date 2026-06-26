@@ -2,6 +2,7 @@
 
 #include "Project.h"
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -62,6 +63,41 @@ private:
     std::string trackName_;
     TrackType trackType_;
     std::optional<Track> createdTrack_;
+};
+
+// RenameTrackCommand 修改轨道名称，并保存旧名称用于撤销。
+// 轨道名称是用户、AI 和导入器都会展示的标识，因此必须进入统一命令历史。
+class RenameTrackCommand final : public Command {
+public:
+    RenameTrackCommand(std::string trackId, std::string newName);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string trackId_;
+    std::string newName_;
+    std::optional<std::string> oldName_;
+};
+
+// DeleteTrackCommand 删除轨道及其片段，并保存完整状态用于撤销。
+// 当前不删除外部素材文件；后续音频素材生命周期需要单独设计和测试。
+class DeleteTrackCommand final : public Command {
+public:
+    explicit DeleteTrackCommand(std::string trackId);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string trackId_;
+    std::optional<Track> deletedTrack_;
+    std::optional<std::size_t> deletedTrackIndex_;
+    std::vector<TimelineClip> deletedClips_;
 };
 
 // AddClipCommand 负责把新的时间线片段加入工程。

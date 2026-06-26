@@ -128,6 +128,114 @@ void AddTrackCommand::undo(Project& project)
     }
 }
 
+RenameTrackCommand::RenameTrackCommand(std::string trackId, std::string newName)
+    : trackId_(std::move(trackId))
+    , newName_(std::move(newName))
+{
+}
+
+std::string RenameTrackCommand::name() const
+{
+    return "RenameTrack";
+}
+
+CommandResult RenameTrackCommand::validate(const Project& project) const
+{
+    if (newName_.empty()) {
+        return CommandResult::fail("Track name must not be empty.");
+    }
+
+    if (!project.findTrackById(trackId_).has_value()) {
+        return CommandResult::fail("Track does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult RenameTrackCommand::execute(Project& project)
+{
+    const auto track = project.findTrackById(trackId_);
+    if (!track.has_value()) {
+        return CommandResult::fail("Track does not exist.");
+    }
+
+    if (newName_.empty()) {
+        return CommandResult::fail("Track name must not be empty.");
+    }
+
+    if (!oldName_.has_value()) {
+        oldName_ = track->name;
+    }
+
+    if (!project.renameTrackById(trackId_, newName_)) {
+        return CommandResult::fail("Track could not be renamed.");
+    }
+
+    return CommandResult::ok();
+}
+
+void RenameTrackCommand::undo(Project& project)
+{
+    if (oldName_.has_value()) {
+        project.renameTrackById(trackId_, *oldName_);
+    }
+}
+
+DeleteTrackCommand::DeleteTrackCommand(std::string trackId)
+    : trackId_(std::move(trackId))
+{
+}
+
+std::string DeleteTrackCommand::name() const
+{
+    return "DeleteTrack";
+}
+
+CommandResult DeleteTrackCommand::validate(const Project& project) const
+{
+    if (!project.findTrackById(trackId_).has_value()) {
+        return CommandResult::fail("Track does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult DeleteTrackCommand::execute(Project& project)
+{
+    if (!deletedTrack_.has_value() || !deletedTrackIndex_.has_value()) {
+        const auto track = project.findTrackById(trackId_);
+        const auto trackIndex = project.trackIndexById(trackId_);
+        if (!track.has_value() || !trackIndex.has_value()) {
+            return CommandResult::fail("Track does not exist.");
+        }
+
+        deletedTrack_ = *track;
+        deletedTrackIndex_ = *trackIndex;
+        deletedClips_ = project.clipsForTrack(trackId_);
+    }
+
+    if (!project.removeTrackById(trackId_)) {
+        return CommandResult::fail("Track could not be deleted.");
+    }
+
+    return CommandResult::ok();
+}
+
+void DeleteTrackCommand::undo(Project& project)
+{
+    if (!deletedTrack_.has_value() || !deletedTrackIndex_.has_value()) {
+        return;
+    }
+
+    if (!project.insertExistingTrackAt(*deletedTrack_, *deletedTrackIndex_)) {
+        return;
+    }
+
+    for (const auto& clip : deletedClips_) {
+        project.insertExistingClip(clip);
+    }
+}
+
 AddClipCommand::AddClipCommand(
     std::string trackId,
     std::string clipName,

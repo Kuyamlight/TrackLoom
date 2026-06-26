@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <iterator>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -130,7 +131,16 @@ bool Project::setTrackMixState(const std::string& id, TrackMixState state)
 
 bool Project::insertExistingTrack(const Track& track)
 {
+    return insertExistingTrackAt(track, tracks_.size());
+}
+
+bool Project::insertExistingTrackAt(const Track& track, std::size_t index)
+{
     if (!isValidTrackMixState(track.mix)) {
+        return false;
+    }
+
+    if (index > tracks_.size()) {
         return false;
     }
 
@@ -138,7 +148,7 @@ bool Project::insertExistingTrack(const Track& track)
         return false;
     }
 
-    tracks_.push_back(track);
+    tracks_.insert(tracks_.begin() + static_cast<std::vector<Track>::difference_type>(index), track);
     observeTrackId(track.id);
     return true;
 }
@@ -164,6 +174,49 @@ bool Project::removeTrackById(const std::string& id)
         clips_.end());
 
     return true;
+}
+
+bool Project::renameTrackById(const std::string& id, std::string name)
+{
+    if (name.empty()) {
+        return false;
+    }
+
+    const auto it = std::find_if(tracks_.begin(), tracks_.end(), [&](const Track& track) {
+        return track.id == id;
+    });
+
+    if (it == tracks_.end()) {
+        return false;
+    }
+
+    it->name = std::move(name);
+    return true;
+}
+
+std::optional<std::size_t> Project::trackIndexById(const std::string& id) const
+{
+    const auto it = std::find_if(tracks_.begin(), tracks_.end(), [&](const Track& track) {
+        return track.id == id;
+    });
+
+    if (it == tracks_.end()) {
+        return std::nullopt;
+    }
+
+    return static_cast<std::size_t>(std::distance(tracks_.begin(), it));
+}
+
+std::vector<TimelineClip> Project::clipsForTrack(const std::string& trackId) const
+{
+    std::vector<TimelineClip> result;
+    for (const auto& clip : clips_) {
+        if (clip.trackId == trackId) {
+            result.push_back(clip);
+        }
+    }
+
+    return result;
 }
 
 std::optional<TimelineClip> Project::createClip(

@@ -174,6 +174,34 @@ void invalidCommandDoesNotModifyProject()
     require(!commands.canUndo(), "failed command should not enter undo stack");
 }
 
+void projectCanRenameTrack()
+{
+    trackloom::Project project("Tracks");
+    const auto track = project.createTrack("Piano", trackloom::TrackType::Instrument);
+    trackloom::TrackPlaybackState playback;
+    trackloom::TrackMixState mix;
+
+    playback.muted = true;
+    mix.gain = 0.50f;
+    mix.pan = 0.25f;
+    require(project.setTrackPlaybackState(track.id, playback), "project should set playback before rename");
+    require(project.setTrackMixState(track.id, mix), "project should set mix before rename");
+
+    require(project.renameTrackById(track.id, "Lead"), "track rename should succeed");
+
+    const auto renamedTrack = project.findTrackById(track.id);
+    require(renamedTrack.has_value(), "renamed track should still exist");
+    require(renamedTrack->id == track.id, "rename should keep track id");
+    require(renamedTrack->name == "Lead", "track should keep renamed value");
+    require(renamedTrack->type == trackloom::TrackType::Instrument, "rename should keep track type");
+    require(renamedTrack->playback == playback, "rename should keep playback state");
+    require(renamedTrack->mix == mix, "rename should keep mix state");
+
+    require(!project.renameTrackById(track.id, ""), "empty track name should fail");
+    require(!project.renameTrackById("missing-track", "Bass"), "missing track rename should fail");
+    require(project.findTrackById(track.id)->name == "Lead", "failed rename should not change track");
+}
+
 void projectCreatesMidiClipOnInstrumentTrack()
 {
     trackloom::Project project("Clips");
@@ -890,6 +918,118 @@ void invalidTrimClipCommandDoesNotModifyProject()
     require(!commands.canUndo(), "failed trim command should not enter undo stack");
 }
 
+void renameTrackCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Tracks");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Piano", trackloom::TrackType::Instrument);
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::RenameTrackCommand>(track.id, "Lead"));
+
+    require(result.success, "rename track command should succeed");
+    require(project.findTrackById(track.id)->name == "Lead", "rename command should update track name");
+
+    require(commands.undo(project), "rename track undo should be available");
+    require(project.findTrackById(track.id)->name == "Piano", "undo should restore original track name");
+
+    require(commands.redo(project), "rename track redo should be available");
+    require(project.findTrackById(track.id)->name == "Lead", "redo should restore renamed track name");
+}
+
+void invalidRenameTrackCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Tracks");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Piano", trackloom::TrackType::Instrument);
+
+    auto emptyNameResult = commands.execute(
+        project,
+        std::make_unique<trackloom::RenameTrackCommand>(track.id, ""));
+    auto missingTrackResult = commands.execute(
+        project,
+        std::make_unique<trackloom::RenameTrackCommand>("missing-track", "Lead"));
+
+    require(!emptyNameResult.success, "empty track rename command should fail validation");
+    require(!missingTrackResult.success, "missing track rename command should fail validation");
+    require(project.findTrackById(track.id)->name == "Piano", "failed track rename should not modify project");
+    require(!commands.canUndo(), "failed track rename should not enter undo stack");
+}
+
+void deleteTrackCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Tracks");
+    trackloom::CommandStack commands;
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto padTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto vocalTrack = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    trackloom::TrackPlaybackState padPlayback;
+    trackloom::TrackMixState padMix;
+
+    padPlayback.disabled = true;
+    padMix.gain = 0.50f;
+    padMix.pan = -0.25f;
+    require(project.setTrackPlaybackState(padTrack.id, padPlayback), "project should set playback before delete");
+    require(project.setTrackMixState(padTrack.id, padMix), "project should set mix before delete");
+
+    const auto leadClip = project.createClip(leadTrack.id, "Lead Intro", trackloom::ClipType::Midi, 0, 960);
+    const auto padClip = project.createClip(padTrack.id, "Pad Intro", trackloom::ClipType::Midi, 960, 960);
+    const auto vocalClip = project.createClip(vocalTrack.id, "Vocal Take", trackloom::ClipType::Audio, 0, 1920);
+
+    require(leadClip.has_value(), "lead clip should exist before track delete");
+    require(padClip.has_value(), "pad clip should exist before track delete");
+    require(vocalClip.has_value(), "vocal clip should exist before track delete");
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteTrackCommand>(padTrack.id));
+
+    require(result.success, "delete track command should succeed");
+    require(project.tracks().size() == 2, "delete track should remove one track");
+    require(project.tracks()[0].id == leadTrack.id, "delete should keep previous track order");
+    require(project.tracks()[1].id == vocalTrack.id, "delete should close the track order gap");
+    require(!project.findTrackById(padTrack.id).has_value(), "delete should remove target track");
+    require(!project.findClipById(padClip->id).has_value(), "delete should remove target track clips");
+    require(project.findClipById(leadClip->id).has_value(), "delete should keep other instrument clips");
+    require(project.findClipById(vocalClip->id).has_value(), "delete should keep other audio clips");
+
+    require(commands.undo(project), "delete track undo should be available");
+    require(project.tracks().size() == 3, "undo should restore deleted track");
+    require(project.tracks()[0].id == leadTrack.id, "undo should keep first track order");
+    require(project.tracks()[1].id == padTrack.id, "undo should restore deleted track at original index");
+    require(project.tracks()[2].id == vocalTrack.id, "undo should keep later track order");
+    require(project.findTrackById(padTrack.id)->playback == padPlayback, "undo should restore playback state");
+    require(project.findTrackById(padTrack.id)->mix == padMix, "undo should restore mix state");
+    require(project.findClipById(padClip->id).has_value(), "undo should restore deleted track clip");
+    require(project.findClipById(padClip->id)->trackId == padTrack.id, "restored clip should still reference restored track");
+
+    require(commands.redo(project), "delete track redo should be available");
+    require(project.tracks().size() == 2, "redo should remove track again");
+    require(!project.findTrackById(padTrack.id).has_value(), "redo should remove restored track");
+    require(!project.findClipById(padClip->id).has_value(), "redo should remove restored track clip");
+}
+
+void invalidDeleteTrackCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Tracks");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Intro", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should exist before invalid track delete");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteTrackCommand>("missing-track"));
+
+    require(!result.success, "missing track delete command should fail validation");
+    require(project.tracks().size() == 1, "failed track delete should not remove tracks");
+    require(project.clips().size() == 1, "failed track delete should not remove clips");
+    require(project.findTrackById(track.id).has_value(), "failed track delete should keep original track");
+    require(project.findClipById(clip->id).has_value(), "failed track delete should keep original clip");
+    require(!commands.canUndo(), "failed track delete should not enter undo stack");
+}
+
 void newTrackPlaybackStateStartsDefault()
 {
     trackloom::Project project("Playback");
@@ -1011,6 +1151,52 @@ void projectCanRoundTripThroughText()
     require(loaded.project->tracks().size() == 2, "loaded project should keep tracks");
     require(loaded.project->tracks()[0].type == trackloom::TrackType::Instrument, "first track type should survive");
     require(loaded.project->tracks()[1].type == trackloom::TrackType::Audio, "second track type should survive");
+}
+
+void projectCanRoundTripTrackRename()
+{
+    trackloom::Project project("Renamed Track Song");
+    const auto track = project.createTrack("Piano", trackloom::TrackType::Instrument);
+
+    require(project.renameTrackById(track.id, "Lead"), "track should rename before save");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("trackloom_project 5\n") == 0, "track rename should not change project format version");
+    require(loaded.project.has_value(), "project with renamed track should load");
+    require(loaded.project->findTrackById(track.id).has_value(), "loaded project should keep renamed track id");
+    require(loaded.project->findTrackById(track.id)->name == "Lead", "loaded project should keep renamed track name");
+}
+
+void projectCanSaveAfterTrackDeletion()
+{
+    trackloom::Project project("Deleted Track Song");
+    trackloom::CommandStack commands;
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto padTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto leadClip = project.createClip(leadTrack.id, "Lead Intro", trackloom::ClipType::Midi, 0, 960);
+    const auto padClip = project.createClip(padTrack.id, "Pad Intro", trackloom::ClipType::Midi, 960, 960);
+
+    require(leadClip.has_value(), "lead clip should exist before track delete save");
+    require(padClip.has_value(), "pad clip should exist before track delete save");
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteTrackCommand>(padTrack.id));
+
+    require(result.success, "track delete command should succeed before save");
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(loaded.project.has_value(), "project after track delete should load");
+    require(loaded.project->tracks().size() == 1, "loaded project should keep remaining track only");
+    require(loaded.project->findTrackById(leadTrack.id).has_value(), "loaded project should keep undeleted track");
+    require(!loaded.project->findTrackById(padTrack.id).has_value(), "loaded project should not restore deleted track");
+    require(loaded.project->clips().size() == 1, "loaded project should keep only undeleted track clips");
+    require(loaded.project->findClipById(leadClip->id).has_value(), "loaded project should keep undeleted clip");
+    require(!loaded.project->findClipById(padClip->id).has_value(), "loaded project should not keep deleted track clip");
 }
 
 void projectCanRoundTripTrackPlaybackState()
@@ -2443,6 +2629,7 @@ int main()
         projectStartsEmpty();
         addTrackCommandSupportsUndoAndRedo();
         invalidCommandDoesNotModifyProject();
+        projectCanRenameTrack();
         projectCreatesMidiClipOnInstrumentTrack();
         projectCreatesAudioClipOnAudioTrack();
         projectRejectsInvalidClipRequests();
@@ -2478,6 +2665,10 @@ int main()
         trimClipStartCommandSupportsUndoAndRedo();
         trimClipEndCommandSupportsUndoAndRedo();
         invalidTrimClipCommandDoesNotModifyProject();
+        renameTrackCommandSupportsUndoAndRedo();
+        invalidRenameTrackCommandDoesNotModifyProject();
+        deleteTrackCommandSupportsUndoAndRedo();
+        invalidDeleteTrackCommandDoesNotModifyProject();
         newTrackPlaybackStateStartsDefault();
         setTrackPlaybackStateCommandSupportsUndoAndRedo();
         invalidPlaybackStateCommandDoesNotModifyProject();
@@ -2485,6 +2676,8 @@ int main()
         setTrackMixStateCommandSupportsUndoAndRedo();
         invalidTrackMixStateCommandDoesNotModifyProject();
         projectCanRoundTripThroughText();
+        projectCanRoundTripTrackRename();
+        projectCanSaveAfterTrackDeletion();
         projectCanRoundTripTrackPlaybackState();
         projectCanRoundTripTrackMixState();
         projectCanRoundTripTimelineClips();

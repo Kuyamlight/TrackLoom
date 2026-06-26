@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -92,7 +93,17 @@ public:
 
     // insertExistingTrack 用于撤销重做或读取文件时恢复已有 ID 的轨道。
     bool insertExistingTrack(const Track& track);
+    bool insertExistingTrackAt(const Track& track, std::size_t index);
     bool removeTrackById(const std::string& id);
+
+    // renameTrackById 只修改轨道显示名称；轨道不存在或名称为空时保持工程不变。
+    bool renameTrackById(const std::string& id, std::string name);
+
+    // trackIndexById 返回轨道在工程轨道列表中的当前位置，用于撤销时恢复原顺序。
+    std::optional<std::size_t> trackIndexById(const std::string& id) const;
+
+    // clipsForTrack 返回轨道当前拥有的片段副本，删除轨道命令用它保存可撤销状态。
+    std::vector<TimelineClip> clipsForTrack(const std::string& trackId) const;
 
     // createClip 创建新的时间线片段，并验证片段类型是否允许放在目标轨道上。
     std::optional<TimelineClip> createClip(
