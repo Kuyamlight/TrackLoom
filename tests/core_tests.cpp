@@ -11,6 +11,7 @@
 #include "Command.h"
 #include "MidiDispatch.h"
 #include "MidiPlayback.h"
+#include "MidiOutputSession.h"
 #include "MidiTrackRouter.h"
 #include "PlaybackClock.h"
 #include "ProjectFile.h"
@@ -1748,6 +1749,193 @@ void projectMidiOutputGraphAcceptsEmptyBindingsForEmptyRenderResult()
     require(dispatchResult.deliveredEventCount == 0, "empty project midi graph dispatch should deliver no events");
     require(dispatchResult.failedEventIndex == -1, "empty project midi graph dispatch should not report failed index");
     require(graph.receiverCount() == 0, "empty project midi graph should report zero receivers");
+}
+
+void midiOutputSessionTracksDeliveredNoteLifecycle()
+{
+    trackloom::Project project("MIDI Output Session");
+    trackloom::MidiOutputSession session;
+    RecordingMidiEventReceiver receiver;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    require(session.rebuild(project, { { track.id, &receiver } }), "midi output session should accept an instrument route");
+
+    trackloom::AudioEngineRenderResult noteOnResult;
+    noteOnResult.scheduledMidiEvents.push_back(
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, track.id));
+
+    const auto onDispatch = session.dispatch(noteOnResult);
+
+    require(onDispatch.success, "midi output session should deliver note on");
+    require(onDispatch.deliveredEventCount == 1, "delivered note on should count as delivered");
+    require(session.activeNoteCount() == 1, "delivered note on should become active");
+    require(receiver.events().size() == 1, "receiver should record delivered note on");
+
+    trackloom::AudioEngineRenderResult noteOffResult;
+    noteOffResult.scheduledMidiEvents.push_back(
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOff, 120, 1, 60, 0, track.id));
+
+    const auto offDispatch = session.dispatch(noteOffResult);
+
+    require(offDispatch.success, "midi output session should deliver note off");
+    require(offDispatch.deliveredEventCount == 1, "delivered note off should count as delivered");
+    require(session.activeNoteCount() == 0, "delivered note off should clear active note");
+    require(receiver.events().size() == 2, "receiver should record note on and note off");
+}
+
+void midiOutputSessionIgnoresUndeliveredEvents()
+{
+    trackloom::Project project("MIDI Output Session");
+    trackloom::MidiOutputSession session;
+    FailingMidiEventReceiver receiver(1);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    require(session.rebuild(project, { { track.id, &receiver } }), "midi output session should accept failing receiver route");
+
+    trackloom::AudioEngineRenderResult renderResult;
+    renderResult.scheduledMidiEvents.push_back(
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, track.id));
+
+    const auto dispatchResult = session.dispatch(renderResult);
+
+    require(!dispatchResult.success, "midi output session should report receiver failure");
+    require(dispatchResult.deliveredEventCount == 0, "failed first event should not count as delivered");
+    require(dispatchResult.failedEventIndex == 0, "failed first event should report index zero");
+    require(session.activeNoteCount() == 0, "undelivered note on should not become active");
+    require(receiver.callCount() == 1, "receiver failure should still count one attempted call");
+}
+
+void midiOutputSessionReleasesActiveNotes()
+{
+    trackloom::Project project("MIDI Output Session");
+    trackloom::MidiOutputSession session;
+    RecordingMidiEventReceiver receiver;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    require(session.rebuild(project, { { track.id, &receiver } }), "midi output session should accept release route");
+
+    trackloom::AudioEngineRenderResult noteOnResult;
+    noteOnResult.scheduledMidiEvents.push_back(
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, track.id));
+    require(session.dispatch(noteOnResult).success, "midi output session should deliver note before release");
+    require(session.activeNoteCount() == 1, "note should be active before release");
+
+    const auto releaseResult = session.releaseAllActiveNotes(32);
+
+    require(releaseResult.success, "midi output session should release active notes");
+    require(releaseResult.attemptedEventCount == 1, "release should attempt one note off");
+    require(releaseResult.deliveredEventCount == 1, "release should deliver one note off");
+    require(session.activeNoteCount() == 0, "successful release should clear active note");
+    require(receiver.events().size() == 2, "receiver should record original note on and release note off");
+    require(receiver.events()[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "release should generate note off event");
+    require(receiver.messages()[1].sampleOffset == 32, "release should keep requested sample offset");
+    require(receiver.messages()[1].statusByte == 0x80, "release should use note off status byte on channel one");
+    require(receiver.messages()[1].data1 == 60, "release should keep active note pitch");
+    require(receiver.messages()[1].data2 == 0, "release should send zero note off velocity");
+}
+
+void midiOutputSessionKeepsUndeliveredReleaseNotesActive()
+{
+    trackloom::Project project("MIDI Output Session");
+    trackloom::MidiOutputSession session;
+    FailingMidiEventReceiver receiver(4);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    require(session.rebuild(project, { { track.id, &receiver } }), "midi output session should accept partial release route");
+
+    trackloom::AudioEngineRenderResult noteOnResult;
+    noteOnResult.scheduledMidiEvents = {
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, track.id),
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 4, 1, 64, 90, track.id),
+    };
+    require(session.dispatch(noteOnResult).success, "midi output session should deliver notes before partial release");
+    require(session.activeNoteCount() == 2, "two delivered note ons should become active");
+
+    const auto releaseResult = session.releaseAllActiveNotes(16);
+
+    require(!releaseResult.success, "midi output session should report partial release failure");
+    require(releaseResult.attemptedEventCount == 2, "partial release should attempt the failed event");
+    require(releaseResult.deliveredEventCount == 1, "partial release should count only delivered note offs");
+    require(releaseResult.failedEventIndex == 1, "partial release should report failed release index");
+    require(session.activeNoteCount() == 1, "undelivered release note should remain active");
+    require(receiver.callCount() == 4, "partial release should stop when receiver fails");
+}
+
+void midiOutputSessionReleaseClearsStackedMatchingNotes()
+{
+    trackloom::Project project("MIDI Output Session");
+    trackloom::MidiOutputSession session;
+    RecordingMidiEventReceiver receiver;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    require(session.rebuild(project, { { track.id, &receiver } }), "midi output session should accept stacked note route");
+
+    trackloom::AudioEngineRenderResult noteOnResult;
+    noteOnResult.scheduledMidiEvents = {
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, track.id),
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 4, 1, 60, 90, track.id),
+    };
+
+    require(session.dispatch(noteOnResult).success, "midi output session should deliver stacked matching note ons");
+    require(session.activeNoteCount() == 1, "matching note ons should share one active midi key");
+
+    const auto releaseResult = session.releaseAllActiveNotes(12);
+
+    require(releaseResult.success, "midi output session should release stacked matching note key");
+    require(releaseResult.deliveredEventCount == 1, "stacked matching note release should need one note off");
+    require(session.activeNoteCount() == 0, "panic-style release should clear the active key even after stacked note ons");
+    require(receiver.events().size() == 3, "receiver should record two note ons and one release note off");
+    require(receiver.events()[2].event.type == trackloom::MidiPlaybackEventType::NoteOff, "stacked matching note release should be note off");
+}
+
+void midiOutputSessionRejectsRebuildWhileNotesAreActive()
+{
+    trackloom::Project project("MIDI Output Session");
+    trackloom::MidiOutputSession session;
+    RecordingMidiEventReceiver leadReceiver;
+    RecordingMidiEventReceiver padReceiver;
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto padTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+
+    require(session.rebuild(project, { { leadTrack.id, &leadReceiver } }), "midi output session should accept initial route");
+
+    trackloom::AudioEngineRenderResult leadNoteOn;
+    leadNoteOn.scheduledMidiEvents.push_back(
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, leadTrack.id));
+    require(session.dispatch(leadNoteOn).success, "midi output session should deliver active lead note");
+    require(session.activeNoteCount() == 1, "lead note should be active before rebuild");
+
+    require(!session.rebuild(project, { { padTrack.id, &padReceiver } }), "midi output session should reject rebuild while notes are active");
+    require(session.receiverCount() == 1, "rejected rebuild should keep previous route count");
+
+    require(session.releaseAllActiveNotes(8).success, "midi output session should release active lead note before rebuild");
+    require(session.rebuild(project, { { padTrack.id, &padReceiver } }), "midi output session should rebuild after all notes are released");
+
+    trackloom::AudioEngineRenderResult padNoteOn;
+    padNoteOn.scheduledMidiEvents.push_back(
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 64, 90, padTrack.id));
+    require(session.dispatch(padNoteOn).success, "midi output session should deliver through rebuilt route");
+
+    require(leadReceiver.events().size() == 2, "old route should only receive original note and release");
+    require(padReceiver.events().size() == 1, "new route should receive pad note after rebuild");
+}
+
+void midiOutputSessionAcceptsEmptyDispatchAndRelease()
+{
+    trackloom::Project project("MIDI Output Session");
+    trackloom::MidiOutputSession session;
+    trackloom::AudioEngineRenderResult emptyResult;
+
+    require(session.rebuild(project, {}), "midi output session should accept empty routes");
+
+    const auto dispatchResult = session.dispatch(emptyResult);
+    const auto releaseResult = session.releaseAllActiveNotes(0);
+
+    require(dispatchResult.success, "midi output session should accept empty dispatch");
+    require(dispatchResult.attemptedEventCount == 0, "empty dispatch should attempt no events");
+    require(releaseResult.success, "midi output session should accept empty release");
+    require(releaseResult.attemptedEventCount == 0, "empty release should attempt no events");
+    require(session.activeNoteCount() == 0, "empty dispatch and release should keep no active notes");
 }
 
 void renameClipCommandSupportsUndoAndRedo()
@@ -5235,6 +5423,13 @@ int main()
         projectMidiOutputGraphReportsUnboundRenderedTracks();
         projectMidiOutputGraphPropagatesDownstreamFailure();
         projectMidiOutputGraphAcceptsEmptyBindingsForEmptyRenderResult();
+        midiOutputSessionTracksDeliveredNoteLifecycle();
+        midiOutputSessionIgnoresUndeliveredEvents();
+        midiOutputSessionReleasesActiveNotes();
+        midiOutputSessionKeepsUndeliveredReleaseNotesActive();
+        midiOutputSessionReleaseClearsStackedMatchingNotes();
+        midiOutputSessionRejectsRebuildWhileNotesAreActive();
+        midiOutputSessionAcceptsEmptyDispatchAndRelease();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
