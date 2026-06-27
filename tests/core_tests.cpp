@@ -11,6 +11,7 @@
 #include "Command.h"
 #include "MidiDispatch.h"
 #include "MidiPlayback.h"
+#include "MidiTrackRouter.h"
 #include "PlaybackClock.h"
 #include "ProjectFile.h"
 #include "Project.h"
@@ -200,12 +201,13 @@ trackloom::ScheduledMidiPlaybackEvent makeScheduledMidiEvent(
     int sampleOffset,
     int channel,
     int noteNumber,
-    int velocity)
+    int velocity,
+    std::string trackId = "track-1")
 {
     return {
         trackloom::MidiPlaybackEvent {
             type,
-            "track-1",
+            trackId,
             "clip-1",
             "note-1",
             960,
@@ -1482,6 +1484,125 @@ void midiDispatchRejectsInvalidScheduledEvents()
     require(!trackloom::midiOutputMessageForEvent(invalidType).has_value(), "unknown midi event type should not convert");
     require(!invalidTypeResult.success, "unknown midi event type dispatch should fail");
     require(invalidTypeReceiver.messages().empty(), "unknown midi event type should not call receiver");
+}
+
+void midiTrackRouterRoutesEventsByTrackId()
+{
+    RecordingMidiEventReceiver leadReceiver;
+    RecordingMidiEventReceiver padReceiver;
+    trackloom::MidiTrackRouter router;
+    const std::vector<trackloom::ScheduledMidiPlaybackEvent> events {
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, "lead-track"),
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 120, 2, 64, 90, "pad-track"),
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOff, 240, 1, 60, 0, "lead-track"),
+    };
+
+    require(router.rebuild({
+        { "lead-track", &leadReceiver },
+        { "pad-track", &padReceiver },
+    }), "track router should accept valid receiver bindings");
+    require(router.receiverCount() == 2, "track router should report bound receiver count");
+
+    const auto result = trackloom::dispatchScheduledMidiEvents(events, router);
+
+    require(result.success, "track router dispatch should succeed for known tracks");
+    require(result.attemptedEventCount == 3, "track router dispatch should attempt every event");
+    require(result.deliveredEventCount == 3, "track router dispatch should deliver every event");
+    require(result.failedEventIndex == -1, "track router dispatch should not report failed index");
+    require(leadReceiver.events().size() == 2, "lead receiver should get two lead-track events");
+    require(padReceiver.events().size() == 1, "pad receiver should get one pad-track event");
+    require(leadReceiver.events()[0] == events[0], "lead receiver should get first lead event");
+    require(leadReceiver.events()[1] == events[2], "lead receiver should get second lead event");
+    require(padReceiver.events()[0] == events[1], "pad receiver should get the pad event");
+    require(leadReceiver.messages().size() == 2, "lead receiver should get two lead midi messages");
+    require(padReceiver.messages().size() == 1, "pad receiver should get one pad midi message");
+    require(leadReceiver.messages()[0].statusByte == 0x90, "lead note on should keep channel 1 status");
+    require(leadReceiver.messages()[1].statusByte == 0x80, "lead note off should keep channel 1 status");
+    require(padReceiver.messages()[0].statusByte == 0x91, "pad note on should keep channel 2 status");
+}
+
+void midiTrackRouterFailsWhenTrackHasNoReceiver()
+{
+    RecordingMidiEventReceiver leadReceiver;
+    trackloom::MidiTrackRouter router;
+    const std::vector<trackloom::ScheduledMidiPlaybackEvent> events {
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, "missing-track"),
+    };
+
+    require(router.rebuild({ { "lead-track", &leadReceiver } }), "track router should accept the known lead binding");
+
+    const auto result = trackloom::dispatchScheduledMidiEvents(events, router);
+
+    require(!result.success, "track router dispatch should fail for missing track binding");
+    require(result.attemptedEventCount == 1, "missing track should count as attempted");
+    require(result.deliveredEventCount == 0, "missing track should not be delivered");
+    require(result.failedEventIndex == 0, "missing track should fail at index zero");
+    require(leadReceiver.events().empty(), "missing track should not call unrelated receiver");
+}
+
+void midiTrackRouterPreservesReceiverFailure()
+{
+    FailingMidiEventReceiver receiver(1);
+    trackloom::MidiTrackRouter router;
+    const std::vector<trackloom::ScheduledMidiPlaybackEvent> events {
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, "lead-track"),
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 120, 1, 64, 90, "lead-track"),
+    };
+
+    require(router.rebuild({ { "lead-track", &receiver } }), "track router should accept a failing test receiver");
+
+    const auto result = trackloom::dispatchScheduledMidiEvents(events, router);
+
+    require(!result.success, "track router should report downstream receiver failure");
+    require(result.attemptedEventCount == 1, "downstream failure should stop at first attempted event");
+    require(result.deliveredEventCount == 0, "failed downstream event should not count as delivered");
+    require(result.failedEventIndex == 0, "downstream failure should keep failed index");
+    require(receiver.callCount() == 1, "track router should call failing receiver once");
+}
+
+void midiTrackRouterValidatesBindingsWithoutReplacingPreviousRoutes()
+{
+    RecordingMidiEventReceiver leadReceiver;
+    RecordingMidiEventReceiver replacementReceiver;
+    trackloom::MidiTrackRouter router;
+
+    require(router.rebuild({ { "lead-track", &leadReceiver } }), "track router should accept the initial binding");
+    require(!router.rebuild({ { "", &replacementReceiver } }), "track router should reject empty track id");
+    require(!router.rebuild({ { "pad-track", nullptr } }), "track router should reject null receiver");
+    require(!router.rebuild({
+        { "lead-track", &leadReceiver },
+        { "lead-track", &replacementReceiver },
+    }), "track router should reject duplicate track ids");
+
+    const auto result = trackloom::dispatchScheduledMidiEvents({
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, "lead-track"),
+    }, router);
+
+    require(result.success, "valid old route should remain active after failed rebuilds");
+    require(leadReceiver.events().size() == 1, "old lead receiver should still receive events");
+    require(replacementReceiver.events().empty(), "rejected replacement receiver should not receive events");
+    require(router.receiverCount() == 1, "failed rebuilds should preserve previous receiver count");
+}
+
+void midiTrackRouterAcceptsEmptyBindings()
+{
+    trackloom::MidiTrackRouter router;
+    const std::vector<trackloom::ScheduledMidiPlaybackEvent> noEvents;
+
+    require(router.rebuild({}), "track router should accept empty bindings for projects without routed instruments");
+    require(router.receiverCount() == 0, "empty router should report zero receivers");
+
+    const auto emptyResult = trackloom::dispatchScheduledMidiEvents(noEvents, router);
+    require(emptyResult.success, "empty router should accept empty event lists");
+    require(emptyResult.attemptedEventCount == 0, "empty router should attempt no events");
+
+    const auto missingResult = trackloom::dispatchScheduledMidiEvents({
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, "lead-track"),
+    }, router);
+    require(!missingResult.success, "empty router should fail when an event needs a track receiver");
+    require(missingResult.attemptedEventCount == 1, "empty router missing route should count one attempted event");
+    require(missingResult.deliveredEventCount == 0, "empty router missing route should deliver no events");
+    require(missingResult.failedEventIndex == 0, "empty router should fail at the first routed event");
 }
 
 void renameClipCommandSupportsUndoAndRedo()
@@ -4959,6 +5080,11 @@ int main()
         midiDispatchAcceptsEmptyEventList();
         midiDispatchStopsWhenReceiverFails();
         midiDispatchRejectsInvalidScheduledEvents();
+        midiTrackRouterRoutesEventsByTrackId();
+        midiTrackRouterFailsWhenTrackHasNoReceiver();
+        midiTrackRouterPreservesReceiverFailure();
+        midiTrackRouterValidatesBindingsWithoutReplacingPreviousRoutes();
+        midiTrackRouterAcceptsEmptyBindings();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
