@@ -914,6 +914,81 @@ void projectRejectsInvalidTimeSignatureEvents()
     require(project.timeSignatureEvents().size() == 2, "invalid time signature operations should not add events");
 }
 
+void midiClipCanCreateMidiNote()
+{
+    trackloom::Project project("MIDI Notes");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "midi clip should be created before note");
+    const auto note = project.createMidiNote(clip->id, 120, 480, 60, 100, 1);
+
+    require(note.has_value(), "midi clip should accept midi note");
+    require(note->id == "note-1", "first midi note id should be stable");
+    require(note->startTick == 120, "note should keep clip-relative start tick");
+    require(note->lengthTick == 480, "note should keep length tick");
+    require(note->noteNumber == 60, "note should keep pitch");
+    require(note->velocity == 100, "note should keep velocity");
+    require(note->channel == 1, "note should keep channel");
+    require(project.findMidiNoteById(note->id).has_value(), "project should find note by stable id");
+    require(project.findClipById(clip->id)->midiNotes.size() == 1, "note should be stored inside owning clip");
+    require(project.findClipById(clip->id)->midiNotes.front() == *note, "stored note should match created note");
+}
+
+void audioClipRejectsMidiNotes()
+{
+    trackloom::Project project("MIDI Notes");
+    const auto track = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = project.createClip(track.id, "Vocal Take", trackloom::ClipType::Audio, 0, 1920);
+
+    require(clip.has_value(), "audio clip should be created before note rejection");
+    require(!project.createMidiNote(clip->id, 0, 480, 60, 100, 1).has_value(), "audio clip should reject midi note");
+    require(project.findClipById(clip->id)->midiNotes.empty(), "audio clip should remain without midi notes");
+}
+
+void projectRejectsInvalidMidiNotes()
+{
+    trackloom::Project project("MIDI Notes");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto note = project.createMidiNote(clip->id, 120, 240, 60, 100, 1);
+    trackloom::MidiNoteEvent duplicateId;
+    trackloom::MidiNoteEvent missingId;
+
+    require(clip.has_value(), "midi clip should be created before invalid note tests");
+    require(note.has_value(), "midi note should be created before invalid note tests");
+    duplicateId = *note;
+    duplicateId.startTick = 480;
+    missingId.startTick = 480;
+    missingId.lengthTick = 120;
+    missingId.noteNumber = 64;
+    missingId.velocity = 90;
+    missingId.channel = 1;
+
+    require(!project.createMidiNote("missing-clip", 0, 120, 60, 100, 1).has_value(), "missing clip should reject midi note");
+    require(!project.createMidiNote(clip->id, -1, 120, 60, 100, 1).has_value(), "note should reject negative start");
+    require(!project.createMidiNote(clip->id, 0, 0, 60, 100, 1).has_value(), "note should reject zero length");
+    require(!project.createMidiNote(clip->id, 900, 120, 60, 100, 1).has_value(), "note should reject range beyond clip length");
+    require(!project.createMidiNote(clip->id, 0, 120, -1, 100, 1).has_value(), "note should reject low pitch");
+    require(!project.createMidiNote(clip->id, 0, 120, 128, 100, 1).has_value(), "note should reject high pitch");
+    require(!project.createMidiNote(clip->id, 0, 120, 60, 0, 1).has_value(), "note should reject zero velocity");
+    require(!project.createMidiNote(clip->id, 0, 120, 60, 128, 1).has_value(), "note should reject high velocity");
+    require(!project.createMidiNote(clip->id, 0, 120, 60, 100, 0).has_value(), "note should reject low channel");
+    require(!project.createMidiNote(clip->id, 0, 120, 60, 100, 17).has_value(), "note should reject high channel");
+    require(!project.insertExistingMidiNote(clip->id, duplicateId), "note should reject duplicate id");
+    require(!project.insertExistingMidiNote(clip->id, missingId), "note should reject empty id");
+    require(!project.setMidiNoteTiming(note->id, 900, 120), "note should reject timing beyond clip range");
+    require(!project.setMidiNotePitch(note->id, 128), "note should reject invalid pitch update");
+    require(!project.setMidiNoteVelocity(note->id, 0), "note should reject invalid velocity update");
+    require(!project.setMidiNoteChannel(note->id, 17), "note should reject invalid channel update");
+    require(!project.removeMidiNoteById("missing-note"), "missing note delete should fail");
+
+    const auto unchangedNote = project.findMidiNoteById(note->id);
+    require(unchangedNote.has_value(), "invalid note operations should keep original note");
+    require(unchangedNote.value() == *note, "failed note operations should not modify original note");
+    require(project.findClipById(clip->id)->midiNotes.size() == 1, "invalid note operations should not add notes");
+}
+
 void renameClipCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Clips");
@@ -1186,6 +1261,123 @@ void invalidDuplicateClipCommandDoesNotModifyProject()
     require(project.clips().size() == 1, "failed duplicate command should not add clips");
     require(project.findClipById(clip->id)->trackId == instrument.id, "failed duplicate command should not move source");
     require(!commands.canUndo(), "failed duplicate command should not enter undo stack");
+}
+
+void deleteClipCommandRestoresMidiNotes()
+{
+    trackloom::Project project("MIDI Notes");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto note = project.createMidiNote(clip->id, 0, 240, 60, 100, 1);
+
+    require(note.has_value(), "note should be created before clip delete");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteClipCommand>(clip->id));
+
+    require(result.success, "delete clip with notes should succeed");
+    require(!project.findClipById(clip->id).has_value(), "delete clip should remove clip");
+    require(!project.findMidiNoteById(note->id).has_value(), "delete clip should remove nested note");
+
+    require(commands.undo(project), "delete clip with notes undo should be available");
+    require(project.findClipById(clip->id).has_value(), "undo should restore clip");
+    require(project.findMidiNoteById(note->id).has_value(), "undo should restore nested note");
+    require(project.findMidiNoteById(note->id).value() == *note, "undo should restore complete note state");
+}
+
+void deleteTrackCommandRestoresMidiNotes()
+{
+    trackloom::Project project("MIDI Notes");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto note = project.createMidiNote(clip->id, 0, 240, 60, 100, 1);
+
+    require(note.has_value(), "note should be created before track delete");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteTrackCommand>(track.id));
+
+    require(result.success, "delete track with notes should succeed");
+    require(project.tracks().empty(), "delete track should remove track");
+    require(project.clips().empty(), "delete track should remove clips");
+    require(!project.findMidiNoteById(note->id).has_value(), "delete track should remove nested note");
+
+    require(commands.undo(project), "delete track with notes undo should be available");
+    require(project.findTrackById(track.id).has_value(), "undo should restore track");
+    require(project.findClipById(clip->id).has_value(), "undo should restore clip");
+    require(project.findMidiNoteById(note->id).has_value(), "undo should restore nested note");
+}
+
+void duplicateMidiClipCopiesNotesWithNewIds()
+{
+    trackloom::Project project("MIDI Notes");
+    const auto sourceTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto targetTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(sourceTrack.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto note = project.createMidiNote(clip->id, 120, 240, 60, 100, 1);
+
+    require(note.has_value(), "note should be created before clip duplicate");
+    const auto duplicate = project.duplicateClipToTrackAtTick(clip->id, targetTrack.id, 1920);
+
+    require(duplicate.has_value(), "duplicate midi clip should succeed");
+    require(duplicate->midiNotes.size() == 1, "duplicate should copy midi notes");
+    require(duplicate->midiNotes.front().id != note->id, "duplicate note should receive new stable id");
+    require(duplicate->midiNotes.front().startTick == note->startTick, "duplicate note should keep relative start");
+    require(duplicate->midiNotes.front().lengthTick == note->lengthTick, "duplicate note should keep length");
+    require(duplicate->midiNotes.front().noteNumber == note->noteNumber, "duplicate note should keep pitch");
+    require(project.findClipById(clip->id)->midiNotes.front().id == note->id, "duplicate should not rewrite source note id");
+}
+
+void splitMidiClipMovesRightSideNotes()
+{
+    trackloom::Project project("MIDI Notes");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto leftNote = project.createMidiNote(clip->id, 120, 120, 60, 100, 1);
+    const auto rightNote = project.createMidiNote(clip->id, 600, 120, 64, 90, 1);
+
+    require(leftNote.has_value(), "left note should be created before split");
+    require(rightNote.has_value(), "right note should be created before split");
+    const auto rightClip = project.splitClipAtTick(clip->id, 480);
+
+    require(rightClip.has_value(), "split midi clip should succeed when notes do not cross split");
+    require(project.findClipById(clip->id)->midiNotes.size() == 1, "left clip should keep left-side note");
+    require(project.findClipById(clip->id)->midiNotes.front().id == leftNote->id, "left note id should stay on left clip");
+    require(project.findClipById(rightClip->id)->midiNotes.size() == 1, "right clip should receive right-side note");
+    require(project.findClipById(rightClip->id)->midiNotes.front().id == rightNote->id, "right note id should move to right clip");
+    require(project.findClipById(rightClip->id)->midiNotes.front().startTick == 120, "right note start should become relative to right clip");
+}
+
+void splitMidiClipRejectsNotesCrossingSplitTick()
+{
+    trackloom::Project project("MIDI Notes");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto crossingNote = project.createMidiNote(clip->id, 360, 240, 60, 100, 1);
+
+    require(crossingNote.has_value(), "crossing note should be created before split rejection");
+    const auto rightClip = project.splitClipAtTick(clip->id, 480);
+
+    require(!rightClip.has_value(), "split should reject note crossing split tick");
+    require(project.clips().size() == 1, "failed split should not add right clip");
+    require(project.findClipById(clip->id)->lengthTick == 960, "failed split should keep original clip length");
+    require(project.findMidiNoteById(crossingNote->id).has_value(), "failed split should keep crossing note");
+}
+
+void clipTimingRejectsMidiNotesOutsideClipRange()
+{
+    trackloom::Project project("MIDI Notes");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto note = project.createMidiNote(clip->id, 720, 200, 60, 100, 1);
+
+    require(note.has_value(), "late note should be created before clip timing rejection");
+    require(!project.setClipTiming(clip->id, 0, 800), "clip timing should reject shortening that would exclude note");
+    require(!project.trimClipEndToTick(clip->id, 800), "clip end trim should reject excluding note");
+    require(project.findClipById(clip->id)->lengthTick == 960, "failed clip timing should keep original length");
+    require(project.findMidiNoteById(note->id).has_value(), "failed clip timing should keep note");
 }
 
 void trimClipStartCommandSupportsUndoAndRedo()
@@ -1611,6 +1803,180 @@ void invalidTimeSignatureCommandDoesNotModifyProject()
     require(!commands.canUndo(), "failed time signature commands should not enter undo stack");
 }
 
+void addMidiNoteCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("MIDI Notes");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "clip should be created before add note command");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::AddMidiNoteCommand>(clip->id, 0, 480, 60, 100, 1));
+
+    require(result.success, "add midi note command should succeed");
+    require(project.findClipById(clip->id)->midiNotes.size() == 1, "add command should store note");
+    require(project.findClipById(clip->id)->midiNotes.front().id == "note-1", "add command should create stable note id");
+
+    require(commands.undo(project), "add note undo should be available");
+    require(project.findClipById(clip->id)->midiNotes.empty(), "undo should remove note");
+
+    require(commands.redo(project), "add note redo should be available");
+    require(project.findClipById(clip->id)->midiNotes.size() == 1, "redo should restore note");
+    require(project.findClipById(clip->id)->midiNotes.front().id == "note-1", "redo should preserve note id");
+}
+
+void setMidiNoteTimingCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("MIDI Notes");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto note = project.createMidiNote(clip->id, 0, 240, 60, 100, 1);
+
+    require(note.has_value(), "note should be created before timing command");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetMidiNoteTimingCommand>(note->id, 120, 360));
+
+    require(result.success, "set midi note timing command should succeed");
+    require(project.findMidiNoteById(note->id)->startTick == 120, "command should update note start");
+    require(project.findMidiNoteById(note->id)->lengthTick == 360, "command should update note length");
+
+    require(commands.undo(project), "set note timing undo should be available");
+    require(project.findMidiNoteById(note->id)->startTick == 0, "undo should restore note start");
+    require(project.findMidiNoteById(note->id)->lengthTick == 240, "undo should restore note length");
+
+    require(commands.redo(project), "set note timing redo should be available");
+    require(project.findMidiNoteById(note->id)->startTick == 120, "redo should restore note start");
+    require(project.findMidiNoteById(note->id)->lengthTick == 360, "redo should restore note length");
+}
+
+void setMidiNotePitchCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("MIDI Notes");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto note = project.createMidiNote(clip->id, 0, 240, 60, 100, 1);
+
+    require(note.has_value(), "note should be created before pitch command");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetMidiNotePitchCommand>(note->id, 64));
+
+    require(result.success, "set midi note pitch command should succeed");
+    require(project.findMidiNoteById(note->id)->noteNumber == 64, "command should update note pitch");
+
+    require(commands.undo(project), "set note pitch undo should be available");
+    require(project.findMidiNoteById(note->id)->noteNumber == 60, "undo should restore note pitch");
+
+    require(commands.redo(project), "set note pitch redo should be available");
+    require(project.findMidiNoteById(note->id)->noteNumber == 64, "redo should restore note pitch");
+}
+
+void setMidiNoteVelocityCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("MIDI Notes");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto note = project.createMidiNote(clip->id, 0, 240, 60, 100, 1);
+
+    require(note.has_value(), "note should be created before velocity command");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetMidiNoteVelocityCommand>(note->id, 80));
+
+    require(result.success, "set midi note velocity command should succeed");
+    require(project.findMidiNoteById(note->id)->velocity == 80, "command should update note velocity");
+
+    require(commands.undo(project), "set note velocity undo should be available");
+    require(project.findMidiNoteById(note->id)->velocity == 100, "undo should restore note velocity");
+
+    require(commands.redo(project), "set note velocity redo should be available");
+    require(project.findMidiNoteById(note->id)->velocity == 80, "redo should restore note velocity");
+}
+
+void setMidiNoteChannelCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("MIDI Notes");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto note = project.createMidiNote(clip->id, 0, 240, 60, 100, 1);
+
+    require(note.has_value(), "note should be created before channel command");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetMidiNoteChannelCommand>(note->id, 2));
+
+    require(result.success, "set midi note channel command should succeed");
+    require(project.findMidiNoteById(note->id)->channel == 2, "command should update note channel");
+
+    require(commands.undo(project), "set note channel undo should be available");
+    require(project.findMidiNoteById(note->id)->channel == 1, "undo should restore note channel");
+
+    require(commands.redo(project), "set note channel redo should be available");
+    require(project.findMidiNoteById(note->id)->channel == 2, "redo should restore note channel");
+}
+
+void deleteMidiNoteCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("MIDI Notes");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto note = project.createMidiNote(clip->id, 0, 240, 60, 100, 1);
+
+    require(note.has_value(), "note should be created before delete command");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteMidiNoteCommand>(note->id));
+
+    require(result.success, "delete midi note command should succeed");
+    require(!project.findMidiNoteById(note->id).has_value(), "delete command should remove note");
+
+    require(commands.undo(project), "delete note undo should be available");
+    require(project.findMidiNoteById(note->id).has_value(), "undo should restore note");
+    require(project.findMidiNoteById(note->id).value() == *note, "undo should restore complete note state");
+
+    require(commands.redo(project), "delete note redo should be available");
+    require(!project.findMidiNoteById(note->id).has_value(), "redo should delete note again");
+}
+
+void invalidMidiNoteCommandDoesNotModifyProject()
+{
+    trackloom::Project project("MIDI Notes");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto note = project.createMidiNote(clip->id, 0, 240, 60, 100, 1);
+
+    require(note.has_value(), "note should be created before invalid commands");
+    auto addOutOfRangeResult = commands.execute(
+        project,
+        std::make_unique<trackloom::AddMidiNoteCommand>(clip->id, 900, 120, 60, 100, 1));
+    auto setInvalidTimingResult = commands.execute(
+        project,
+        std::make_unique<trackloom::SetMidiNoteTimingCommand>(note->id, 900, 120));
+    auto setInvalidPitchResult = commands.execute(
+        project,
+        std::make_unique<trackloom::SetMidiNotePitchCommand>(note->id, 128));
+    auto deleteMissingResult = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteMidiNoteCommand>("missing-note"));
+
+    require(!addOutOfRangeResult.success, "out-of-range add note command should fail");
+    require(!setInvalidTimingResult.success, "invalid timing note command should fail");
+    require(!setInvalidPitchResult.success, "invalid pitch note command should fail");
+    require(!deleteMissingResult.success, "missing note delete command should fail");
+    require(project.findMidiNoteById(note->id).value() == *note, "failed note commands should not modify note");
+    require(project.findClipById(clip->id)->midiNotes.size() == 1, "failed note commands should not add notes");
+    require(!commands.canUndo(), "failed note commands should not enter undo stack");
+}
+
 void renameTrackCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Tracks");
@@ -1957,7 +2323,7 @@ void projectCanRoundTripTrackRename()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 9\n") == 0, "track rename should use current project format version");
+    require(saved.find("trackloom_project 10\n") == 0, "track rename should use current project format version");
     require(loaded.project.has_value(), "project with renamed track should load");
     require(loaded.project->findTrackById(track.id).has_value(), "loaded project should keep renamed track id");
     require(loaded.project->findTrackById(track.id)->name == "Lead", "loaded project should keep renamed track name");
@@ -2007,7 +2373,7 @@ void projectCanRoundTripTrackReorder()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 9\n") == 0, "track reorder should use current project format version");
+    require(saved.find("trackloom_project 10\n") == 0, "track reorder should use current project format version");
     require(loaded.project.has_value(), "project with reordered tracks should load");
     require(loaded.project->tracks()[0].id == leadTrack.id, "loaded project should keep first track order");
     require(loaded.project->tracks()[1].id == vocalTrack.id, "loaded project should keep shifted track order");
@@ -2032,7 +2398,7 @@ void projectCanRoundTripTrackViewState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 9\n") == 0, "saved view project should use current format version");
+    require(saved.find("trackloom_project 10\n") == 0, "saved view project should use current format version");
     require(saved.find("track_view_state " + leadTrack.id + " hidden=1 collapsed=0\n") != std::string::npos, "saved project should include hidden state");
     require(saved.find("track_view_state " + folderTrack.id + " hidden=1 collapsed=1\n") != std::string::npos, "saved project should include folder collapsed state");
     require(loaded.project.has_value(), "project with view state should load");
@@ -2053,7 +2419,7 @@ void projectCanRoundTripTrackPlaybackState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 9\n") == 0, "saved project should use current format version");
+    require(saved.find("trackloom_project 10\n") == 0, "saved project should use current format version");
     require(loaded.project.has_value(), "project with playback state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
     require(loadedTrack.has_value(), "loaded project should contain track");
@@ -2073,7 +2439,7 @@ void projectCanRoundTripTrackMixState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 9\n") == 0, "saved mix project should use current format version");
+    require(saved.find("trackloom_project 10\n") == 0, "saved mix project should use current format version");
     require(saved.find("track_mix_state " + track.id + " gain=0.25 pan=-0.5\n") != std::string::npos, "saved project should include track mix state");
     require(loaded.project.has_value(), "project with mix state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
@@ -2093,7 +2459,7 @@ void projectCanRoundTripTimelineClips()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 9\n") == 0, "saved clip project should use current format version");
+    require(saved.find("trackloom_project 10\n") == 0, "saved clip project should use current format version");
     require(saved.find("clip clip-1 " + instrumentTrack.id + " Midi 0 960 Intro Melody\n") != std::string::npos, "saved project should include midi clip record");
     require(saved.find("clip clip-2 " + audioTrack.id + " Audio 960 1920 Vocal Take\n") != std::string::npos, "saved project should include audio clip record");
     require(loaded.project.has_value(), "project with clips should load");
@@ -2263,7 +2629,7 @@ void projectCanRoundTripTimelineMarkers()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 9\n") == 0, "saved marker project should use current format version");
+    require(saved.find("trackloom_project 10\n") == 0, "saved marker project should use current format version");
     require(saved.find("marker " + introMarker->id + " 0 Intro\n") != std::string::npos, "saved project should include intro marker");
     require(saved.find("marker " + verseMarker->id + " 1920 Verse A\n") != std::string::npos, "saved project should include edited marker");
     require(loaded.project.has_value(), "project with markers should load");
@@ -2306,7 +2672,7 @@ void projectCanRoundTripTempoEvents()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 9\n") == 0, "saved tempo project should use current format version");
+    require(saved.find("trackloom_project 10\n") == 0, "saved tempo project should use current format version");
     require(saved.find("tempo tempo-1 0 100\n") != std::string::npos, "saved project should include default tempo record");
     require(saved.find("tempo " + customTempo->id + " 960 60\n") != std::string::npos, "saved project should include custom tempo record");
     require(loaded.project.has_value(), "project with tempo events should load");
@@ -2327,7 +2693,7 @@ void projectCanRoundTripTimeSignatureEvents()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 9\n") == 0, "saved time signature project should use current format version");
+    require(saved.find("trackloom_project 10\n") == 0, "saved time signature project should use current format version");
     require(saved.find("time_signature meter-1 0 6 8\n") != std::string::npos, "saved project should include default time signature record");
     require(saved.find("time_signature " + customMeter->id + " 3840 3 4\n") != std::string::npos, "saved project should include custom time signature record");
     require(loaded.project.has_value(), "project with time signature events should load");
@@ -2338,6 +2704,27 @@ void projectCanRoundTripTimeSignatureEvents()
     require(loaded.project->findTimeSignatureEventById(customMeter->id)->numerator == 3, "loaded custom time signature should keep numerator");
     require(loaded.project->findTimeSignatureEventById(customMeter->id)->denominator == 4, "loaded custom time signature should keep denominator");
     require(loaded.project->ticksPerMeasureAtTick(3840) == 2880, "loaded time signature map should preserve measure length");
+}
+
+void projectCanRoundTripMidiNotes()
+{
+    trackloom::Project project("MIDI Song");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+    const auto note = project.createMidiNote(clip->id, 120, 240, 60, 100, 1);
+
+    require(note.has_value(), "note should be created before round trip");
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("trackloom_project 10\n") == 0, "saved midi note project should use current format version");
+    require(saved.find("midi_note " + clip->id + " " + note->id + " 120 240 60 100 1\n") != std::string::npos, "saved project should include midi note record");
+    require(loaded.project.has_value(), "project with midi notes should load");
+    const auto loadedClip = loaded.project->findClipById(clip->id);
+    require(loadedClip.has_value(), "loaded project should keep midi clip");
+    require(loadedClip->midiNotes.size() == 1, "loaded midi clip should keep note");
+    require(loaded.project->findMidiNoteById(note->id).has_value(), "loaded project should find note by id");
+    require(loaded.project->findMidiNoteById(note->id).value() == *note, "loaded note should keep complete state");
 }
 
 void versionOneProjectLoadsDefaultPlaybackState()
@@ -2479,6 +2866,27 @@ void versionEightProjectLoadsDefaultTimeSignatureMap()
     require(loaded.project->timeSignatureEvents().front().denominator == 4, "version 8 default denominator should be 4");
 }
 
+void versionNineProjectLoadsMidiClipsWithoutNotes()
+{
+    const std::string text =
+        "trackloom_project 9\n"
+        "name Meter Song\n"
+        "tempo tempo-1 0 120\n"
+        "time_signature meter-1 0 4 4\n"
+        "track track-1 Instrument Lead\n"
+        "track_playback_state track-1 muted=0 soloed=0 disabled=0\n"
+        "track_mix_state track-1 gain=1 pan=0\n"
+        "track_view_state track-1 hidden=0 collapsed=0\n"
+        "clip clip-1 track-1 Midi 0 960 Lead Phrase\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(loaded.project.has_value(), "version 9 project should load with empty midi note lists");
+    const auto clip = loaded.project->findClipById("clip-1");
+    require(clip.has_value(), "version 9 midi clip should load");
+    require(clip->midiNotes.empty(), "version 9 midi clip should default to no midi notes");
+}
+
 void invalidTrackPlaybackStateRecordIsRejected()
 {
     const std::string text =
@@ -2576,6 +2984,24 @@ void invalidTimeSignatureRecordIsRejected()
 
     require(!loaded.project.has_value(), "invalid time signature denominator should fail");
     require(!loaded.error.empty(), "invalid time signature record should report an error");
+}
+
+void invalidMidiNoteRecordIsRejected()
+{
+    const std::string text =
+        "trackloom_project 10\n"
+        "name Broken MIDI Song\n"
+        "track track-1 Instrument Lead\n"
+        "track_playback_state track-1 muted=0 soloed=0 disabled=0\n"
+        "track_mix_state track-1 gain=1 pan=0\n"
+        "track_view_state track-1 hidden=0 collapsed=0\n"
+        "clip clip-1 track-1 Midi 0 960 Lead Phrase\n"
+        "midi_note clip-1 note-1 0 120 128 100 1\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(!loaded.project.has_value(), "invalid midi note pitch should fail");
+    require(!loaded.error.empty(), "invalid midi note record should report an error");
 }
 
 void projectCanRoundTripNamesWithSpaces()
@@ -3743,6 +4169,9 @@ int main()
         projectCanCreateTimeSignatureEvent();
         projectCanQueryTimeSignatureAndMeasureLength();
         projectRejectsInvalidTimeSignatureEvents();
+        midiClipCanCreateMidiNote();
+        audioClipRejectsMidiNotes();
+        projectRejectsInvalidMidiNotes();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
@@ -3755,6 +4184,12 @@ int main()
         invalidSplitClipCommandDoesNotModifyProject();
         duplicateClipCommandSupportsUndoAndRedo();
         invalidDuplicateClipCommandDoesNotModifyProject();
+        deleteClipCommandRestoresMidiNotes();
+        deleteTrackCommandRestoresMidiNotes();
+        duplicateMidiClipCopiesNotesWithNewIds();
+        splitMidiClipMovesRightSideNotes();
+        splitMidiClipRejectsNotesCrossingSplitTick();
+        clipTimingRejectsMidiNotesOutsideClipRange();
         trimClipStartCommandSupportsUndoAndRedo();
         trimClipEndCommandSupportsUndoAndRedo();
         invalidTrimClipCommandDoesNotModifyProject();
@@ -3773,6 +4208,13 @@ int main()
         moveTimeSignatureEventCommandSupportsUndoAndRedo();
         deleteTimeSignatureEventCommandSupportsUndoAndRedo();
         invalidTimeSignatureCommandDoesNotModifyProject();
+        addMidiNoteCommandSupportsUndoAndRedo();
+        setMidiNoteTimingCommandSupportsUndoAndRedo();
+        setMidiNotePitchCommandSupportsUndoAndRedo();
+        setMidiNoteVelocityCommandSupportsUndoAndRedo();
+        setMidiNoteChannelCommandSupportsUndoAndRedo();
+        deleteMidiNoteCommandSupportsUndoAndRedo();
+        invalidMidiNoteCommandDoesNotModifyProject();
         renameTrackCommandSupportsUndoAndRedo();
         invalidRenameTrackCommandDoesNotModifyProject();
         deleteTrackCommandSupportsUndoAndRedo();
@@ -3805,6 +4247,7 @@ int main()
         projectCanSaveAfterTimelineMarkerDeletion();
         projectCanRoundTripTempoEvents();
         projectCanRoundTripTimeSignatureEvents();
+        projectCanRoundTripMidiNotes();
         versionOneProjectLoadsDefaultPlaybackState();
         versionTwoProjectLoadsDefaultMixState();
         versionThreeProjectLoadsDefaultPanState();
@@ -3813,6 +4256,7 @@ int main()
         versionSixProjectLoadsWithoutTimelineMarkers();
         versionSevenProjectLoadsDefaultTempoMap();
         versionEightProjectLoadsDefaultTimeSignatureMap();
+        versionNineProjectLoadsMidiClipsWithoutNotes();
         invalidTrackPlaybackStateRecordIsRejected();
         invalidTrackMixStateRecordIsRejected();
         invalidTrackViewStateRecordIsRejected();
@@ -3820,6 +4264,7 @@ int main()
         invalidMarkerRecordIsRejected();
         invalidTempoRecordIsRejected();
         invalidTimeSignatureRecordIsRejected();
+        invalidMidiNoteRecordIsRejected();
         projectCanRoundTripNamesWithSpaces();
         invalidTextIsRejected();
         projectCanSaveAndLoadFromFile();

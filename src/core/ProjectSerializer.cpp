@@ -134,6 +134,16 @@ std::string saveProjectToText(const Project& project)
                << ' ' << clip.lengthTick
                << ' ' << clip.name
                << '\n';
+        for (const auto& note : clip.midiNotes) {
+            output << "midi_note " << clip.id
+                   << ' ' << note.id
+                   << ' ' << note.startTick
+                   << ' ' << note.lengthTick
+                   << ' ' << note.noteNumber
+                   << ' ' << note.velocity
+                   << ' ' << note.channel
+                   << '\n';
+        }
     }
 
     for (const auto& marker : project.markers()) {
@@ -158,7 +168,7 @@ LoadProjectResult loadProjectFromText(const std::string& text)
     }
 
     std::istringstream header(line);
-    // v2 增加轨道播放状态；v3 增加轨道混音 gain；v4 增加 pan；v5 增加时间线片段；v6 增加轨道显示状态；v7 增加时间线标记；v8 增加速度图；v9 增加拍号图。
+    // v2 增加轨道播放状态；v3 增加轨道混音 gain；v4 增加 pan；v5 增加时间线片段；v6 增加轨道显示状态；v7 增加时间线标记；v8 增加速度图；v9 增加拍号图；v10 增加 MIDI 音符。
     // 旧版本读取后使用当前内存默认值，避免老工程因为新增字段无法打开。
     if (!(header >> keyword >> version) || keyword != "trackloom_project" || version < 1 || version > Project::currentFormatVersion) {
         return LoadProjectResult::fail("Unsupported or invalid project header.");
@@ -368,6 +378,46 @@ LoadProjectResult loadProjectFromText(const std::string& text)
             clip.type = *type;
             if (!project.insertExistingClip(clip)) {
                 return LoadProjectResult::fail("Duplicate, invalid, or incompatible clip.");
+            }
+
+            continue;
+        }
+
+        if (startsWith(line, "midi_note ")) {
+            if (version < 10) {
+                return LoadProjectResult::fail("MIDI note requires project version 10.");
+            }
+
+            std::istringstream noteLine(line);
+            MidiNoteEvent note;
+            std::string clipId;
+            std::string startTickToken;
+            std::string lengthTickToken;
+            std::string noteNumberToken;
+            std::string velocityToken;
+            std::string channelToken;
+
+            if (!(noteLine >> keyword
+                    >> clipId
+                    >> note.id
+                    >> startTickToken
+                    >> lengthTickToken
+                    >> noteNumberToken
+                    >> velocityToken
+                    >> channelToken)) {
+                return LoadProjectResult::fail("Invalid MIDI note record.");
+            }
+
+            if (!parseInt64Value(startTickToken, note.startTick)
+                || !parseInt64Value(lengthTickToken, note.lengthTick)
+                || !parseIntValue(noteNumberToken, note.noteNumber)
+                || !parseIntValue(velocityToken, note.velocity)
+                || !parseIntValue(channelToken, note.channel)) {
+                return LoadProjectResult::fail("Invalid MIDI note value.");
+            }
+
+            if (!project.insertExistingMidiNote(clipId, note)) {
+                return LoadProjectResult::fail("Duplicate, invalid, or incompatible MIDI note.");
             }
 
             continue;

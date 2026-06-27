@@ -19,6 +19,30 @@ bool trackTypeAcceptsClip(TrackType trackType, ClipType clipType)
     return false;
 }
 
+std::optional<TimelineClip> clipContainingMidiNote(const Project& project, const std::string& noteId)
+{
+    for (const auto& clip : project.clips()) {
+        const auto noteIt = std::find_if(clip.midiNotes.begin(), clip.midiNotes.end(), [&](const MidiNoteEvent& note) {
+            return note.id == noteId;
+        });
+
+        if (noteIt != clip.midiNotes.end()) {
+            return clip;
+        }
+    }
+
+    return std::nullopt;
+}
+
+bool midiNoteTimingFitsClip(const TimelineClip& clip, std::int64_t startTick, std::int64_t lengthTick)
+{
+    if (clip.type != ClipType::Midi || startTick < 0 || lengthTick <= 0) {
+        return false;
+    }
+
+    return lengthTick <= clip.lengthTick && startTick <= clip.lengthTick - lengthTick;
+}
+
 }
 
 CommandResult CommandResult::ok()
@@ -617,13 +641,30 @@ CommandResult SplitClipCommand::execute(Project& project)
         return CommandResult::fail("Right split clip already exists.");
     }
 
+    auto leftClip = *originalClip_;
     const auto leftLength = splitTick_ - originalClip_->startTick;
-    if (!project.setClipTiming(clipId_, originalClip_->startTick, leftLength)) {
-        return CommandResult::fail("Clip could not be restored for split redo.");
+    const auto splitOffset = splitTick_ - originalClip_->startTick;
+    leftClip.lengthTick = leftLength;
+    leftClip.midiNotes.clear();
+    for (const auto& note : originalClip_->midiNotes) {
+        if (note.startTick + note.lengthTick <= splitOffset) {
+            leftClip.midiNotes.push_back(note);
+        }
+    }
+
+    const auto currentLeftClip = project.findClipById(clipId_);
+    if (!currentLeftClip.has_value() || !project.removeClipById(clipId_)) {
+        return CommandResult::fail("Left split clip does not exist.");
+    }
+
+    if (!project.insertExistingClip(leftClip)) {
+        project.insertExistingClip(*currentLeftClip);
+        return CommandResult::fail("Left split clip could not be restored.");
     }
 
     if (!project.insertExistingClip(*rightClip_)) {
-        project.setClipTiming(clipId_, originalClip_->startTick, originalClip_->lengthTick);
+        project.removeClipById(leftClip.id);
+        project.insertExistingClip(*currentLeftClip);
         return CommandResult::fail("Right split clip could not be restored.");
     }
 
@@ -637,7 +678,8 @@ void SplitClipCommand::undo(Project& project)
     }
 
     project.removeClipById(rightClip_->id);
-    project.setClipTiming(clipId_, originalClip_->startTick, originalClip_->lengthTick);
+    project.removeClipById(originalClip_->id);
+    project.insertExistingClip(*originalClip_);
 }
 
 DuplicateClipCommand::DuplicateClipCommand(std::string clipId, std::string targetTrackId, std::int64_t startTick)
@@ -800,6 +842,318 @@ void TrimClipEndCommand::undo(Project& project)
 {
     if (oldStartTick_.has_value() && oldLengthTick_.has_value()) {
         project.setClipTiming(clipId_, *oldStartTick_, *oldLengthTick_);
+    }
+}
+
+AddMidiNoteCommand::AddMidiNoteCommand(
+    std::string clipId,
+    std::int64_t startTick,
+    std::int64_t lengthTick,
+    int noteNumber,
+    int velocity,
+    int channel)
+    : clipId_(std::move(clipId))
+    , startTick_(startTick)
+    , lengthTick_(lengthTick)
+    , noteNumber_(noteNumber)
+    , velocity_(velocity)
+    , channel_(channel)
+{
+}
+
+std::string AddMidiNoteCommand::name() const
+{
+    return "AddMidiNote";
+}
+
+CommandResult AddMidiNoteCommand::validate(const Project& project) const
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    MidiNoteEvent note { "requested-note", startTick_, lengthTick_, noteNumber_, velocity_, channel_ };
+    if (!isValidMidiNoteValues(note) || !midiNoteTimingFitsClip(*clip, startTick_, lengthTick_)) {
+        return CommandResult::fail("MIDI note value is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult AddMidiNoteCommand::execute(Project& project)
+{
+    if (createdNote_.has_value()) {
+        if (!project.insertExistingMidiNote(clipId_, *createdNote_)) {
+            return CommandResult::fail("MIDI note already exists or is no longer valid.");
+        }
+        return CommandResult::ok();
+    }
+
+    createdNote_ = project.createMidiNote(clipId_, startTick_, lengthTick_, noteNumber_, velocity_, channel_);
+    if (!createdNote_.has_value()) {
+        return CommandResult::fail("MIDI note could not be created.");
+    }
+
+    return CommandResult::ok();
+}
+
+void AddMidiNoteCommand::undo(Project& project)
+{
+    if (createdNote_.has_value()) {
+        project.removeMidiNoteById(createdNote_->id);
+    }
+}
+
+SetMidiNoteTimingCommand::SetMidiNoteTimingCommand(std::string noteId, std::int64_t startTick, std::int64_t lengthTick)
+    : noteId_(std::move(noteId))
+    , startTick_(startTick)
+    , lengthTick_(lengthTick)
+{
+}
+
+std::string SetMidiNoteTimingCommand::name() const
+{
+    return "SetMidiNoteTiming";
+}
+
+CommandResult SetMidiNoteTimingCommand::validate(const Project& project) const
+{
+    const auto note = project.findMidiNoteById(noteId_);
+    const auto clip = clipContainingMidiNote(project, noteId_);
+    if (!note.has_value() || !clip.has_value()) {
+        return CommandResult::fail("MIDI note does not exist.");
+    }
+
+    if (!midiNoteTimingFitsClip(*clip, startTick_, lengthTick_)) {
+        return CommandResult::fail("MIDI note timing is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult SetMidiNoteTimingCommand::execute(Project& project)
+{
+    const auto note = project.findMidiNoteById(noteId_);
+    if (!note.has_value()) {
+        return CommandResult::fail("MIDI note does not exist.");
+    }
+
+    if (!oldStartTick_.has_value() || !oldLengthTick_.has_value()) {
+        oldStartTick_ = note->startTick;
+        oldLengthTick_ = note->lengthTick;
+    }
+
+    if (!project.setMidiNoteTiming(noteId_, startTick_, lengthTick_)) {
+        return CommandResult::fail("MIDI note timing is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+void SetMidiNoteTimingCommand::undo(Project& project)
+{
+    if (oldStartTick_.has_value() && oldLengthTick_.has_value()) {
+        project.setMidiNoteTiming(noteId_, *oldStartTick_, *oldLengthTick_);
+    }
+}
+
+SetMidiNotePitchCommand::SetMidiNotePitchCommand(std::string noteId, int noteNumber)
+    : noteId_(std::move(noteId))
+    , noteNumber_(noteNumber)
+{
+}
+
+std::string SetMidiNotePitchCommand::name() const
+{
+    return "SetMidiNotePitch";
+}
+
+CommandResult SetMidiNotePitchCommand::validate(const Project& project) const
+{
+    auto note = project.findMidiNoteById(noteId_);
+    if (!note.has_value()) {
+        return CommandResult::fail("MIDI note does not exist.");
+    }
+
+    note->noteNumber = noteNumber_;
+    if (!isValidMidiNoteValues(*note)) {
+        return CommandResult::fail("MIDI note pitch is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult SetMidiNotePitchCommand::execute(Project& project)
+{
+    const auto note = project.findMidiNoteById(noteId_);
+    if (!note.has_value()) {
+        return CommandResult::fail("MIDI note does not exist.");
+    }
+
+    if (!oldNoteNumber_.has_value()) {
+        oldNoteNumber_ = note->noteNumber;
+    }
+
+    if (!project.setMidiNotePitch(noteId_, noteNumber_)) {
+        return CommandResult::fail("MIDI note pitch is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+void SetMidiNotePitchCommand::undo(Project& project)
+{
+    if (oldNoteNumber_.has_value()) {
+        project.setMidiNotePitch(noteId_, *oldNoteNumber_);
+    }
+}
+
+SetMidiNoteVelocityCommand::SetMidiNoteVelocityCommand(std::string noteId, int velocity)
+    : noteId_(std::move(noteId))
+    , velocity_(velocity)
+{
+}
+
+std::string SetMidiNoteVelocityCommand::name() const
+{
+    return "SetMidiNoteVelocity";
+}
+
+CommandResult SetMidiNoteVelocityCommand::validate(const Project& project) const
+{
+    auto note = project.findMidiNoteById(noteId_);
+    if (!note.has_value()) {
+        return CommandResult::fail("MIDI note does not exist.");
+    }
+
+    note->velocity = velocity_;
+    if (!isValidMidiNoteValues(*note)) {
+        return CommandResult::fail("MIDI note velocity is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult SetMidiNoteVelocityCommand::execute(Project& project)
+{
+    const auto note = project.findMidiNoteById(noteId_);
+    if (!note.has_value()) {
+        return CommandResult::fail("MIDI note does not exist.");
+    }
+
+    if (!oldVelocity_.has_value()) {
+        oldVelocity_ = note->velocity;
+    }
+
+    if (!project.setMidiNoteVelocity(noteId_, velocity_)) {
+        return CommandResult::fail("MIDI note velocity is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+void SetMidiNoteVelocityCommand::undo(Project& project)
+{
+    if (oldVelocity_.has_value()) {
+        project.setMidiNoteVelocity(noteId_, *oldVelocity_);
+    }
+}
+
+SetMidiNoteChannelCommand::SetMidiNoteChannelCommand(std::string noteId, int channel)
+    : noteId_(std::move(noteId))
+    , channel_(channel)
+{
+}
+
+std::string SetMidiNoteChannelCommand::name() const
+{
+    return "SetMidiNoteChannel";
+}
+
+CommandResult SetMidiNoteChannelCommand::validate(const Project& project) const
+{
+    auto note = project.findMidiNoteById(noteId_);
+    if (!note.has_value()) {
+        return CommandResult::fail("MIDI note does not exist.");
+    }
+
+    note->channel = channel_;
+    if (!isValidMidiNoteValues(*note)) {
+        return CommandResult::fail("MIDI note channel is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult SetMidiNoteChannelCommand::execute(Project& project)
+{
+    const auto note = project.findMidiNoteById(noteId_);
+    if (!note.has_value()) {
+        return CommandResult::fail("MIDI note does not exist.");
+    }
+
+    if (!oldChannel_.has_value()) {
+        oldChannel_ = note->channel;
+    }
+
+    if (!project.setMidiNoteChannel(noteId_, channel_)) {
+        return CommandResult::fail("MIDI note channel is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+void SetMidiNoteChannelCommand::undo(Project& project)
+{
+    if (oldChannel_.has_value()) {
+        project.setMidiNoteChannel(noteId_, *oldChannel_);
+    }
+}
+
+DeleteMidiNoteCommand::DeleteMidiNoteCommand(std::string noteId)
+    : noteId_(std::move(noteId))
+{
+}
+
+std::string DeleteMidiNoteCommand::name() const
+{
+    return "DeleteMidiNote";
+}
+
+CommandResult DeleteMidiNoteCommand::validate(const Project& project) const
+{
+    if (!project.findMidiNoteById(noteId_).has_value()) {
+        return CommandResult::fail("MIDI note does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult DeleteMidiNoteCommand::execute(Project& project)
+{
+    if (!deletedNote_.has_value() || !owningClipId_.has_value()) {
+        const auto note = project.findMidiNoteById(noteId_);
+        const auto clip = clipContainingMidiNote(project, noteId_);
+        if (!note.has_value() || !clip.has_value()) {
+            return CommandResult::fail("MIDI note does not exist.");
+        }
+
+        deletedNote_ = *note;
+        owningClipId_ = clip->id;
+    }
+
+    if (!project.removeMidiNoteById(noteId_)) {
+        return CommandResult::fail("MIDI note could not be deleted.");
+    }
+
+    return CommandResult::ok();
+}
+
+void DeleteMidiNoteCommand::undo(Project& project)
+{
+    if (deletedNote_.has_value() && owningClipId_.has_value()) {
+        project.insertExistingMidiNote(*owningClipId_, *deletedNote_);
     }
 }
 

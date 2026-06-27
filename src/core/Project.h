@@ -62,8 +62,21 @@ enum class ClipType {
     Audio
 };
 
+// MidiNoteEvent 是 MIDI 片段内部最小的音符事件。
+// startTick 和 lengthTick 都是相对片段起点的音乐 tick，片段整体移动时音符相对位置不变。
+struct MidiNoteEvent {
+    std::string id;
+    std::int64_t startTick = 0;
+    std::int64_t lengthTick = 0;
+    int noteNumber = 60;
+    int velocity = 100;
+    int channel = 1;
+
+    bool operator==(const MidiNoteEvent&) const = default;
+};
+
 // TimelineClip 是放在工程时间线上的最小片段外壳。
-// 它暂不保存 MIDI 事件或音频文件路径，只先稳定“哪个轨道、从哪里开始、持续多久”。
+// MIDI 音符保存在 MIDI 片段内部；音频文件路径和素材引用会在后续阶段单独扩展。
 struct TimelineClip {
     std::string id;
     std::string trackId;
@@ -71,6 +84,7 @@ struct TimelineClip {
     ClipType type = ClipType::Midi;
     std::int64_t startTick = 0;
     std::int64_t lengthTick = 0;
+    std::vector<MidiNoteEvent> midiNotes;
 
     bool operator==(const TimelineClip&) const = default;
 };
@@ -110,7 +124,7 @@ struct TimeSignatureEvent {
 // 后续 UI、AI 和导入器都应通过命令系统修改它，避免绕过验证、撤销和历史记录。
 class Project {
 public:
-    static constexpr int currentFormatVersion = 9;
+    static constexpr int currentFormatVersion = 10;
     static constexpr std::int64_t ticksPerQuarterNote = 960;
 
     explicit Project(std::string name = "Untitled");
@@ -123,6 +137,7 @@ public:
     std::optional<Track> findTrackById(const std::string& id) const;
     const std::vector<TimelineClip>& clips() const;
     std::optional<TimelineClip> findClipById(const std::string& id) const;
+    std::optional<MidiNoteEvent> findMidiNoteById(const std::string& id) const;
     const std::vector<TimelineMarker>& markers() const;
     std::optional<TimelineMarker> findMarkerById(const std::string& id) const;
     const std::vector<TempoEvent>& tempoEvents() const;
@@ -195,6 +210,25 @@ public:
     // trimClipEndToTick 向内移动片段右边界，并保持旧起点不变。
     bool trimClipEndToTick(const std::string& clipId, std::int64_t endTick);
 
+    // createMidiNote 在 MIDI 片段中创建相对片段起点的音符事件。
+    std::optional<MidiNoteEvent> createMidiNote(
+        const std::string& clipId,
+        std::int64_t startTick,
+        std::int64_t lengthTick,
+        int noteNumber,
+        int velocity,
+        int channel);
+
+    // insertExistingMidiNote 用于撤销重做或读取文件时恢复已有音符 ID。
+    bool insertExistingMidiNote(const std::string& clipId, const MidiNoteEvent& note);
+    bool removeMidiNoteById(const std::string& id);
+
+    // 音符编辑只修改音符自身，不移动片段或轨道。
+    bool setMidiNoteTiming(const std::string& id, std::int64_t startTick, std::int64_t lengthTick);
+    bool setMidiNotePitch(const std::string& id, int noteNumber);
+    bool setMidiNoteVelocity(const std::string& id, int velocity);
+    bool setMidiNoteChannel(const std::string& id, int channel);
+
     // createMarker 创建工程级时间线标记。标记只表达结构位置，不影响播放或片段调度。
     std::optional<TimelineMarker> createMarker(std::string name, std::int64_t tick);
 
@@ -252,12 +286,16 @@ private:
     int nextMarkerNumber_ = 1;
     int nextTempoNumber_ = 1;
     int nextTimeSignatureNumber_ = 1;
+    int nextMidiNoteNumber_ = 1;
 
     // 读取旧轨道 ID 后推进计数器，避免下一次新建轨道撞上已有 ID。
     void observeTrackId(const std::string& id);
 
     // 读取旧片段 ID 后推进计数器，避免下一次新建片段撞上已有 ID。
     void observeClipId(const std::string& id);
+
+    // 读取旧音符 ID 后推进计数器，避免下一次新建音符撞上已有 ID。
+    void observeMidiNoteId(const std::string& id);
 
     // 读取旧标记 ID 后推进计数器，避免下一次新建标记撞上已有 ID。
     void observeMarkerId(const std::string& id);
@@ -276,6 +314,7 @@ std::optional<ClipType> clipTypeFromString(const std::string& value);
 bool isValidTrackMixState(TrackMixState state);
 bool isValidTrackViewState(TrackType type, TrackViewState state);
 bool isValidClipTiming(std::int64_t startTick, std::int64_t lengthTick);
+bool isValidMidiNoteValues(const MidiNoteEvent& note);
 bool isValidMarkerTick(std::int64_t tick);
 bool isValidTempoBpm(double beatsPerMinute);
 bool isValidTimeSignature(int numerator, int denominator);

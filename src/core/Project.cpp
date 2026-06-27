@@ -40,6 +40,58 @@ bool trackCanOwnClip(const Track& track, ClipType clipType)
     return false;
 }
 
+bool midiNoteFitsClip(const TimelineClip& clip, const MidiNoteEvent& note)
+{
+    if (clip.type != ClipType::Midi || !isValidMidiNoteValues(note)) {
+        return false;
+    }
+
+    // 音符 tick 是片段内相对位置，所以音符终点不能超过片段长度。
+    return note.lengthTick <= clip.lengthTick
+        && note.startTick <= clip.lengthTick - note.lengthTick;
+}
+
+bool clipCanContainMidiNotes(const TimelineClip& clip)
+{
+    if (clip.type != ClipType::Midi) {
+        return clip.midiNotes.empty();
+    }
+
+    for (std::size_t index = 0; index < clip.midiNotes.size(); ++index) {
+        const auto& note = clip.midiNotes[index];
+        if (!midiNoteFitsClip(clip, note)) {
+            return false;
+        }
+
+        const auto duplicate = std::find_if(
+            clip.midiNotes.begin() + static_cast<std::vector<MidiNoteEvent>::difference_type>(index + 1),
+            clip.midiNotes.end(),
+            [&](const MidiNoteEvent& otherNote) {
+                return otherNote.id == note.id;
+            });
+        if (duplicate != clip.midiNotes.end()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool midiNotesFitLength(const TimelineClip& clip, std::int64_t lengthTick)
+{
+    if (!isValidClipTiming(clip.startTick, lengthTick)) {
+        return false;
+    }
+
+    for (const auto& note : clip.midiNotes) {
+        if (note.lengthTick > lengthTick || note.startTick > lengthTick - note.lengthTick) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 }
 
 Project::Project(std::string name)
@@ -100,6 +152,21 @@ std::optional<TimelineClip> Project::findClipById(const std::string& id) const
     }
 
     return *it;
+}
+
+std::optional<MidiNoteEvent> Project::findMidiNoteById(const std::string& id) const
+{
+    for (const auto& clip : clips_) {
+        const auto noteIt = std::find_if(clip.midiNotes.begin(), clip.midiNotes.end(), [&](const MidiNoteEvent& note) {
+            return note.id == id;
+        });
+
+        if (noteIt != clip.midiNotes.end()) {
+            return *noteIt;
+        }
+    }
+
+    return std::nullopt;
 }
 
 const std::vector<TimelineMarker>& Project::markers() const
@@ -358,12 +425,18 @@ std::optional<TimelineClip> Project::createClip(
 
 bool Project::insertExistingClip(const TimelineClip& clip)
 {
-    if (clip.id.empty() || clip.name.empty() || !isValidClipTiming(clip.startTick, clip.lengthTick)) {
+    if (clip.id.empty() || clip.name.empty() || !isValidClipTiming(clip.startTick, clip.lengthTick) || !clipCanContainMidiNotes(clip)) {
         return false;
     }
 
     if (findClipById(clip.id).has_value()) {
         return false;
+    }
+
+    for (const auto& note : clip.midiNotes) {
+        if (findMidiNoteById(note.id).has_value()) {
+            return false;
+        }
     }
 
     const auto track = findTrackById(clip.trackId);
@@ -373,6 +446,9 @@ bool Project::insertExistingClip(const TimelineClip& clip)
 
     clips_.push_back(clip);
     observeClipId(clip.id);
+    for (const auto& note : clip.midiNotes) {
+        observeMidiNoteId(note.id);
+    }
     return true;
 }
 
@@ -416,7 +492,7 @@ bool Project::setClipTiming(const std::string& id, std::int64_t startTick, std::
         return clip.id == id;
     });
 
-    if (it == clips_.end()) {
+    if (it == clips_.end() || !midiNotesFitLength(*it, lengthTick)) {
         return false;
     }
 
@@ -465,6 +541,28 @@ std::optional<TimelineClip> Project::splitClipAtTick(const std::string& clipId, 
         return std::nullopt;
     }
 
+    const auto splitOffset = splitTick - clipIt->startTick;
+    std::vector<MidiNoteEvent> leftNotes;
+    std::vector<MidiNoteEvent> rightNotes;
+
+    for (const auto& note : clipIt->midiNotes) {
+        const auto noteEndTick = note.startTick + note.lengthTick;
+        if (noteEndTick <= splitOffset) {
+            leftNotes.push_back(note);
+            continue;
+        }
+
+        if (note.startTick >= splitOffset) {
+            auto movedNote = note;
+            movedNote.startTick -= splitOffset;
+            rightNotes.push_back(movedNote);
+            continue;
+        }
+
+        // 跨切点音符需要后续明确拆音或延音规则；当前先拒绝，避免无声地改写用户演奏。
+        return std::nullopt;
+    }
+
     TimelineClip rightClip {
         "clip-" + std::to_string(nextClipNumber_),
         clipIt->trackId,
@@ -473,9 +571,11 @@ std::optional<TimelineClip> Project::splitClipAtTick(const std::string& clipId, 
         splitTick,
         rightLength
     };
+    rightClip.midiNotes = std::move(rightNotes);
 
     // 先缩短左段，再追加右段。右段使用 observeClipId 推进计数器，保证后续新片段不撞 ID。
     clipIt->lengthTick = leftLength;
+    clipIt->midiNotes = std::move(leftNotes);
     clips_.push_back(rightClip);
     observeClipId(rightClip.id);
     return rightClip;
@@ -504,8 +604,12 @@ std::optional<TimelineClip> Project::duplicateClipToTrackAtTick(
         startTick,
         sourceClip->lengthTick
     };
+    duplicate.midiNotes = sourceClip->midiNotes;
+    for (auto& note : duplicate.midiNotes) {
+        note.id = "note-" + std::to_string(nextMidiNoteNumber_++);
+    }
 
-    // 复制只产生新的片段外壳，不修改源片段；未来素材引用复制需要在更高层单独定义。
+    // 复制 MIDI 音符时必须分配新 ID，避免源片段和副本里的音符被命令系统误认为同一对象。
     clips_.push_back(duplicate);
     observeClipId(duplicate.id);
     return duplicate;
@@ -527,7 +631,7 @@ bool Project::trimClipStartToTick(const std::string& clipId, std::int64_t startT
     }
 
     const auto newLength = oldEndTick - startTick;
-    if (!isValidClipTiming(startTick, newLength)) {
+    if (!isValidClipTiming(startTick, newLength) || !midiNotesFitLength(*it, newLength)) {
         return false;
     }
 
@@ -553,12 +657,170 @@ bool Project::trimClipEndToTick(const std::string& clipId, std::int64_t endTick)
     }
 
     const auto newLength = endTick - it->startTick;
-    if (!isValidClipTiming(it->startTick, newLength)) {
+    if (!isValidClipTiming(it->startTick, newLength) || !midiNotesFitLength(*it, newLength)) {
         return false;
     }
 
     it->lengthTick = newLength;
     return true;
+}
+
+std::optional<MidiNoteEvent> Project::createMidiNote(
+    const std::string& clipId,
+    std::int64_t startTick,
+    std::int64_t lengthTick,
+    int noteNumber,
+    int velocity,
+    int channel)
+{
+    MidiNoteEvent note {
+        "note-" + std::to_string(nextMidiNoteNumber_),
+        startTick,
+        lengthTick,
+        noteNumber,
+        velocity,
+        channel
+    };
+
+    if (!insertExistingMidiNote(clipId, note)) {
+        return std::nullopt;
+    }
+
+    return note;
+}
+
+bool Project::insertExistingMidiNote(const std::string& clipId, const MidiNoteEvent& note)
+{
+    if (findMidiNoteById(note.id).has_value()) {
+        return false;
+    }
+
+    const auto clipIt = std::find_if(clips_.begin(), clips_.end(), [&](const TimelineClip& clip) {
+        return clip.id == clipId;
+    });
+
+    if (clipIt == clips_.end() || !midiNoteFitsClip(*clipIt, note)) {
+        return false;
+    }
+
+    clipIt->midiNotes.push_back(note);
+    observeMidiNoteId(note.id);
+    return true;
+}
+
+bool Project::removeMidiNoteById(const std::string& id)
+{
+    for (auto& clip : clips_) {
+        const auto oldSize = clip.midiNotes.size();
+        clip.midiNotes.erase(
+            std::remove_if(clip.midiNotes.begin(), clip.midiNotes.end(), [&](const MidiNoteEvent& note) {
+                return note.id == id;
+            }),
+            clip.midiNotes.end());
+
+        if (clip.midiNotes.size() != oldSize) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool Project::setMidiNoteTiming(const std::string& id, std::int64_t startTick, std::int64_t lengthTick)
+{
+    for (auto& clip : clips_) {
+        auto noteIt = std::find_if(clip.midiNotes.begin(), clip.midiNotes.end(), [&](const MidiNoteEvent& note) {
+            return note.id == id;
+        });
+
+        if (noteIt == clip.midiNotes.end()) {
+            continue;
+        }
+
+        auto updatedNote = *noteIt;
+        updatedNote.startTick = startTick;
+        updatedNote.lengthTick = lengthTick;
+        if (!midiNoteFitsClip(clip, updatedNote)) {
+            return false;
+        }
+
+        *noteIt = updatedNote;
+        return true;
+    }
+
+    return false;
+}
+
+bool Project::setMidiNotePitch(const std::string& id, int noteNumber)
+{
+    for (auto& clip : clips_) {
+        auto noteIt = std::find_if(clip.midiNotes.begin(), clip.midiNotes.end(), [&](const MidiNoteEvent& note) {
+            return note.id == id;
+        });
+
+        if (noteIt == clip.midiNotes.end()) {
+            continue;
+        }
+
+        auto updatedNote = *noteIt;
+        updatedNote.noteNumber = noteNumber;
+        if (!midiNoteFitsClip(clip, updatedNote)) {
+            return false;
+        }
+
+        noteIt->noteNumber = noteNumber;
+        return true;
+    }
+
+    return false;
+}
+
+bool Project::setMidiNoteVelocity(const std::string& id, int velocity)
+{
+    for (auto& clip : clips_) {
+        auto noteIt = std::find_if(clip.midiNotes.begin(), clip.midiNotes.end(), [&](const MidiNoteEvent& note) {
+            return note.id == id;
+        });
+
+        if (noteIt == clip.midiNotes.end()) {
+            continue;
+        }
+
+        auto updatedNote = *noteIt;
+        updatedNote.velocity = velocity;
+        if (!midiNoteFitsClip(clip, updatedNote)) {
+            return false;
+        }
+
+        noteIt->velocity = velocity;
+        return true;
+    }
+
+    return false;
+}
+
+bool Project::setMidiNoteChannel(const std::string& id, int channel)
+{
+    for (auto& clip : clips_) {
+        auto noteIt = std::find_if(clip.midiNotes.begin(), clip.midiNotes.end(), [&](const MidiNoteEvent& note) {
+            return note.id == id;
+        });
+
+        if (noteIt == clip.midiNotes.end()) {
+            continue;
+        }
+
+        auto updatedNote = *noteIt;
+        updatedNote.channel = channel;
+        if (!midiNoteFitsClip(clip, updatedNote)) {
+            return false;
+        }
+
+        noteIt->channel = channel;
+        return true;
+    }
+
+    return false;
 }
 
 std::optional<TimelineMarker> Project::createMarker(std::string name, std::int64_t tick)
@@ -945,6 +1207,24 @@ void Project::observeClipId(const std::string& id)
     }
 }
 
+void Project::observeMidiNoteId(const std::string& id)
+{
+    constexpr std::string_view prefix = "note-";
+    if (id.rfind(prefix, 0) != 0) {
+        return;
+    }
+
+    int parsedNumber = 0;
+    const auto numberPart = std::string_view(id).substr(prefix.size());
+    const auto* first = numberPart.data();
+    const auto* last = first + numberPart.size();
+    const auto result = std::from_chars(first, last, parsedNumber);
+
+    if (result.ec == std::errc{} && result.ptr == last && parsedNumber >= nextMidiNoteNumber_) {
+        nextMidiNoteNumber_ = parsedNumber + 1;
+    }
+}
+
 void Project::observeMarkerId(const std::string& id)
 {
     constexpr std::string_view prefix = "marker-";
@@ -1071,6 +1351,20 @@ bool isValidClipTiming(std::int64_t startTick, std::int64_t lengthTick)
 {
     // 时间线位置使用音乐 tick。起点允许为 0，但长度必须大于 0，避免零长度片段干扰后续调度。
     return startTick >= 0 && lengthTick > 0;
+}
+
+bool isValidMidiNoteValues(const MidiNoteEvent& note)
+{
+    // MIDI 1.0 音高范围是 0-127；velocity 0 通常表示 Note Off，这里只保存真实发声音符。
+    return !note.id.empty()
+        && note.startTick >= 0
+        && note.lengthTick > 0
+        && note.noteNumber >= 0
+        && note.noteNumber <= 127
+        && note.velocity >= 1
+        && note.velocity <= 127
+        && note.channel >= 1
+        && note.channel <= 16;
 }
 
 bool isValidMarkerTick(std::int64_t tick)

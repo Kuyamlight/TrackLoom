@@ -212,7 +212,7 @@ private:
 };
 
 // SplitClipCommand 把一个片段外壳切成左右两段，并保存原始片段与右段用于撤销重做。
-// 当前只切分时间范围，不切分 MIDI 事件、音频文件或自动化数据。
+// MIDI 音符会按片段内相对 tick 分配到左右片段；跨切点音符当前先拒绝，避免隐式拆音。
 class SplitClipCommand final : public Command {
 public:
     SplitClipCommand(std::string clipId, std::int64_t splitTick);
@@ -230,7 +230,7 @@ private:
 };
 
 // DuplicateClipCommand 复制片段外壳到兼容轨道和指定起点，并保存新片段用于撤销重做。
-// 当前只复制 TimelineClip 元数据，不复制 MIDI 事件、音频文件或素材引用。
+// MIDI 音符会复制为新 ID；音频文件或素材引用复制规则会在后续阶段单独定义。
 class DuplicateClipCommand final : public Command {
 public:
     DuplicateClipCommand(std::string clipId, std::string targetTrackId, std::int64_t startTick);
@@ -279,6 +279,115 @@ private:
     std::int64_t endTick_ = 0;
     std::optional<std::int64_t> oldStartTick_;
     std::optional<std::int64_t> oldLengthTick_;
+};
+
+// AddMidiNoteCommand 在 MIDI 片段里创建音符，并保存新音符用于撤销重做。
+// 音符时间使用片段内相对 tick，片段移动时不需要重写音符事件。
+class AddMidiNoteCommand final : public Command {
+public:
+    AddMidiNoteCommand(
+        std::string clipId,
+        std::int64_t startTick,
+        std::int64_t lengthTick,
+        int noteNumber,
+        int velocity,
+        int channel);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string clipId_;
+    std::int64_t startTick_ = 0;
+    std::int64_t lengthTick_ = 0;
+    int noteNumber_ = 60;
+    int velocity_ = 100;
+    int channel_ = 1;
+    std::optional<MidiNoteEvent> createdNote_;
+};
+
+// SetMidiNoteTimingCommand 只修改音符在片段内的相对起点和长度。
+class SetMidiNoteTimingCommand final : public Command {
+public:
+    SetMidiNoteTimingCommand(std::string noteId, std::int64_t startTick, std::int64_t lengthTick);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string noteId_;
+    std::int64_t startTick_ = 0;
+    std::int64_t lengthTick_ = 0;
+    std::optional<std::int64_t> oldStartTick_;
+    std::optional<std::int64_t> oldLengthTick_;
+};
+
+// SetMidiNotePitchCommand 只修改 MIDI 音高，不改 velocity、channel 或时间。
+class SetMidiNotePitchCommand final : public Command {
+public:
+    SetMidiNotePitchCommand(std::string noteId, int noteNumber);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string noteId_;
+    int noteNumber_ = 60;
+    std::optional<int> oldNoteNumber_;
+};
+
+// SetMidiNoteVelocityCommand 只修改 MIDI 力度，velocity 0 不作为发声音符保存。
+class SetMidiNoteVelocityCommand final : public Command {
+public:
+    SetMidiNoteVelocityCommand(std::string noteId, int velocity);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string noteId_;
+    int velocity_ = 100;
+    std::optional<int> oldVelocity_;
+};
+
+// SetMidiNoteChannelCommand 只修改 MIDI 通道，范围保持 MIDI 1.0 的 1-16。
+class SetMidiNoteChannelCommand final : public Command {
+public:
+    SetMidiNoteChannelCommand(std::string noteId, int channel);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string noteId_;
+    int channel_ = 1;
+    std::optional<int> oldChannel_;
+};
+
+// DeleteMidiNoteCommand 删除单个 MIDI 音符，并保存所属片段和完整音符用于撤销。
+class DeleteMidiNoteCommand final : public Command {
+public:
+    explicit DeleteMidiNoteCommand(std::string noteId);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string noteId_;
+    std::optional<std::string> owningClipId_;
+    std::optional<MidiNoteEvent> deletedNote_;
 };
 
 // AddMarkerCommand 创建工程级时间线标记，并保存首次创建出的 ID 用于重做。
