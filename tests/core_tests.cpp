@@ -8,6 +8,7 @@
 #include "AudioMixer.h"
 #include "AudioEngine.h"
 #include "Command.h"
+#include "MidiDispatch.h"
 #include "MidiPlayback.h"
 #include "PlaybackClock.h"
 #include "ProjectFile.h"
@@ -127,6 +128,93 @@ private:
     float value_ = 0.0f;
     int renderCount_ = 0;
 };
+
+class RecordingMidiEventReceiver final : public trackloom::MidiEventReceiver {
+public:
+    bool receiveMidiEvent(
+        const trackloom::ScheduledMidiPlaybackEvent& event,
+        const trackloom::MidiOutputMessage& message) override
+    {
+        events_.push_back(event);
+        messages_.push_back(message);
+        return true;
+    }
+
+    const std::vector<trackloom::ScheduledMidiPlaybackEvent>& events() const
+    {
+        return events_;
+    }
+
+    const std::vector<trackloom::MidiOutputMessage>& messages() const
+    {
+        return messages_;
+    }
+
+private:
+    std::vector<trackloom::ScheduledMidiPlaybackEvent> events_;
+    std::vector<trackloom::MidiOutputMessage> messages_;
+};
+
+class FailingMidiEventReceiver final : public trackloom::MidiEventReceiver {
+public:
+    explicit FailingMidiEventReceiver(int failAtCall)
+        : failAtCall_(failAtCall)
+    {
+    }
+
+    bool receiveMidiEvent(
+        const trackloom::ScheduledMidiPlaybackEvent& event,
+        const trackloom::MidiOutputMessage& message) override
+    {
+        events_.push_back(event);
+        messages_.push_back(message);
+        ++callCount_;
+        return callCount_ != failAtCall_;
+    }
+
+    int callCount() const
+    {
+        return callCount_;
+    }
+
+    const std::vector<trackloom::ScheduledMidiPlaybackEvent>& events() const
+    {
+        return events_;
+    }
+
+    const std::vector<trackloom::MidiOutputMessage>& messages() const
+    {
+        return messages_;
+    }
+
+private:
+    int failAtCall_ = 1;
+    int callCount_ = 0;
+    std::vector<trackloom::ScheduledMidiPlaybackEvent> events_;
+    std::vector<trackloom::MidiOutputMessage> messages_;
+};
+
+trackloom::ScheduledMidiPlaybackEvent makeScheduledMidiEvent(
+    trackloom::MidiPlaybackEventType type,
+    int sampleOffset,
+    int channel,
+    int noteNumber,
+    int velocity)
+{
+    return {
+        trackloom::MidiPlaybackEvent {
+            type,
+            "track-1",
+            "clip-1",
+            "note-1",
+            960,
+            noteNumber,
+            velocity,
+            channel
+        },
+        sampleOffset
+    };
+}
 
 std::filesystem::path makeTestDirectory(const std::string& name)
 {
@@ -1275,6 +1363,124 @@ void playbackClockRejectsStoppedOrInvalidScheduledBlocks()
     transport.play();
     require(trackloom::collectScheduledMidiPlaybackEventsForBlock(project, transport, 0).empty(), "zero frame block should not schedule midi events");
     require(trackloom::collectScheduledMidiPlaybackEventsForBlock(project, transport, -1).empty(), "negative frame block should not schedule midi events");
+}
+
+void midiDispatchConvertsNoteEventsToOutputMessages()
+{
+    const auto noteOn = makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 12, 1, 60, 100);
+    const auto noteOff = makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOff, 24, 16, 60, 0);
+
+    const auto noteOnMessage = trackloom::midiOutputMessageForEvent(noteOn);
+    const auto noteOffMessage = trackloom::midiOutputMessageForEvent(noteOff);
+
+    require(noteOnMessage.has_value(), "note on should convert to output message");
+    require(noteOnMessage->sampleOffset == 12, "note on message should keep sample offset");
+    require(noteOnMessage->statusByte == 0x90, "channel 1 note on should use 0x90 status");
+    require(noteOnMessage->data1 == 60, "note on data1 should be note number");
+    require(noteOnMessage->data2 == 100, "note on data2 should be velocity");
+
+    require(noteOffMessage.has_value(), "note off should convert to output message");
+    require(noteOffMessage->sampleOffset == 24, "note off message should keep sample offset");
+    require(noteOffMessage->statusByte == 0x8F, "channel 16 note off should use 0x8F status");
+    require(noteOffMessage->data1 == 60, "note off data1 should be note number");
+    require(noteOffMessage->data2 == 0, "note off data2 should be release velocity zero for current scheduler");
+}
+
+void midiDispatchSendsEventsInOrder()
+{
+    const std::vector<trackloom::ScheduledMidiPlaybackEvent> events {
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOff, 0, 2, 60, 0),
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 120, 2, 64, 90),
+    };
+    RecordingMidiEventReceiver receiver;
+
+    const auto result = trackloom::dispatchScheduledMidiEvents(events, receiver);
+
+    require(result.success, "dispatch should succeed when receiver accepts every event");
+    require(result.attemptedEventCount == 2, "dispatch should attempt every event");
+    require(result.deliveredEventCount == 2, "dispatch should count delivered events");
+    require(result.failedEventIndex == -1, "successful dispatch should not report failed index");
+    require(receiver.events().size() == 2, "receiver should record two events");
+    require(receiver.events()[0] == events[0], "receiver should get first event first");
+    require(receiver.events()[1] == events[1], "receiver should get second event second");
+    require(receiver.messages()[0].statusByte == 0x81, "first dispatch message should keep channel 2 note off");
+    require(receiver.messages()[1].statusByte == 0x91, "second dispatch message should keep channel 2 note on");
+    require(receiver.messages()[1].sampleOffset == 120, "second dispatch message should keep sample offset");
+}
+
+void midiDispatchAcceptsEmptyEventList()
+{
+    const std::vector<trackloom::ScheduledMidiPlaybackEvent> events;
+    RecordingMidiEventReceiver receiver;
+
+    const auto result = trackloom::dispatchScheduledMidiEvents(events, receiver);
+
+    require(result.success, "empty dispatch should succeed");
+    require(result.attemptedEventCount == 0, "empty dispatch should attempt no events");
+    require(result.deliveredEventCount == 0, "empty dispatch should deliver no events");
+    require(result.failedEventIndex == -1, "empty dispatch should not report failed index");
+    require(receiver.messages().empty(), "empty dispatch should not call receiver");
+}
+
+void midiDispatchStopsWhenReceiverFails()
+{
+    const std::vector<trackloom::ScheduledMidiPlaybackEvent> events {
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100),
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 120, 1, 64, 90),
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 240, 1, 67, 80),
+    };
+    FailingMidiEventReceiver receiver(2);
+
+    const auto result = trackloom::dispatchScheduledMidiEvents(events, receiver);
+
+    require(!result.success, "dispatch should fail when receiver rejects an event");
+    require(result.attemptedEventCount == 2, "dispatch should include the failed event in attempts");
+    require(result.deliveredEventCount == 1, "dispatch should count only accepted events as delivered");
+    require(result.failedEventIndex == 1, "dispatch should report zero-based failed event index");
+    require(receiver.callCount() == 2, "dispatch should stop immediately after receiver failure");
+    require(receiver.events().size() == 2, "receiver should not receive events after failure");
+}
+
+void midiDispatchRejectsInvalidScheduledEvents()
+{
+    RecordingMidiEventReceiver invalidChannelReceiver;
+    const auto invalidChannel = makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 0, 60, 100);
+    const auto invalidChannelResult = trackloom::dispatchScheduledMidiEvents({ invalidChannel }, invalidChannelReceiver);
+    require(!trackloom::midiOutputMessageForEvent(invalidChannel).has_value(), "channel zero should not convert");
+    require(!invalidChannelResult.success, "invalid channel dispatch should fail");
+    require(invalidChannelResult.attemptedEventCount == 1, "invalid channel should count as attempted");
+    require(invalidChannelResult.deliveredEventCount == 0, "invalid channel should not be delivered");
+    require(invalidChannelResult.failedEventIndex == 0, "invalid channel should fail at index zero");
+    require(invalidChannelReceiver.messages().empty(), "invalid channel should not call receiver");
+
+    RecordingMidiEventReceiver invalidNoteReceiver;
+    const auto invalidNote = makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 128, 100);
+    const auto invalidNoteResult = trackloom::dispatchScheduledMidiEvents({ invalidNote }, invalidNoteReceiver);
+    require(!trackloom::midiOutputMessageForEvent(invalidNote).has_value(), "note above 127 should not convert");
+    require(!invalidNoteResult.success, "invalid note dispatch should fail");
+    require(invalidNoteReceiver.messages().empty(), "invalid note should not call receiver");
+
+    RecordingMidiEventReceiver invalidVelocityReceiver;
+    const auto invalidVelocity = makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 128);
+    const auto invalidVelocityResult = trackloom::dispatchScheduledMidiEvents({ invalidVelocity }, invalidVelocityReceiver);
+    require(!trackloom::midiOutputMessageForEvent(invalidVelocity).has_value(), "velocity above 127 should not convert");
+    require(!invalidVelocityResult.success, "invalid velocity dispatch should fail");
+    require(invalidVelocityReceiver.messages().empty(), "invalid velocity should not call receiver");
+
+    RecordingMidiEventReceiver invalidOffsetReceiver;
+    const auto invalidOffset = makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, -1, 1, 60, 100);
+    const auto invalidOffsetResult = trackloom::dispatchScheduledMidiEvents({ invalidOffset }, invalidOffsetReceiver);
+    require(!trackloom::midiOutputMessageForEvent(invalidOffset).has_value(), "negative sample offset should not convert");
+    require(!invalidOffsetResult.success, "invalid sample offset dispatch should fail");
+    require(invalidOffsetReceiver.messages().empty(), "invalid sample offset should not call receiver");
+
+    RecordingMidiEventReceiver invalidTypeReceiver;
+    auto invalidType = makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100);
+    invalidType.event.type = static_cast<trackloom::MidiPlaybackEventType>(99);
+    const auto invalidTypeResult = trackloom::dispatchScheduledMidiEvents({ invalidType }, invalidTypeReceiver);
+    require(!trackloom::midiOutputMessageForEvent(invalidType).has_value(), "unknown midi event type should not convert");
+    require(!invalidTypeResult.success, "unknown midi event type dispatch should fail");
+    require(invalidTypeReceiver.messages().empty(), "unknown midi event type should not call receiver");
 }
 
 void renameClipCommandSupportsUndoAndRedo()
@@ -4677,6 +4883,11 @@ int main()
         playbackClockSchedulesMidiEventsWithSampleOffsets();
         playbackClockSchedulesMidiEventsAcrossTempoChange();
         playbackClockRejectsStoppedOrInvalidScheduledBlocks();
+        midiDispatchConvertsNoteEventsToOutputMessages();
+        midiDispatchSendsEventsInOrder();
+        midiDispatchAcceptsEmptyEventList();
+        midiDispatchStopsWhenReceiverFails();
+        midiDispatchRejectsInvalidScheduledEvents();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
