@@ -85,11 +85,22 @@ struct TimelineMarker {
     bool operator==(const TimelineMarker&) const = default;
 };
 
+// TempoEvent 是工程级速度事件，表示从某个 tick 开始使用新的 BPM。
+// 当前只支持阶梯式速度变化；曲线速度、拍号和节拍器会在更高层单独建模。
+struct TempoEvent {
+    std::string id;
+    std::int64_t tick = 0;
+    double beatsPerMinute = 120.0;
+
+    bool operator==(const TempoEvent&) const = default;
+};
+
 // Project 是 TrackLoom 自有工程格式的最小核心状态。
 // 后续 UI、AI 和导入器都应通过命令系统修改它，避免绕过验证、撤销和历史记录。
 class Project {
 public:
-    static constexpr int currentFormatVersion = 7;
+    static constexpr int currentFormatVersion = 8;
+    static constexpr std::int64_t ticksPerQuarterNote = 960;
 
     explicit Project(std::string name = "Untitled");
 
@@ -103,6 +114,8 @@ public:
     std::optional<TimelineClip> findClipById(const std::string& id) const;
     const std::vector<TimelineMarker>& markers() const;
     std::optional<TimelineMarker> findMarkerById(const std::string& id) const;
+    const std::vector<TempoEvent>& tempoEvents() const;
+    std::optional<TempoEvent> findTempoEventById(const std::string& id) const;
 
     // createTrack 用于创建全新轨道，并分配本工程内稳定的可读 ID。
     Track createTrack(std::string name, TrackType type);
@@ -180,15 +193,32 @@ public:
     bool renameMarkerById(const std::string& id, std::string name);
     bool moveMarkerToTick(const std::string& id, std::int64_t tick);
 
+    // createTempoEvent 创建非默认速度事件。默认 tempo-1 始终留在 tick 0。
+    std::optional<TempoEvent> createTempoEvent(std::int64_t tick, double beatsPerMinute);
+
+    // insertExistingTempoEvent 用于撤销重做或读取文件时恢复已有 ID。
+    bool insertExistingTempoEvent(const TempoEvent& event);
+    bool removeTempoEventById(const std::string& id);
+
+    // setTempoEventBpm 只修改 BPM；moveTempoEventToTick 只移动非默认速度事件。
+    bool setTempoEventBpm(const std::string& id, double beatsPerMinute);
+    bool moveTempoEventToTick(const std::string& id, std::int64_t tick);
+
+    // tempoAtTick 和 tickToSeconds 提供确定性音乐时间换算，不读取实时音频状态。
+    double tempoAtTick(std::int64_t tick) const;
+    double tickToSeconds(std::int64_t tick) const;
+
 private:
     int formatVersion_ = currentFormatVersion;
     std::string name_;
     std::vector<Track> tracks_;
     std::vector<TimelineClip> clips_;
     std::vector<TimelineMarker> markers_;
+    std::vector<TempoEvent> tempoEvents_;
     int nextTrackNumber_ = 1;
     int nextClipNumber_ = 1;
     int nextMarkerNumber_ = 1;
+    int nextTempoNumber_ = 1;
 
     // 读取旧轨道 ID 后推进计数器，避免下一次新建轨道撞上已有 ID。
     void observeTrackId(const std::string& id);
@@ -198,6 +228,9 @@ private:
 
     // 读取旧标记 ID 后推进计数器，避免下一次新建标记撞上已有 ID。
     void observeMarkerId(const std::string& id);
+
+    // 读取旧速度事件 ID 后推进计数器，避免下一次新建速度事件撞上已有 ID。
+    void observeTempoEventId(const std::string& id);
 };
 
 std::string toString(TrackType type);
@@ -208,5 +241,6 @@ bool isValidTrackMixState(TrackMixState state);
 bool isValidTrackViewState(TrackType type, TrackViewState state);
 bool isValidClipTiming(std::int64_t startTick, std::int64_t lengthTick);
 bool isValidMarkerTick(std::int64_t tick);
+bool isValidTempoBpm(double beatsPerMinute);
 
 }

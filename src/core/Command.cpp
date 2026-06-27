@@ -1,5 +1,6 @@
 #include "Command.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace trackloom {
@@ -1005,6 +1006,227 @@ void DeleteMarkerCommand::undo(Project& project)
 {
     if (deletedMarker_.has_value()) {
         project.insertExistingMarker(*deletedMarker_);
+    }
+}
+
+AddTempoEventCommand::AddTempoEventCommand(std::int64_t tick, double beatsPerMinute)
+    : tick_(tick)
+    , beatsPerMinute_(beatsPerMinute)
+{
+}
+
+std::string AddTempoEventCommand::name() const
+{
+    return "AddTempoEvent";
+}
+
+CommandResult AddTempoEventCommand::validate(const Project& project) const
+{
+    if (!isValidMarkerTick(tick_)) {
+        return CommandResult::fail("Tempo tick is invalid.");
+    }
+
+    if (!isValidTempoBpm(beatsPerMinute_)) {
+        return CommandResult::fail("Tempo BPM is invalid.");
+    }
+
+    const auto duplicateTick = std::find_if(project.tempoEvents().begin(), project.tempoEvents().end(), [&](const TempoEvent& event) {
+        return event.tick == tick_;
+    });
+    if (duplicateTick != project.tempoEvents().end()) {
+        return CommandResult::fail("Tempo tick already exists.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult AddTempoEventCommand::execute(Project& project)
+{
+    if (createdEvent_.has_value()) {
+        if (!project.insertExistingTempoEvent(*createdEvent_)) {
+            return CommandResult::fail("Tempo event already exists or is no longer valid.");
+        }
+        return CommandResult::ok();
+    }
+
+    createdEvent_ = project.createTempoEvent(tick_, beatsPerMinute_);
+    if (!createdEvent_.has_value()) {
+        return CommandResult::fail("Tempo event could not be created.");
+    }
+
+    return CommandResult::ok();
+}
+
+void AddTempoEventCommand::undo(Project& project)
+{
+    if (createdEvent_.has_value()) {
+        project.removeTempoEventById(createdEvent_->id);
+    }
+}
+
+SetTempoEventBpmCommand::SetTempoEventBpmCommand(std::string tempoId, double beatsPerMinute)
+    : tempoId_(std::move(tempoId))
+    , beatsPerMinute_(beatsPerMinute)
+{
+}
+
+std::string SetTempoEventBpmCommand::name() const
+{
+    return "SetTempoEventBpm";
+}
+
+CommandResult SetTempoEventBpmCommand::validate(const Project& project) const
+{
+    if (!isValidTempoBpm(beatsPerMinute_)) {
+        return CommandResult::fail("Tempo BPM is invalid.");
+    }
+
+    if (!project.findTempoEventById(tempoId_).has_value()) {
+        return CommandResult::fail("Tempo event does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult SetTempoEventBpmCommand::execute(Project& project)
+{
+    const auto event = project.findTempoEventById(tempoId_);
+    if (!event.has_value()) {
+        return CommandResult::fail("Tempo event does not exist.");
+    }
+
+    if (!isValidTempoBpm(beatsPerMinute_)) {
+        return CommandResult::fail("Tempo BPM is invalid.");
+    }
+
+    if (!oldBeatsPerMinute_.has_value()) {
+        oldBeatsPerMinute_ = event->beatsPerMinute;
+    }
+
+    if (!project.setTempoEventBpm(tempoId_, beatsPerMinute_)) {
+        return CommandResult::fail("Tempo BPM could not be changed.");
+    }
+
+    return CommandResult::ok();
+}
+
+void SetTempoEventBpmCommand::undo(Project& project)
+{
+    if (oldBeatsPerMinute_.has_value()) {
+        project.setTempoEventBpm(tempoId_, *oldBeatsPerMinute_);
+    }
+}
+
+MoveTempoEventCommand::MoveTempoEventCommand(std::string tempoId, std::int64_t tick)
+    : tempoId_(std::move(tempoId))
+    , tick_(tick)
+{
+}
+
+std::string MoveTempoEventCommand::name() const
+{
+    return "MoveTempoEvent";
+}
+
+CommandResult MoveTempoEventCommand::validate(const Project& project) const
+{
+    const auto event = project.findTempoEventById(tempoId_);
+    if (!event.has_value()) {
+        return CommandResult::fail("Tempo event does not exist.");
+    }
+
+    if (!isValidMarkerTick(tick_)) {
+        return CommandResult::fail("Tempo tick is invalid.");
+    }
+
+    if (event->tick == 0) {
+        return CommandResult::fail("Default tempo event cannot be moved.");
+    }
+
+    if (event->tick == tick_) {
+        return CommandResult::fail("Tempo event is already at target tick.");
+    }
+
+    const auto duplicateTick = std::find_if(project.tempoEvents().begin(), project.tempoEvents().end(), [&](const TempoEvent& otherEvent) {
+        return otherEvent.id != tempoId_ && otherEvent.tick == tick_;
+    });
+    if (duplicateTick != project.tempoEvents().end()) {
+        return CommandResult::fail("Tempo tick already exists.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult MoveTempoEventCommand::execute(Project& project)
+{
+    const auto event = project.findTempoEventById(tempoId_);
+    if (!event.has_value()) {
+        return CommandResult::fail("Tempo event does not exist.");
+    }
+
+    if (!oldTick_.has_value()) {
+        oldTick_ = event->tick;
+    }
+
+    if (!project.moveTempoEventToTick(tempoId_, tick_)) {
+        return CommandResult::fail("Tempo event could not be moved.");
+    }
+
+    return CommandResult::ok();
+}
+
+void MoveTempoEventCommand::undo(Project& project)
+{
+    if (oldTick_.has_value()) {
+        project.moveTempoEventToTick(tempoId_, *oldTick_);
+    }
+}
+
+DeleteTempoEventCommand::DeleteTempoEventCommand(std::string tempoId)
+    : tempoId_(std::move(tempoId))
+{
+}
+
+std::string DeleteTempoEventCommand::name() const
+{
+    return "DeleteTempoEvent";
+}
+
+CommandResult DeleteTempoEventCommand::validate(const Project& project) const
+{
+    const auto event = project.findTempoEventById(tempoId_);
+    if (!event.has_value()) {
+        return CommandResult::fail("Tempo event does not exist.");
+    }
+
+    if (event->tick == 0) {
+        return CommandResult::fail("Default tempo event cannot be deleted.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult DeleteTempoEventCommand::execute(Project& project)
+{
+    if (!deletedEvent_.has_value()) {
+        const auto event = project.findTempoEventById(tempoId_);
+        if (!event.has_value()) {
+            return CommandResult::fail("Tempo event does not exist.");
+        }
+        deletedEvent_ = *event;
+    }
+
+    if (!project.removeTempoEventById(deletedEvent_->id)) {
+        return CommandResult::fail("Tempo event could not be deleted.");
+    }
+
+    return CommandResult::ok();
+}
+
+void DeleteTempoEventCommand::undo(Project& project)
+{
+    if (deletedEvent_.has_value()) {
+        project.insertExistingTempoEvent(*deletedEvent_);
     }
 }
 

@@ -11,6 +11,12 @@
 namespace trackloom {
 namespace {
 
+double ticksToSeconds(std::int64_t ticks, double beatsPerMinute)
+{
+    return (static_cast<double>(ticks) / static_cast<double>(Project::ticksPerQuarterNote))
+        * (60.0 / beatsPerMinute);
+}
+
 bool trackCanOwnClip(const Track& track, ClipType clipType)
 {
     // 片段类型和轨道类型先保持严格对应，避免把 MIDI 放到音频轨或把音频放到乐器轨。
@@ -30,6 +36,8 @@ bool trackCanOwnClip(const Track& track, ClipType clipType)
 Project::Project(std::string name)
     : name_(std::move(name))
 {
+    tempoEvents_.push_back({ "tempo-1", 0, 120.0 });
+    observeTempoEventId("tempo-1");
 }
 
 int Project::formatVersion() const
@@ -95,6 +103,24 @@ std::optional<TimelineMarker> Project::findMarkerById(const std::string& id) con
     });
 
     if (it == markers_.end()) {
+        return std::nullopt;
+    }
+
+    return *it;
+}
+
+const std::vector<TempoEvent>& Project::tempoEvents() const
+{
+    return tempoEvents_;
+}
+
+std::optional<TempoEvent> Project::findTempoEventById(const std::string& id) const
+{
+    const auto it = std::find_if(tempoEvents_.begin(), tempoEvents_.end(), [&](const TempoEvent& event) {
+        return event.id == id;
+    });
+
+    if (it == tempoEvents_.end()) {
         return std::nullopt;
     }
 
@@ -585,6 +611,148 @@ bool Project::moveMarkerToTick(const std::string& id, std::int64_t tick)
     return true;
 }
 
+std::optional<TempoEvent> Project::createTempoEvent(std::int64_t tick, double beatsPerMinute)
+{
+    TempoEvent event {
+        "tempo-" + std::to_string(nextTempoNumber_),
+        tick,
+        beatsPerMinute
+    };
+
+    if (!insertExistingTempoEvent(event)) {
+        return std::nullopt;
+    }
+
+    return event;
+}
+
+bool Project::insertExistingTempoEvent(const TempoEvent& event)
+{
+    if (event.id.empty() || !isValidMarkerTick(event.tick) || !isValidTempoBpm(event.beatsPerMinute)) {
+        return false;
+    }
+
+    if (findTempoEventById(event.id).has_value()) {
+        return false;
+    }
+
+    const auto duplicateTick = std::find_if(tempoEvents_.begin(), tempoEvents_.end(), [&](const TempoEvent& existingEvent) {
+        return existingEvent.tick == event.tick;
+    });
+    if (duplicateTick != tempoEvents_.end()) {
+        return false;
+    }
+
+    tempoEvents_.push_back(event);
+    std::sort(tempoEvents_.begin(), tempoEvents_.end(), [](const TempoEvent& left, const TempoEvent& right) {
+        return left.tick < right.tick;
+    });
+    observeTempoEventId(event.id);
+    return true;
+}
+
+bool Project::removeTempoEventById(const std::string& id)
+{
+    const auto it = std::find_if(tempoEvents_.begin(), tempoEvents_.end(), [&](const TempoEvent& event) {
+        return event.id == id;
+    });
+
+    if (it == tempoEvents_.end() || it->tick == 0 || tempoEvents_.size() <= 1) {
+        return false;
+    }
+
+    tempoEvents_.erase(it);
+    return true;
+}
+
+bool Project::setTempoEventBpm(const std::string& id, double beatsPerMinute)
+{
+    if (!isValidTempoBpm(beatsPerMinute)) {
+        return false;
+    }
+
+    const auto it = std::find_if(tempoEvents_.begin(), tempoEvents_.end(), [&](const TempoEvent& event) {
+        return event.id == id;
+    });
+
+    if (it == tempoEvents_.end()) {
+        return false;
+    }
+
+    it->beatsPerMinute = beatsPerMinute;
+    return true;
+}
+
+bool Project::moveTempoEventToTick(const std::string& id, std::int64_t tick)
+{
+    if (!isValidMarkerTick(tick)) {
+        return false;
+    }
+
+    const auto it = std::find_if(tempoEvents_.begin(), tempoEvents_.end(), [&](const TempoEvent& event) {
+        return event.id == id;
+    });
+
+    if (it == tempoEvents_.end() || it->tick == 0 || it->tick == tick) {
+        return false;
+    }
+
+    const auto duplicateTick = std::find_if(tempoEvents_.begin(), tempoEvents_.end(), [&](const TempoEvent& event) {
+        return event.id != id && event.tick == tick;
+    });
+    if (duplicateTick != tempoEvents_.end()) {
+        return false;
+    }
+
+    it->tick = tick;
+    std::sort(tempoEvents_.begin(), tempoEvents_.end(), [](const TempoEvent& left, const TempoEvent& right) {
+        return left.tick < right.tick;
+    });
+    return true;
+}
+
+double Project::tempoAtTick(std::int64_t tick) const
+{
+    if (tempoEvents_.empty()) {
+        return 120.0;
+    }
+
+    double currentTempo = tempoEvents_.front().beatsPerMinute;
+    for (const auto& event : tempoEvents_) {
+        if (event.tick > tick) {
+            break;
+        }
+        currentTempo = event.beatsPerMinute;
+    }
+
+    return currentTempo;
+}
+
+double Project::tickToSeconds(std::int64_t tick) const
+{
+    if (tick <= 0 || tempoEvents_.empty()) {
+        return 0.0;
+    }
+
+    double seconds = 0.0;
+    std::int64_t segmentStartTick = 0;
+    double segmentBpm = tempoEvents_.front().beatsPerMinute;
+
+    for (std::size_t index = 1; index < tempoEvents_.size(); ++index) {
+        const auto& event = tempoEvents_[index];
+        if (event.tick >= tick) {
+            break;
+        }
+
+        seconds += ticksToSeconds(event.tick - segmentStartTick, segmentBpm);
+        segmentStartTick = event.tick;
+        segmentBpm = event.beatsPerMinute;
+    }
+
+    seconds += ticksToSeconds(tick - segmentStartTick, segmentBpm);
+    return seconds;
+}
+
 void Project::observeTrackId(const std::string& id)
 {
     constexpr std::string_view prefix = "track-";
@@ -636,6 +804,24 @@ void Project::observeMarkerId(const std::string& id)
 
     if (result.ec == std::errc{} && result.ptr == last && parsedNumber >= nextMarkerNumber_) {
         nextMarkerNumber_ = parsedNumber + 1;
+    }
+}
+
+void Project::observeTempoEventId(const std::string& id)
+{
+    constexpr std::string_view prefix = "tempo-";
+    if (id.rfind(prefix, 0) != 0) {
+        return;
+    }
+
+    int parsedNumber = 0;
+    const auto numberPart = std::string_view(id).substr(prefix.size());
+    const auto* first = numberPart.data();
+    const auto* last = first + numberPart.size();
+    const auto result = std::from_chars(first, last, parsedNumber);
+
+    if (result.ec == std::errc{} && result.ptr == last && parsedNumber >= nextTempoNumber_) {
+        nextTempoNumber_ = parsedNumber + 1;
     }
 }
 
@@ -717,6 +903,14 @@ bool isValidMarkerTick(std::int64_t tick)
 {
     // 标记是时间线上的点，因此允许 0；负数没有明确音乐含义，读取坏文件或 AI 命令时必须拒绝。
     return tick >= 0;
+}
+
+bool isValidTempoBpm(double beatsPerMinute)
+{
+    // 20-300 BPM 覆盖常见创作范围，同时能挡住坏文件、无穷值和明显错误的 AI 命令。
+    return std::isfinite(beatsPerMinute)
+        && beatsPerMinute >= 20.0
+        && beatsPerMinute <= 300.0;
 }
 
 }

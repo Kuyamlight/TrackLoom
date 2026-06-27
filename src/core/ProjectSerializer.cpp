@@ -58,6 +58,15 @@ bool parseInt64Value(const std::string& token, std::int64_t& value)
     return input && input.eof();
 }
 
+bool parseDoubleValue(const std::string& token, double& value)
+{
+    std::istringstream input(token);
+    input >> value;
+
+    // 必须完整消费 token，避免 "120bpm" 这类坏速度值被误认为合法 BPM。
+    return input && input.eof();
+}
+
 }
 
 LoadProjectResult LoadProjectResult::ok(Project project)
@@ -75,6 +84,13 @@ std::string saveProjectToText(const Project& project)
     std::ostringstream output;
     output << "trackloom_project " << project.formatVersion() << '\n';
     output << "name " << project.name() << '\n';
+
+    for (const auto& event : project.tempoEvents()) {
+        output << "tempo " << event.id
+               << ' ' << event.tick
+               << ' ' << event.beatsPerMinute
+               << '\n';
+    }
 
     for (const auto& track : project.tracks()) {
         output << "track " << track.id << ' ' << toString(track.type) << ' ' << track.name << '\n';
@@ -125,7 +141,7 @@ LoadProjectResult loadProjectFromText(const std::string& text)
     }
 
     std::istringstream header(line);
-    // v2 增加轨道播放状态；v3 增加轨道混音 gain；v4 增加 pan；v5 增加时间线片段；v6 增加轨道显示状态；v7 增加时间线标记。
+    // v2 增加轨道播放状态；v3 增加轨道混音 gain；v4 增加 pan；v5 增加时间线片段；v6 增加轨道显示状态；v7 增加时间线标记；v8 增加速度图。
     // 旧版本读取后使用当前内存默认值，避免老工程因为新增字段无法打开。
     if (!(header >> keyword >> version) || keyword != "trackloom_project" || version < 1 || version > Project::currentFormatVersion) {
         return LoadProjectResult::fail("Unsupported or invalid project header.");
@@ -137,9 +153,46 @@ LoadProjectResult loadProjectFromText(const std::string& text)
 
     const std::string projectName = line.substr(std::string_view("name ").size());
     Project project(projectName);
+    bool loadedDefaultTempoRecord = false;
 
     while (std::getline(input, line)) {
         if (line.empty()) {
+            continue;
+        }
+
+        if (startsWith(line, "tempo ")) {
+            if (version < 8) {
+                return LoadProjectResult::fail("Tempo event requires project version 8.");
+            }
+
+            std::istringstream tempoLine(line);
+            TempoEvent event;
+            std::string tickToken;
+            std::string bpmToken;
+
+            if (!(tempoLine >> keyword >> event.id >> tickToken >> bpmToken)) {
+                return LoadProjectResult::fail("Invalid tempo record.");
+            }
+            if (!parseInt64Value(tickToken, event.tick) || !parseDoubleValue(bpmToken, event.beatsPerMinute)) {
+                return LoadProjectResult::fail("Invalid tempo value.");
+            }
+
+            const auto existingEvent = project.findTempoEventById(event.id);
+            if (existingEvent.has_value()) {
+                if (event.id != "tempo-1" || loadedDefaultTempoRecord || event.tick != 0) {
+                    return LoadProjectResult::fail("Duplicate or invalid tempo event.");
+                }
+                if (!project.setTempoEventBpm(event.id, event.beatsPerMinute)) {
+                    return LoadProjectResult::fail("Invalid default tempo value.");
+                }
+                loadedDefaultTempoRecord = true;
+                continue;
+            }
+
+            if (!project.insertExistingTempoEvent(event)) {
+                return LoadProjectResult::fail("Duplicate or invalid tempo event.");
+            }
+
             continue;
         }
 

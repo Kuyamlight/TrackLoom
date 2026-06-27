@@ -345,6 +345,70 @@ private:
     std::optional<TimelineMarker> deletedMarker_;
 };
 
+// AddTempoEventCommand 创建工程级速度事件，并保存首次创建出的 ID 用于重做。
+// 速度事件影响音乐时间换算，但本阶段不直接驱动 Transport 或实时音频线程。
+class AddTempoEventCommand final : public Command {
+public:
+    AddTempoEventCommand(std::int64_t tick, double beatsPerMinute);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::int64_t tick_ = 0;
+    double beatsPerMinute_ = 120.0;
+    std::optional<TempoEvent> createdEvent_;
+};
+
+// SetTempoEventBpmCommand 修改速度事件 BPM，并保存旧 BPM 用于撤销。
+class SetTempoEventBpmCommand final : public Command {
+public:
+    SetTempoEventBpmCommand(std::string tempoId, double beatsPerMinute);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string tempoId_;
+    double beatsPerMinute_ = 120.0;
+    std::optional<double> oldBeatsPerMinute_;
+};
+
+// MoveTempoEventCommand 移动非默认速度事件；默认 tempo-1 必须固定在 tick 0。
+class MoveTempoEventCommand final : public Command {
+public:
+    MoveTempoEventCommand(std::string tempoId, std::int64_t tick);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string tempoId_;
+    std::int64_t tick_ = 0;
+    std::optional<std::int64_t> oldTick_;
+};
+
+// DeleteTempoEventCommand 删除非默认速度事件，并保存完整事件用于撤销。
+class DeleteTempoEventCommand final : public Command {
+public:
+    explicit DeleteTempoEventCommand(std::string tempoId);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string tempoId_;
+    std::optional<TempoEvent> deletedEvent_;
+};
+
 // SetTrackPlaybackStateCommand 修改轨道播放状态，并保存旧状态用于撤销。
 // 静音、独奏和禁用属于播放开关，不负责表达音量或其他混音参数。
 class SetTrackPlaybackStateCommand final : public Command {

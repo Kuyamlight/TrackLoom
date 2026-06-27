@@ -51,6 +51,11 @@ bool allSamplesNear(const std::vector<float>& samples, float expected)
     return true;
 }
 
+bool numbersNear(double actual, double expected)
+{
+    return std::fabs(actual - expected) <= 0.000001;
+}
+
 bool channelSamplesNear(const trackloom::AudioBlock& block, int channel, float expected)
 {
     for (int frame = 0; frame < block.frameCount(); ++frame) {
@@ -736,6 +741,88 @@ void projectRejectsInvalidTimelineMarkers()
     require(project.markers().size() == 1, "invalid marker operations should not add markers");
 }
 
+void newProjectStartsWithDefaultTempoEvent()
+{
+    trackloom::Project project("Tempo");
+
+    require(trackloom::Project::ticksPerQuarterNote == 960, "tempo conversion should use 960 ticks per quarter note");
+    require(project.tempoEvents().size() == 1, "new project should start with one default tempo event");
+    require(project.tempoEvents().front().id == "tempo-1", "default tempo id should be stable");
+    require(project.tempoEvents().front().tick == 0, "default tempo should start at tick zero");
+    require(numbersNear(project.tempoEvents().front().beatsPerMinute, 120.0), "default tempo should be 120 BPM");
+    require(numbersNear(project.tempoAtTick(0), 120.0), "tempo at tick zero should use default BPM");
+}
+
+void projectCanCreateTempoEvent()
+{
+    trackloom::Project project("Tempo");
+
+    const auto laterTempo = project.createTempoEvent(1920, 90.0);
+    const auto earlierTempo = project.createTempoEvent(960, 60.0);
+
+    require(laterTempo.has_value(), "later tempo event should be created");
+    require(earlierTempo.has_value(), "earlier tempo event should be created");
+    require(laterTempo->id == "tempo-2", "first custom tempo id should follow default id");
+    require(earlierTempo->id == "tempo-3", "second custom tempo id should advance");
+    require(project.tempoEvents().size() == 3, "project should store default and custom tempo events");
+    require(project.tempoEvents()[0].tick == 0, "default tempo should stay first");
+    require(project.tempoEvents()[1].id == earlierTempo->id, "tempo events should be sorted by tick");
+    require(project.tempoEvents()[2].id == laterTempo->id, "later tempo should stay after earlier tempo");
+}
+
+void projectCanConvertTicksToSeconds()
+{
+    trackloom::Project project("Tempo");
+
+    require(numbersNear(project.tickToSeconds(0), 0.0), "tick zero should convert to zero seconds");
+    require(numbersNear(project.tickToSeconds(960), 0.5), "960 ticks at 120 BPM should be half a second");
+    require(numbersNear(project.tickToSeconds(1920), 1.0), "1920 ticks at 120 BPM should be one second");
+
+    require(project.createTempoEvent(960, 60.0).has_value(), "tempo change should be created before conversion");
+    require(numbersNear(project.tempoAtTick(959), 120.0), "tempo before change should use default BPM");
+    require(numbersNear(project.tempoAtTick(960), 60.0), "tempo at change tick should use new BPM");
+    require(numbersNear(project.tickToSeconds(1920), 1.5), "cross-tempo conversion should add both tempo segments");
+    require(numbersNear(project.tickToSeconds(2880), 2.5), "later conversion should keep using latest tempo segment");
+}
+
+void projectRejectsInvalidTempoEvents()
+{
+    trackloom::Project project("Tempo");
+    const auto tempo = project.createTempoEvent(960, 90.0);
+    trackloom::TempoEvent duplicateId;
+    trackloom::TempoEvent duplicateTick;
+    trackloom::TempoEvent missingId;
+
+    require(tempo.has_value(), "tempo event should be created before invalid tempo tests");
+    duplicateId.id = tempo->id;
+    duplicateId.tick = 1920;
+    duplicateId.beatsPerMinute = 100.0;
+    duplicateTick.id = "tempo-99";
+    duplicateTick.tick = tempo->tick;
+    duplicateTick.beatsPerMinute = 100.0;
+    missingId.tick = 2880;
+    missingId.beatsPerMinute = 100.0;
+
+    require(!project.createTempoEvent(-1, 120.0).has_value(), "tempo should reject negative tick");
+    require(!project.createTempoEvent(1920, 0.0).has_value(), "tempo should reject too-low BPM");
+    require(!project.createTempoEvent(1920, 400.0).has_value(), "tempo should reject too-high BPM");
+    require(!project.createTempoEvent(960, 100.0).has_value(), "tempo should reject duplicate tick");
+    require(!project.insertExistingTempoEvent(duplicateId), "tempo should reject duplicate id");
+    require(!project.insertExistingTempoEvent(duplicateTick), "tempo should reject duplicate tick");
+    require(!project.insertExistingTempoEvent(missingId), "tempo should reject empty id");
+    require(!project.setTempoEventBpm(tempo->id, 0.0), "tempo should reject invalid BPM update");
+    require(!project.setTempoEventBpm("missing-tempo", 120.0), "missing tempo BPM update should fail");
+    require(!project.moveTempoEventToTick("tempo-1", 480), "default tempo should not move away from tick zero");
+    require(!project.moveTempoEventToTick(tempo->id, 0), "tempo move should reject duplicate default tick");
+    require(!project.removeTempoEventById("tempo-1"), "default tempo should not be deleted");
+
+    const auto unchangedTempo = project.findTempoEventById(tempo->id);
+    require(unchangedTempo.has_value(), "invalid tempo operations should keep original tempo");
+    require(unchangedTempo->tick == 960, "failed tempo operations should keep original tick");
+    require(numbersNear(unchangedTempo->beatsPerMinute, 90.0), "failed tempo operations should keep original BPM");
+    require(project.tempoEvents().size() == 2, "invalid tempo operations should not add tempo events");
+}
+
 void renameClipCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Clips");
@@ -1194,6 +1281,123 @@ void invalidMarkerCommandDoesNotModifyProject()
     require(!commands.canUndo(), "failed marker commands should not enter undo stack");
 }
 
+void addTempoEventCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Tempo");
+    trackloom::CommandStack commands;
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::AddTempoEventCommand>(960, 90.0));
+
+    require(result.success, "add tempo command should succeed");
+    require(project.tempoEvents().size() == 2, "add tempo command should store tempo event");
+    require(project.tempoEvents()[1].id == "tempo-2", "add tempo command should create stable id");
+    require(project.tempoEvents()[1].tick == 960, "add tempo command should keep tick");
+    require(numbersNear(project.tempoEvents()[1].beatsPerMinute, 90.0), "add tempo command should keep BPM");
+
+    require(commands.undo(project), "add tempo undo should be available");
+    require(project.tempoEvents().size() == 1, "undo should remove custom tempo event");
+
+    require(commands.redo(project), "add tempo redo should be available");
+    require(project.tempoEvents().size() == 2, "redo should restore tempo event");
+    require(project.tempoEvents()[1].id == "tempo-2", "redo should preserve tempo id");
+}
+
+void setTempoEventBpmCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Tempo");
+    trackloom::CommandStack commands;
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetTempoEventBpmCommand>("tempo-1", 100.0));
+
+    require(result.success, "set tempo BPM command should succeed");
+    require(numbersNear(project.findTempoEventById("tempo-1")->beatsPerMinute, 100.0), "command should update default tempo BPM");
+
+    require(commands.undo(project), "set tempo BPM undo should be available");
+    require(numbersNear(project.findTempoEventById("tempo-1")->beatsPerMinute, 120.0), "undo should restore default BPM");
+
+    require(commands.redo(project), "set tempo BPM redo should be available");
+    require(numbersNear(project.findTempoEventById("tempo-1")->beatsPerMinute, 100.0), "redo should restore new BPM");
+}
+
+void moveTempoEventCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Tempo");
+    trackloom::CommandStack commands;
+    const auto tempo = project.createTempoEvent(960, 90.0);
+
+    require(tempo.has_value(), "tempo should be created before command move");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::MoveTempoEventCommand>(tempo->id, 1920));
+
+    require(result.success, "move tempo command should succeed");
+    require(project.findTempoEventById(tempo->id)->tick == 1920, "move command should update tempo tick");
+
+    require(commands.undo(project), "move tempo undo should be available");
+    require(project.findTempoEventById(tempo->id)->tick == 960, "undo should restore tempo tick");
+
+    require(commands.redo(project), "move tempo redo should be available");
+    require(project.findTempoEventById(tempo->id)->tick == 1920, "redo should restore tempo tick");
+}
+
+void deleteTempoEventCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Tempo");
+    trackloom::CommandStack commands;
+    const auto tempo = project.createTempoEvent(960, 90.0);
+
+    require(tempo.has_value(), "tempo should be created before command delete");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteTempoEventCommand>(tempo->id));
+
+    require(result.success, "delete tempo command should succeed");
+    require(project.tempoEvents().size() == 1, "delete tempo command should remove custom tempo");
+    require(!project.findTempoEventById(tempo->id).has_value(), "delete tempo command should remove target tempo");
+
+    require(commands.undo(project), "delete tempo undo should be available");
+    require(project.tempoEvents().size() == 2, "undo should restore tempo event");
+    require(project.findTempoEventById(tempo->id).has_value(), "undo should restore target tempo");
+    require(project.findTempoEventById(tempo->id).value() == *tempo, "undo should restore complete tempo state");
+
+    require(commands.redo(project), "delete tempo redo should be available");
+    require(project.tempoEvents().size() == 1, "redo should delete custom tempo again");
+}
+
+void invalidTempoCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Tempo");
+    trackloom::CommandStack commands;
+    const auto tempo = project.createTempoEvent(960, 90.0);
+
+    require(tempo.has_value(), "tempo should be created before invalid tempo commands");
+    auto duplicateTickAddResult = commands.execute(
+        project,
+        std::make_unique<trackloom::AddTempoEventCommand>(960, 100.0));
+    auto invalidBpmResult = commands.execute(
+        project,
+        std::make_unique<trackloom::SetTempoEventBpmCommand>(tempo->id, 0.0));
+    auto moveDefaultResult = commands.execute(
+        project,
+        std::make_unique<trackloom::MoveTempoEventCommand>("tempo-1", 480));
+    auto deleteDefaultResult = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteTempoEventCommand>("tempo-1"));
+
+    require(!duplicateTickAddResult.success, "duplicate tick add tempo command should fail");
+    require(!invalidBpmResult.success, "invalid BPM command should fail");
+    require(!moveDefaultResult.success, "move default tempo command should fail");
+    require(!deleteDefaultResult.success, "delete default tempo command should fail");
+    require(project.tempoEvents().size() == 2, "failed tempo commands should keep tempo count");
+    require(project.findTempoEventById(tempo->id).value() == *tempo, "failed tempo commands should not modify tempo");
+    require(numbersNear(project.findTempoEventById("tempo-1")->beatsPerMinute, 120.0), "failed tempo commands should keep default BPM");
+    require(!commands.canUndo(), "failed tempo commands should not enter undo stack");
+}
+
 void renameTrackCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Tracks");
@@ -1540,7 +1744,7 @@ void projectCanRoundTripTrackRename()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 7\n") == 0, "track rename should use current project format version");
+    require(saved.find("trackloom_project 8\n") == 0, "track rename should use current project format version");
     require(loaded.project.has_value(), "project with renamed track should load");
     require(loaded.project->findTrackById(track.id).has_value(), "loaded project should keep renamed track id");
     require(loaded.project->findTrackById(track.id)->name == "Lead", "loaded project should keep renamed track name");
@@ -1590,7 +1794,7 @@ void projectCanRoundTripTrackReorder()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 7\n") == 0, "track reorder should use current project format version");
+    require(saved.find("trackloom_project 8\n") == 0, "track reorder should use current project format version");
     require(loaded.project.has_value(), "project with reordered tracks should load");
     require(loaded.project->tracks()[0].id == leadTrack.id, "loaded project should keep first track order");
     require(loaded.project->tracks()[1].id == vocalTrack.id, "loaded project should keep shifted track order");
@@ -1615,7 +1819,7 @@ void projectCanRoundTripTrackViewState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 7\n") == 0, "saved view project should use current format version");
+    require(saved.find("trackloom_project 8\n") == 0, "saved view project should use current format version");
     require(saved.find("track_view_state " + leadTrack.id + " hidden=1 collapsed=0\n") != std::string::npos, "saved project should include hidden state");
     require(saved.find("track_view_state " + folderTrack.id + " hidden=1 collapsed=1\n") != std::string::npos, "saved project should include folder collapsed state");
     require(loaded.project.has_value(), "project with view state should load");
@@ -1636,7 +1840,7 @@ void projectCanRoundTripTrackPlaybackState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 7\n") == 0, "saved project should use current format version");
+    require(saved.find("trackloom_project 8\n") == 0, "saved project should use current format version");
     require(loaded.project.has_value(), "project with playback state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
     require(loadedTrack.has_value(), "loaded project should contain track");
@@ -1656,7 +1860,7 @@ void projectCanRoundTripTrackMixState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 7\n") == 0, "saved mix project should use current format version");
+    require(saved.find("trackloom_project 8\n") == 0, "saved mix project should use current format version");
     require(saved.find("track_mix_state " + track.id + " gain=0.25 pan=-0.5\n") != std::string::npos, "saved project should include track mix state");
     require(loaded.project.has_value(), "project with mix state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
@@ -1676,7 +1880,7 @@ void projectCanRoundTripTimelineClips()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 7\n") == 0, "saved clip project should use current format version");
+    require(saved.find("trackloom_project 8\n") == 0, "saved clip project should use current format version");
     require(saved.find("clip clip-1 " + instrumentTrack.id + " Midi 0 960 Intro Melody\n") != std::string::npos, "saved project should include midi clip record");
     require(saved.find("clip clip-2 " + audioTrack.id + " Audio 960 1920 Vocal Take\n") != std::string::npos, "saved project should include audio clip record");
     require(loaded.project.has_value(), "project with clips should load");
@@ -1846,7 +2050,7 @@ void projectCanRoundTripTimelineMarkers()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 7\n") == 0, "saved marker project should use current format version");
+    require(saved.find("trackloom_project 8\n") == 0, "saved marker project should use current format version");
     require(saved.find("marker " + introMarker->id + " 0 Intro\n") != std::string::npos, "saved project should include intro marker");
     require(saved.find("marker " + verseMarker->id + " 1920 Verse A\n") != std::string::npos, "saved project should include edited marker");
     require(loaded.project.has_value(), "project with markers should load");
@@ -1877,6 +2081,27 @@ void projectCanSaveAfterTimelineMarkerDeletion()
     require(!loaded.project->findMarkerById(deletedMarker->id).has_value(), "loaded project should not contain deleted marker");
     require(loaded.project->findMarkerById(keptMarker->id).has_value(), "loaded project should contain kept marker");
     require(loaded.project->markers().size() == 1, "loaded project should contain only kept marker");
+}
+
+void projectCanRoundTripTempoEvents()
+{
+    trackloom::Project project("Tempo Song");
+    require(project.setTempoEventBpm("tempo-1", 100.0), "default tempo should update before round trip");
+    const auto customTempo = project.createTempoEvent(960, 60.0);
+
+    require(customTempo.has_value(), "custom tempo should be created before round trip");
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("trackloom_project 8\n") == 0, "saved tempo project should use current format version");
+    require(saved.find("tempo tempo-1 0 100\n") != std::string::npos, "saved project should include default tempo record");
+    require(saved.find("tempo " + customTempo->id + " 960 60\n") != std::string::npos, "saved project should include custom tempo record");
+    require(loaded.project.has_value(), "project with tempo events should load");
+    require(loaded.project->tempoEvents().size() == 2, "loaded project should keep tempo events");
+    require(numbersNear(loaded.project->findTempoEventById("tempo-1")->beatsPerMinute, 100.0), "loaded default tempo should keep BPM");
+    require(loaded.project->findTempoEventById(customTempo->id)->tick == 960, "loaded custom tempo should keep tick");
+    require(numbersNear(loaded.project->findTempoEventById(customTempo->id)->beatsPerMinute, 60.0), "loaded custom tempo should keep BPM");
+    require(numbersNear(loaded.project->tickToSeconds(1920), 1.6), "loaded tempo map should preserve tick-to-seconds conversion");
 }
 
 void versionOneProjectLoadsDefaultPlaybackState()
@@ -1985,6 +2210,22 @@ void versionSixProjectLoadsWithoutTimelineMarkers()
     require(loaded.project->markers().empty(), "version 6 project should default to no markers");
 }
 
+void versionSevenProjectLoadsDefaultTempoMap()
+{
+    const std::string text =
+        "trackloom_project 7\n"
+        "name Marker Song\n"
+        "marker marker-1 0 Intro\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(loaded.project.has_value(), "version 7 project should load with default tempo map");
+    require(loaded.project->tempoEvents().size() == 1, "version 7 project should have one default tempo event");
+    require(loaded.project->tempoEvents().front().id == "tempo-1", "version 7 default tempo id should be stable");
+    require(loaded.project->tempoEvents().front().tick == 0, "version 7 default tempo should start at tick zero");
+    require(numbersNear(loaded.project->tempoEvents().front().beatsPerMinute, 120.0), "version 7 default tempo should be 120 BPM");
+}
+
 void invalidTrackPlaybackStateRecordIsRejected()
 {
     const std::string text =
@@ -2056,6 +2297,19 @@ void invalidMarkerRecordIsRejected()
 
     require(!loaded.project.has_value(), "negative marker tick should fail");
     require(!loaded.error.empty(), "invalid marker record should report an error");
+}
+
+void invalidTempoRecordIsRejected()
+{
+    const std::string text =
+        "trackloom_project 8\n"
+        "name Broken Tempo Song\n"
+        "tempo tempo-2 -1 120\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(!loaded.project.has_value(), "negative tempo tick should fail");
+    require(!loaded.error.empty(), "invalid tempo record should report an error");
 }
 
 void projectCanRoundTripNamesWithSpaces()
@@ -3215,6 +3469,10 @@ int main()
         projectCanCreateTimelineMarker();
         projectCanEditTimelineMarker();
         projectRejectsInvalidTimelineMarkers();
+        newProjectStartsWithDefaultTempoEvent();
+        projectCanCreateTempoEvent();
+        projectCanConvertTicksToSeconds();
+        projectRejectsInvalidTempoEvents();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
@@ -3235,6 +3493,11 @@ int main()
         moveMarkerCommandSupportsUndoAndRedo();
         deleteMarkerCommandSupportsUndoAndRedo();
         invalidMarkerCommandDoesNotModifyProject();
+        addTempoEventCommandSupportsUndoAndRedo();
+        setTempoEventBpmCommandSupportsUndoAndRedo();
+        moveTempoEventCommandSupportsUndoAndRedo();
+        deleteTempoEventCommandSupportsUndoAndRedo();
+        invalidTempoCommandDoesNotModifyProject();
         renameTrackCommandSupportsUndoAndRedo();
         invalidRenameTrackCommandDoesNotModifyProject();
         deleteTrackCommandSupportsUndoAndRedo();
@@ -3265,17 +3528,20 @@ int main()
         projectCanRoundTripTimelineClipTrim();
         projectCanRoundTripTimelineMarkers();
         projectCanSaveAfterTimelineMarkerDeletion();
+        projectCanRoundTripTempoEvents();
         versionOneProjectLoadsDefaultPlaybackState();
         versionTwoProjectLoadsDefaultMixState();
         versionThreeProjectLoadsDefaultPanState();
         versionFourProjectLoadsWithoutClips();
         versionFiveProjectLoadsDefaultTrackViewState();
         versionSixProjectLoadsWithoutTimelineMarkers();
+        versionSevenProjectLoadsDefaultTempoMap();
         invalidTrackPlaybackStateRecordIsRejected();
         invalidTrackMixStateRecordIsRejected();
         invalidTrackViewStateRecordIsRejected();
         invalidClipRecordIsRejected();
         invalidMarkerRecordIsRejected();
+        invalidTempoRecordIsRejected();
         projectCanRoundTripNamesWithSpaces();
         invalidTextIsRejected();
         projectCanSaveAndLoadFromFile();
