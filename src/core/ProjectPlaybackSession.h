@@ -44,6 +44,14 @@ public:
         AudioBlock block,
         const Project& project);
 
+    // renderNextLoopedBlock 显式使用循环 MIDI 调度。
+    // 它复用同一个音频图和 MIDI 输出会话，但不会改变普通 renderNextBlock 的行为。
+    ProjectPlaybackBlockResult renderNextLoopedBlock(
+        Transport& transport,
+        AudioBlock block,
+        const Project& project,
+        const PlaybackLoopRange& loopRange);
+
     // 停止播放、切换 MIDI 目标或销毁输出前，用这个入口释放会话内仍活动的 MIDI 音符。
     MidiDispatchResult releaseActiveMidiNotes(int sampleOffset);
 

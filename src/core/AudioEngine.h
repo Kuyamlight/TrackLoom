@@ -95,6 +95,24 @@ public:
         const Project& project,
         AudioEngineRenderResult& result);
 
+    // loop-aware MIDI 渲染显式使用调用方传入的循环范围。
+    // 它不会修改普通播放入口，也不代表音频素材已经具备完整循环回放能力。
+    bool renderNextBlockWithLoopedMidi(
+        Transport& transport,
+        AudioBlock block,
+        const Project& project,
+        const PlaybackLoopRange& loopRange,
+        AudioEngineRenderResult& result);
+
+    // 带音源版本沿用同一 block 生命周期：先收集循环 MIDI，再渲染音源，最后推进 Transport。
+    bool renderNextBlockWithLoopedMidi(
+        Transport& transport,
+        AudioBlock block,
+        AudioSource* source,
+        const Project& project,
+        const PlaybackLoopRange& loopRange,
+        AudioEngineRenderResult& result);
+
 private:
     bool prepared_ = false;
     double sampleRate_ = 0.0;

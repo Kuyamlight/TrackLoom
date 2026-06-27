@@ -2097,6 +2097,74 @@ void projectPlaybackSessionRendersAudioAndDispatchesMidi()
     require(transport.currentSample() == 1440, "project playback session should advance transport after render");
 }
 
+void projectPlaybackSessionRendersLoopedBlockAndDispatchesMidi()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.50f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 960, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 960);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Loop Phrase", trackloom::ClipType::Midi, 960, 960);
+    const trackloom::PlaybackLoopRange loop { 960, 1920 };
+
+    require(clip.has_value(), "looped project playback clip should exist");
+    require(project.createMidiNote(clip->id, 720, 120, 67, 80, 1).has_value(), "looped project playback pre-wrap note should exist");
+    require(project.createMidiNote(clip->id, 0, 120, 60, 100, 1).has_value(), "looped project playback wrapped note should exist");
+    require(session.prepare(1920.0, 2, 960), "looped project playback prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "looped project playback should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "looped project playback should rebuild midi output");
+    require(transport.seekToSample(1440), "looped project playback transport should seek before loop end");
+    transport.play();
+
+    const auto blockResult = session.renderNextLoopedBlock(transport, block, project, loop);
+
+    require(blockResult.renderSucceeded, "looped project playback render should succeed");
+    require(blockResult.renderResult.scheduledMidiEvents.size() == 4, "looped project playback should collect events across wrap");
+    require(blockResult.midiDispatch.success, "looped project playback midi dispatch should succeed");
+    require(blockResult.midiDispatch.deliveredEventCount == 4, "looped project playback should dispatch all looped events");
+    require(receiver.events().size() == 4, "looped project playback receiver should record all looped events");
+    require(receiver.events()[0].sampleOffset == 240, "looped project playback pre-wrap note on should keep sample offset");
+    require(receiver.events()[1].sampleOffset == 360, "looped project playback pre-wrap note off should keep sample offset");
+    require(receiver.events()[2].sampleOffset == 480, "looped project playback wrapped note on should keep block-wide sample offset");
+    require(receiver.events()[3].sampleOffset == 600, "looped project playback wrapped note off should keep block-wide sample offset");
+    require(allSamplesNear(samples, 0.50f), "looped project playback should render bound audio source");
+    require(transport.currentSample() == 2400, "looped project playback should advance transport linearly after render");
+    require(session.activeMidiNoteCount() == 0, "looped project playback note pairs should leave no active midi notes");
+}
+
+void projectPlaybackSessionRejectsInvalidLoopRangeWithoutDispatch()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.50f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Loop Phrase", trackloom::ClipType::Midi, 960, 960);
+    const trackloom::PlaybackLoopRange invalidLoop { 1920, 960 };
+
+    require(clip.has_value(), "invalid loop session clip should exist");
+    require(project.createMidiNote(clip->id, 0, 120, 60, 100, 1).has_value(), "invalid loop session note should exist");
+    require(session.prepare(1920.0, 2, 480), "invalid loop session prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "invalid loop session should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "invalid loop session should rebuild midi output");
+    require(transport.seekToSample(960), "invalid loop session transport should seek before render");
+    transport.play();
+
+    const auto blockResult = session.renderNextLoopedBlock(transport, block, project, invalidLoop);
+
+    require(!blockResult.renderSucceeded, "invalid loop session render should fail");
+    require(blockResult.renderResult.scheduledMidiEvents.empty(), "invalid loop session should expose no scheduled events");
+    require(blockResult.midiDispatch.attemptedEventCount == 0, "invalid loop session should not dispatch midi");
+    require(receiver.events().empty(), "invalid loop session receiver should not receive midi");
+    require(transport.currentSample() == 960, "invalid loop session should not advance transport");
+}
+
 void projectPlaybackSessionKeepsAudioRenderWhenMidiDispatchFails()
 {
     trackloom::Project project("Project Playback Session");
@@ -4715,6 +4783,78 @@ void audioEngineExposesScheduledMidiEventsForRenderedBlock()
     require(transport.currentSample() == 1440, "engine scheduled render should advance after collection");
 }
 
+void audioEngineCollectsLoopedMidiEventsForRenderedBlock()
+{
+    trackloom::Project project("Engine MIDI");
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.25f);
+    std::vector<float> samples(2 * 960, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 960);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Loop Phrase", trackloom::ClipType::Midi, 960, 960);
+    const trackloom::PlaybackLoopRange loop { 960, 1920 };
+
+    require(clip.has_value(), "engine looped clip should exist");
+    require(project.createMidiNote(clip->id, 720, 120, 67, 80, 1).has_value(), "engine looped pre-wrap note should exist");
+    require(project.createMidiNote(clip->id, 0, 120, 60, 100, 1).has_value(), "engine looped wrapped note should exist");
+    require(engine.prepare(1920.0, 2, 960), "engine looped prepare should succeed");
+    require(transport.seekToSample(1440), "engine looped transport should seek before loop end");
+    transport.play();
+
+    trackloom::AudioEngineRenderResult result;
+    require(engine.renderNextBlockWithLoopedMidi(transport, block, &source, project, loop, result), "engine looped midi render should succeed");
+
+    require(allSamplesNear(samples, 0.25f), "engine looped midi render should still render audio source");
+    require(result.midiEvents.size() == 4, "engine looped render should expose raw midi events across wrap");
+    require(result.scheduledMidiEvents.size() == 4, "engine looped render should expose scheduled midi events across wrap");
+    require(result.scheduledMidiEvents[0].event.absoluteTick == 1680, "engine looped first event should be pre-wrap note on");
+    require(result.scheduledMidiEvents[0].sampleOffset == 240, "engine looped pre-wrap note on should keep sample offset");
+    require(result.scheduledMidiEvents[1].event.absoluteTick == 1800, "engine looped second event should be pre-wrap note off");
+    require(result.scheduledMidiEvents[1].sampleOffset == 360, "engine looped pre-wrap note off should keep sample offset");
+    require(result.scheduledMidiEvents[2].event.absoluteTick == 960, "engine looped third event should be wrapped note on");
+    require(result.scheduledMidiEvents[2].sampleOffset == 480, "engine looped wrapped note on should keep block-wide sample offset");
+    require(result.scheduledMidiEvents[3].event.absoluteTick == 1080, "engine looped fourth event should be wrapped note off");
+    require(result.scheduledMidiEvents[3].sampleOffset == 600, "engine looped wrapped note off should keep block-wide sample offset");
+    require(transport.currentSample() == 2400, "engine looped render should advance transport linearly after collection");
+}
+
+void audioEngineRejectsInvalidLoopRangeWithoutAdvancing()
+{
+    trackloom::Project project("Engine MIDI");
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const trackloom::PlaybackLoopRange invalidLoop { 1920, 960 };
+
+    require(engine.prepare(1920.0, 2, 480), "engine invalid loop prepare should succeed");
+    require(transport.seekToSample(960), "engine invalid loop transport should seek before render");
+    transport.play();
+
+    trackloom::AudioEngineRenderResult result;
+    result.midiEvents.push_back(trackloom::MidiPlaybackEvent {
+        trackloom::MidiPlaybackEventType::NoteOn,
+        "old-track",
+        "old-clip",
+        "old-note",
+        0,
+        60,
+        100,
+        1
+    });
+    result.scheduledMidiEvents.push_back(trackloom::ScheduledMidiPlaybackEvent {
+        result.midiEvents.front(),
+        12
+    });
+
+    require(!engine.renderNextBlockWithLoopedMidi(transport, block, project, invalidLoop, result), "engine invalid loop render should fail");
+
+    require(result.midiEvents.empty(), "engine invalid loop render should clear stale midi events");
+    require(result.scheduledMidiEvents.empty(), "engine invalid loop render should clear stale scheduled events");
+    require(transport.currentSample() == 960, "engine invalid loop render should not advance transport");
+}
+
 void audioEngineMidiBridgeDispatchesRenderedScheduledEvents()
 {
     trackloom::Project project("Engine MIDI");
@@ -5777,6 +5917,8 @@ int main()
         midiOutputSessionRejectsRebuildWhileNotesAreActive();
         midiOutputSessionAcceptsEmptyDispatchAndRelease();
         projectPlaybackSessionRendersAudioAndDispatchesMidi();
+        projectPlaybackSessionRendersLoopedBlockAndDispatchesMidi();
+        projectPlaybackSessionRejectsInvalidLoopRangeWithoutDispatch();
         projectPlaybackSessionKeepsAudioRenderWhenMidiDispatchFails();
         projectPlaybackSessionDoesNotDispatchMidiWhenAudioRenderFails();
         projectPlaybackSessionRendersStoppedBlockWithoutMidi();
@@ -5902,6 +6044,8 @@ int main()
         audioEngineClearsMidiEventsWhenRenderRequestFails();
         audioEngineCollectsMidiEventsBeforeAdvancingTransport();
         audioEngineExposesScheduledMidiEventsForRenderedBlock();
+        audioEngineCollectsLoopedMidiEventsForRenderedBlock();
+        audioEngineRejectsInvalidLoopRangeWithoutAdvancing();
         audioEngineMidiBridgeDispatchesRenderedScheduledEvents();
         audioEngineMidiBridgeAcceptsEmptyRenderResult();
         audioEngineMidiBridgeStopsWhenReceiverFails();

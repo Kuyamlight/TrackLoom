@@ -22,6 +22,20 @@ bool isValidGain(float gain)
     return std::isfinite(gain) && gain >= 0.0f;
 }
 
+bool isValidLoopRange(const PlaybackLoopRange& loopRange)
+{
+    return loopRange.startTick >= 0 && loopRange.endTick > loopRange.startTick;
+}
+
+void copyScheduledEventsToRawEvents(AudioEngineRenderResult& result)
+{
+    result.midiEvents.reserve(result.scheduledMidiEvents.size());
+    for (const auto& scheduledEvent : result.scheduledMidiEvents) {
+        // raw MIDI 事件保留给调试和旧调用方；真正给设备/插件使用的是带 sample offset 的 scheduled 事件。
+        result.midiEvents.push_back(scheduledEvent.event);
+    }
+}
+
 constexpr double pi = 3.14159265358979323846264338327950288;
 constexpr double twoPi = 2.0 * pi;
 
@@ -209,14 +223,73 @@ bool AudioEngine::renderNextBlockWithMidi(
     }
 
     result.scheduledMidiEvents = collectScheduledMidiPlaybackEventsForBlock(project, transport, block.frameCount());
-    result.midiEvents.reserve(result.scheduledMidiEvents.size());
-    for (const auto& scheduledEvent : result.scheduledMidiEvents) {
-        // raw MIDI 事件保留给调试和旧调用方；真正给设备/插件使用的是带 sample offset 的 scheduled 事件。
-        result.midiEvents.push_back(scheduledEvent.event);
-    }
+    copyScheduledEventsToRawEvents(result);
 
     if (source != nullptr && transport.isPlaying()) {
         // MIDI 事件只描述“本 block 需要触发什么”，音源渲染失败时不能把事件当成有效输出。
+        if (!source->render(block, sampleRate_)) {
+            result.midiEvents.clear();
+            result.scheduledMidiEvents.clear();
+            block.clear();
+            return false;
+        }
+    }
+
+    if (!transport.advanceBySamples(block.frameCount())) {
+        result.midiEvents.clear();
+        result.scheduledMidiEvents.clear();
+        return false;
+    }
+
+    return true;
+}
+
+bool AudioEngine::renderNextBlockWithLoopedMidi(
+    Transport& transport,
+    AudioBlock block,
+    const Project& project,
+    const PlaybackLoopRange& loopRange,
+    AudioEngineRenderResult& result)
+{
+    return renderNextBlockWithLoopedMidi(transport, block, nullptr, project, loopRange, result);
+}
+
+bool AudioEngine::renderNextBlockWithLoopedMidi(
+    Transport& transport,
+    AudioBlock block,
+    AudioSource* source,
+    const Project& project,
+    const PlaybackLoopRange& loopRange,
+    AudioEngineRenderResult& result)
+{
+    result.midiEvents.clear();
+    result.scheduledMidiEvents.clear();
+
+    if (!prepared_ || !block.isValid()) {
+        return false;
+    }
+    if (block.channelCount() != channelCount_ || block.frameCount() > maxBlockFrames_) {
+        return false;
+    }
+    if (!isValidLoopRange(loopRange)) {
+        return false;
+    }
+
+    block.clear();
+
+    // 循环 MIDI 仍按 AudioEngine 的真实采样率换算 sample offset，不能沿用 Transport 旧采样率。
+    if (!transport.setSampleRate(sampleRate_)) {
+        return false;
+    }
+
+    result.scheduledMidiEvents = collectScheduledMidiPlaybackEventsForLoopedBlock(
+        project,
+        transport,
+        block.frameCount(),
+        loopRange);
+    copyScheduledEventsToRawEvents(result);
+
+    if (source != nullptr && transport.isPlaying()) {
         if (!source->render(block, sampleRate_)) {
             result.midiEvents.clear();
             result.scheduledMidiEvents.clear();

@@ -110,6 +110,34 @@ ProjectPlaybackBlockResult ProjectPlaybackSession::renderNextBlock(
     return result;
 }
 
+ProjectPlaybackBlockResult ProjectPlaybackSession::renderNextLoopedBlock(
+    Transport& transport,
+    AudioBlock block,
+    const Project& project,
+    const PlaybackLoopRange& loopRange)
+{
+    ProjectPlaybackBlockResult result;
+
+    if (!prepared_) {
+        return result;
+    }
+
+    result.renderSucceeded = audioEngine_.renderNextBlockWithLoopedMidi(
+        transport,
+        block,
+        &audioGraph_,
+        project,
+        loopRange,
+        result.renderResult);
+
+    if (!result.renderSucceeded) {
+        return result;
+    }
+
+    result.midiDispatch = midiOutput_.dispatch(result.renderResult);
+    return result;
+}
+
 MidiDispatchResult ProjectPlaybackSession::releaseActiveMidiNotes(int sampleOffset)
 {
     if (!prepared_) {
