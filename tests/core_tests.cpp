@@ -8,6 +8,7 @@
 #include "AudioMixer.h"
 #include "AudioEngine.h"
 #include "Command.h"
+#include "MidiPlayback.h"
 #include "ProjectFile.h"
 #include "Project.h"
 #include "ProjectSerializer.h"
@@ -987,6 +988,140 @@ void projectRejectsInvalidMidiNotes()
     require(unchangedNote.has_value(), "invalid note operations should keep original note");
     require(unchangedNote.value() == *note, "failed note operations should not modify original note");
     require(project.findClipById(clip->id)->midiNotes.size() == 1, "invalid note operations should not add notes");
+}
+
+void midiPlaybackCollectsNoteOnAndOffInsideWindow()
+{
+    trackloom::Project project("MIDI Playback");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 960);
+    const auto note = project.createMidiNote(clip->id, 120, 240, 60, 100, 1);
+
+    require(note.has_value(), "note should be created before playback collection");
+    const auto events = trackloom::collectMidiPlaybackEvents(project, 1000, 1400);
+
+    require(events.size() == 2, "note should create on and off events inside playback window");
+    require(events[0].type == trackloom::MidiPlaybackEventType::NoteOn, "first event should be note on");
+    require(events[0].trackId == track.id, "note on should keep track id");
+    require(events[0].clipId == clip->id, "note on should keep clip id");
+    require(events[0].noteId == note->id, "note on should keep note id");
+    require(events[0].absoluteTick == 1080, "note on should use clip plus relative note start");
+    require(events[0].noteNumber == 60, "note on should keep pitch");
+    require(events[0].velocity == 100, "note on should keep velocity");
+    require(events[0].channel == 1, "note on should keep channel");
+    require(events[1].type == trackloom::MidiPlaybackEventType::NoteOff, "second event should be note off");
+    require(events[1].absoluteTick == 1320, "note off should use note end tick");
+    require(events[1].velocity == 0, "note off should use zero velocity");
+}
+
+void midiPlaybackUsesHalfOpenWindow()
+{
+    trackloom::Project project("MIDI Playback");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 100, 960);
+    const auto note = project.createMidiNote(clip->id, 0, 120, 64, 90, 2);
+
+    require(note.has_value(), "note should be created before half-open window test");
+    const auto startEvents = trackloom::collectMidiPlaybackEvents(project, 100, 220);
+    const auto endEvents = trackloom::collectMidiPlaybackEvents(project, 220, 340);
+
+    require(startEvents.size() == 1, "window should include event at start tick and exclude event at end tick");
+    require(startEvents[0].type == trackloom::MidiPlaybackEventType::NoteOn, "start window should include note on");
+    require(endEvents.size() == 1, "next window should include note off at its start tick");
+    require(endEvents[0].type == trackloom::MidiPlaybackEventType::NoteOff, "next window should include note off");
+}
+
+void midiPlaybackSortsEventsDeterministically()
+{
+    trackloom::Project project("MIDI Playback");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto firstClip = project.createClip(track.id, "First", trackloom::ClipType::Midi, 0, 960);
+    const auto secondClip = project.createClip(track.id, "Second", trackloom::ClipType::Midi, 0, 960);
+    const auto endingNote = project.createMidiNote(firstClip->id, 0, 240, 60, 100, 1);
+    const auto startingNote = project.createMidiNote(secondClip->id, 240, 120, 62, 100, 1);
+
+    require(endingNote.has_value(), "ending note should exist before sorting test");
+    require(startingNote.has_value(), "starting note should exist before sorting test");
+    const auto events = trackloom::collectMidiPlaybackEvents(project, 240, 241);
+
+    require(events.size() == 2, "same tick should include note off and note on");
+    require(events[0].type == trackloom::MidiPlaybackEventType::NoteOff, "note off should sort before note on at same tick");
+    require(events[0].noteId == endingNote->id, "ending note should produce first event");
+    require(events[1].type == trackloom::MidiPlaybackEventType::NoteOn, "note on should sort after note off at same tick");
+    require(events[1].noteId == startingNote->id, "starting note should produce second event");
+}
+
+void midiPlaybackRespectsTrackPlaybackState()
+{
+    trackloom::Project project("MIDI Playback");
+    const auto mutedTrack = project.createTrack("Muted", trackloom::TrackType::Instrument);
+    const auto disabledTrack = project.createTrack("Disabled", trackloom::TrackType::Instrument);
+    const auto soloedTrack = project.createTrack("Soloed", trackloom::TrackType::Instrument);
+    const auto normalTrack = project.createTrack("Normal", trackloom::TrackType::Instrument);
+    const auto mutedClip = project.createClip(mutedTrack.id, "Muted Clip", trackloom::ClipType::Midi, 0, 960);
+    const auto disabledClip = project.createClip(disabledTrack.id, "Disabled Clip", trackloom::ClipType::Midi, 0, 960);
+    const auto soloedClip = project.createClip(soloedTrack.id, "Soloed Clip", trackloom::ClipType::Midi, 0, 960);
+    const auto normalClip = project.createClip(normalTrack.id, "Normal Clip", trackloom::ClipType::Midi, 0, 960);
+    trackloom::TrackPlaybackState mutedState;
+    trackloom::TrackPlaybackState disabledState;
+    trackloom::TrackPlaybackState soloedState;
+
+    mutedState.muted = true;
+    disabledState.disabled = true;
+    soloedState.soloed = true;
+    require(project.setTrackPlaybackState(mutedTrack.id, mutedState), "muted state should be set");
+    require(project.setTrackPlaybackState(disabledTrack.id, disabledState), "disabled state should be set");
+    require(project.setTrackPlaybackState(soloedTrack.id, soloedState), "soloed state should be set");
+    require(project.createMidiNote(mutedClip->id, 0, 120, 60, 100, 1).has_value(), "muted note should be created");
+    require(project.createMidiNote(disabledClip->id, 0, 120, 61, 100, 1).has_value(), "disabled note should be created");
+    require(project.createMidiNote(soloedClip->id, 0, 120, 62, 100, 1).has_value(), "soloed note should be created");
+    require(project.createMidiNote(normalClip->id, 0, 120, 63, 100, 1).has_value(), "normal note should be created");
+
+    const auto events = trackloom::collectMidiPlaybackEvents(project, 0, 1);
+
+    require(events.size() == 1, "solo mode should output only soloed, unmuted, enabled track");
+    require(events[0].trackId == soloedTrack.id, "event should come from soloed track");
+}
+
+void midiPlaybackHiddenTrackStillPlays()
+{
+    trackloom::Project project("MIDI Playback");
+    const auto track = project.createTrack("Hidden", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Hidden Clip", trackloom::ClipType::Midi, 0, 960);
+    trackloom::TrackViewState view;
+
+    view.hidden = true;
+    require(project.setTrackViewState(track.id, view), "hidden state should be set");
+    require(project.createMidiNote(clip->id, 0, 120, 60, 100, 1).has_value(), "hidden-track note should be created");
+
+    const auto events = trackloom::collectMidiPlaybackEvents(project, 0, 1);
+
+    require(events.size() == 1, "hidden track should still produce playback event");
+    require(events[0].trackId == track.id, "hidden track event should keep track id");
+}
+
+void midiPlaybackRejectsInvalidWindows()
+{
+    trackloom::Project project("MIDI Playback");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+
+    require(project.createMidiNote(clip->id, 0, 120, 60, 100, 1).has_value(), "note should be created before invalid window test");
+    require(trackloom::collectMidiPlaybackEvents(project, -1, 120).empty(), "negative start should return no events");
+    require(trackloom::collectMidiPlaybackEvents(project, 120, 120).empty(), "empty window should return no events");
+    require(trackloom::collectMidiPlaybackEvents(project, 240, 120).empty(), "reversed window should return no events");
+}
+
+void midiPlaybackIgnoresAudioClips()
+{
+    trackloom::Project project("MIDI Playback");
+    const auto audioTrack = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto audioClip = project.createClip(audioTrack.id, "Take", trackloom::ClipType::Audio, 0, 960);
+
+    require(audioClip.has_value(), "audio clip should exist before playback scheduler test");
+    const auto events = trackloom::collectMidiPlaybackEvents(project, 0, 960);
+
+    require(events.empty(), "audio clip should not produce midi playback events");
 }
 
 void renameClipCommandSupportsUndoAndRedo()
@@ -4172,6 +4307,13 @@ int main()
         midiClipCanCreateMidiNote();
         audioClipRejectsMidiNotes();
         projectRejectsInvalidMidiNotes();
+        midiPlaybackCollectsNoteOnAndOffInsideWindow();
+        midiPlaybackUsesHalfOpenWindow();
+        midiPlaybackSortsEventsDeterministically();
+        midiPlaybackRespectsTrackPlaybackState();
+        midiPlaybackHiddenTrackStillPlays();
+        midiPlaybackRejectsInvalidWindows();
+        midiPlaybackIgnoresAudioClips();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
