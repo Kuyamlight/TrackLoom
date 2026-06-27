@@ -3503,6 +3503,128 @@ void audioEngineDoesNotRenderToneWhileStopped()
     require(transport.currentSample() == 0, "stopped tone render should not advance transport");
 }
 
+void audioEngineCollectsMidiEventsForRenderedBlock()
+{
+    trackloom::Project project("Engine MIDI");
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.25f);
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 960);
+
+    require(clip.has_value(), "engine midi clip should exist before render");
+    require(project.createMidiNote(clip->id, 0, 240, 60, 100, 1).has_value(), "engine midi note should exist before render");
+    require(engine.prepare(1920.0, 2, 480), "engine prepare should set test sample rate");
+    require(transport.setSampleRate(960.0), "transport starts with a different sample rate");
+    require(transport.seekToSample(960), "transport should seek to the note-on block");
+    transport.play();
+
+    trackloom::AudioEngineRenderResult result;
+    require(engine.renderNextBlockWithMidi(transport, block, &source, project, result), "midi-aware engine render should succeed");
+
+    require(allSamplesNear(samples, 0.25f), "midi-aware render should still render the audio source");
+    require(transport.sampleRate() == 1920.0, "engine render should align transport sample rate before midi collection");
+    require(transport.currentSample() == 1440, "midi-aware render should advance transport after collection");
+    require(result.midiEvents.size() == 2, "engine render should collect note on and note off");
+    require(result.midiEvents[0].type == trackloom::MidiPlaybackEventType::NoteOn, "first engine midi event should be note on");
+    require(result.midiEvents[0].absoluteTick == 960, "engine midi note on should use pre-advance block start");
+    require(result.midiEvents[1].type == trackloom::MidiPlaybackEventType::NoteOff, "second engine midi event should be note off");
+    require(result.midiEvents[1].absoluteTick == 1200, "engine midi note off should occur inside the block");
+}
+
+void audioEngineClearsMidiEventsWhenStopped()
+{
+    trackloom::Project project("Engine MIDI");
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    std::vector<float> samples(2 * 480, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 0, 960);
+
+    require(clip.has_value(), "stopped engine midi clip should exist");
+    require(project.createMidiNote(clip->id, 0, 240, 60, 100, 1).has_value(), "stopped engine midi note should exist");
+    require(engine.prepare(1920.0, 2, 480), "engine prepare should succeed for stopped midi render");
+
+    trackloom::AudioEngineRenderResult result;
+    result.midiEvents.push_back(trackloom::MidiPlaybackEvent {
+        trackloom::MidiPlaybackEventType::NoteOn,
+        "old-track",
+        "old-clip",
+        "old-note",
+        0,
+        60,
+        100,
+        1
+    });
+
+    require(engine.renderNextBlockWithMidi(transport, block, project, result), "stopped midi-aware render should still succeed");
+
+    require(result.midiEvents.empty(), "stopped midi-aware render should clear stale midi events");
+    require(allSamplesNear(samples, 0.0f), "stopped midi-aware render should clear audio output");
+    require(transport.currentSample() == 0, "stopped midi-aware render should not advance transport");
+}
+
+void audioEngineClearsMidiEventsWhenRenderRequestFails()
+{
+    trackloom::Project project("Engine MIDI");
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    std::vector<float> samples(2 * 4, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 4);
+
+    require(transport.seekToSample(128), "transport should seek before failed midi render");
+    transport.play();
+
+    trackloom::AudioEngineRenderResult result;
+    result.midiEvents.push_back(trackloom::MidiPlaybackEvent {
+        trackloom::MidiPlaybackEventType::NoteOn,
+        "old-track",
+        "old-clip",
+        "old-note",
+        0,
+        60,
+        100,
+        1
+    });
+
+    require(!engine.renderNextBlockWithMidi(transport, block, project, result), "unprepared midi-aware render should fail");
+
+    require(result.midiEvents.empty(), "failed midi-aware render should clear stale midi events");
+    require(transport.currentSample() == 128, "failed midi-aware render should not advance transport");
+}
+
+void audioEngineCollectsMidiEventsBeforeAdvancingTransport()
+{
+    trackloom::Project project("Engine MIDI");
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Boundary Phrase", trackloom::ClipType::Midi, 480, 960);
+
+    require(clip.has_value(), "boundary engine midi clip should exist");
+    require(project.createMidiNote(clip->id, 0, 120, 64, 90, 1).has_value(), "boundary engine midi note should exist");
+    require(engine.prepare(1920.0, 2, 480), "engine prepare should succeed for boundary midi render");
+    transport.play();
+
+    trackloom::AudioEngineRenderResult result;
+    require(engine.renderNextBlockWithMidi(transport, block, project, result), "first boundary render should succeed");
+
+    require(result.midiEvents.empty(), "first block should exclude midi event at the right boundary");
+    require(transport.currentSample() == 480, "first boundary render should advance after collection");
+
+    require(engine.renderNextBlockWithMidi(transport, block, project, result), "second boundary render should succeed");
+
+    require(result.midiEvents.size() == 2, "second block should collect boundary note on and note off");
+    require(result.midiEvents[0].absoluteTick == 480, "second block should include event at left boundary");
+    require(result.midiEvents[1].absoluteTick == 600, "second block should include note off inside the block");
+    require(transport.currentSample() == 960, "second boundary render should advance after collection");
+}
+
 void sineToneSourceRejectsInvalidParameters()
 {
     trackloom::SineToneSource tone;
@@ -4526,6 +4648,10 @@ int main()
         audioEngineRejectsInvalidRenderRequestsWithoutAdvancing();
         audioEngineRendersToneWhileTransportIsPlaying();
         audioEngineDoesNotRenderToneWhileStopped();
+        audioEngineCollectsMidiEventsForRenderedBlock();
+        audioEngineClearsMidiEventsWhenStopped();
+        audioEngineClearsMidiEventsWhenRenderRequestFails();
+        audioEngineCollectsMidiEventsBeforeAdvancingTransport();
         sineToneSourceRejectsInvalidParameters();
         sourceMixerSumsPreparedSources();
         sourceMixerRendersSilenceWhenEmpty();

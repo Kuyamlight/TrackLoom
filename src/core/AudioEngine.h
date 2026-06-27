@@ -1,6 +1,10 @@
 #pragma once
 
+#include "MidiPlayback.h"
+#include "Project.h"
 #include "Transport.h"
+
+#include <vector>
 
 namespace trackloom {
 
@@ -51,6 +55,12 @@ private:
     double phaseRadians_ = 0.0;
 };
 
+// AudioEngineRenderResult 保存一次音频 block 渲染附带的非音频结果。
+// 当前只暴露 MIDI 播放事件；后续如果要加入计量、诊断或插件延迟信息，也应放在这里。
+struct AudioEngineRenderResult {
+    std::vector<MidiPlaybackEvent> midiEvents;
+};
+
 // AudioEngine 是最小实时渲染骨架。
 // 当前不打开设备、不解码文件、不运行插件，只负责清理缓冲区、调用音源并推进 Transport。
 class AudioEngine {
@@ -67,6 +77,22 @@ public:
 
     // 带音源的渲染只在 Transport 播放时写入非静音样本。
     bool renderNextBlock(Transport& transport, AudioBlock block, AudioSource* source);
+
+    // MIDI-aware 渲染在推进 Transport 前收集当前 block 的 MIDI 事件。
+    // 它只返回事件，不发送到设备或插件；旧的 renderNextBlock 行为保持不变。
+    bool renderNextBlockWithMidi(
+        Transport& transport,
+        AudioBlock block,
+        const Project& project,
+        AudioEngineRenderResult& result);
+
+    // 带音源版本用于后续把项目播放图和 MIDI 调度放在同一个 block 生命周期内。
+    bool renderNextBlockWithMidi(
+        Transport& transport,
+        AudioBlock block,
+        AudioSource* source,
+        const Project& project,
+        AudioEngineRenderResult& result);
 
 private:
     bool prepared_ = false;

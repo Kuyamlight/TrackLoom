@@ -1,5 +1,7 @@
 #include "AudioEngine.h"
 
+#include "PlaybackClock.h"
+
 #include <cmath>
 
 namespace trackloom {
@@ -169,6 +171,59 @@ bool AudioEngine::renderNextBlock(Transport& transport, AudioBlock block, AudioS
     }
 
     return transport.advanceBySamples(block.frameCount());
+}
+
+bool AudioEngine::renderNextBlockWithMidi(
+    Transport& transport,
+    AudioBlock block,
+    const Project& project,
+    AudioEngineRenderResult& result)
+{
+    return renderNextBlockWithMidi(transport, block, nullptr, project, result);
+}
+
+bool AudioEngine::renderNextBlockWithMidi(
+    Transport& transport,
+    AudioBlock block,
+    AudioSource* source,
+    const Project& project,
+    AudioEngineRenderResult& result)
+{
+    // 每次调用先清空旧结果，避免停止播放或失败返回时调用方读到上一帧事件。
+    result.midiEvents.clear();
+
+    if (!prepared_ || !block.isValid()) {
+        return false;
+    }
+    if (block.channelCount() != channelCount_ || block.frameCount() > maxBlockFrames_) {
+        return false;
+    }
+
+    block.clear();
+
+    // PlaybackClock 使用 Transport 的 sample rate 换算 tick 窗口。
+    // 因此必须先同步为 AudioEngine 已准备好的真实渲染采样率，再收集事件。
+    if (!transport.setSampleRate(sampleRate_)) {
+        return false;
+    }
+
+    result.midiEvents = collectMidiPlaybackEventsForBlock(project, transport, block.frameCount());
+
+    if (source != nullptr && transport.isPlaying()) {
+        // MIDI 事件只描述“本 block 需要触发什么”，音源渲染失败时不能把事件当成有效输出。
+        if (!source->render(block, sampleRate_)) {
+            result.midiEvents.clear();
+            block.clear();
+            return false;
+        }
+    }
+
+    if (!transport.advanceBySamples(block.frameCount())) {
+        result.midiEvents.clear();
+        return false;
+    }
+
+    return true;
 }
 
 }
