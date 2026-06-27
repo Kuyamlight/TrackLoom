@@ -28,6 +28,25 @@ struct ScheduledMidiPlaybackEvent {
     bool operator==(const ScheduledMidiPlaybackEvent&) const = default;
 };
 
+// PlaybackLoopRange 使用音乐 tick 表达一个循环区间。
+// 区间仍是半开规则：[startTick, endTick)，避免循环右边界和回绕后的起点重复计算。
+struct PlaybackLoopRange {
+    std::int64_t startTick = 0;
+    std::int64_t endTick = 0;
+
+    bool operator==(const PlaybackLoopRange&) const = default;
+};
+
+// LoopedPlaybackTickWindow 是循环播放时，一个音频 block 内的子窗口。
+// sampleOffset 和 frameCount 都相对原始 block，方便后续 MIDI 设备或插件按同一个 block 调度。
+struct LoopedPlaybackTickWindow {
+    PlaybackTickWindow window;
+    int sampleOffset = 0;
+    int frameCount = 0;
+
+    bool operator==(const LoopedPlaybackTickWindow&) const = default;
+};
+
 // playbackTickWindowForBlock 只把 Transport 当前 sample 窗口换算为 tick 窗口。
 // 它不推进播放头，也不收集事件，方便后续音频线程在明确边界内调用。
 std::optional<PlaybackTickWindow> playbackTickWindowForBlock(
@@ -48,5 +67,21 @@ std::vector<ScheduledMidiPlaybackEvent> collectScheduledMidiPlaybackEventsForBlo
     const Project& project,
     const Transport& transport,
     int frameCount);
+
+// playbackTickWindowsForLoopedBlock 把一个 block 拆成按播放顺序排列的循环子窗口。
+// 它只做确定性时间切分，不推进 Transport，也不修改工程或打开外部设备。
+std::vector<LoopedPlaybackTickWindow> playbackTickWindowsForLoopedBlock(
+    const Project& project,
+    const Transport& transport,
+    int frameCount,
+    const PlaybackLoopRange& loopRange);
+
+// collectScheduledMidiPlaybackEventsForLoopedBlock 复用循环子窗口收集 MIDI 事件。
+// 返回的 sampleOffset 是原始 block 内的位置，即使事件发生在回绕后的第二段也不会从零重新计数。
+std::vector<ScheduledMidiPlaybackEvent> collectScheduledMidiPlaybackEventsForLoopedBlock(
+    const Project& project,
+    const Transport& transport,
+    int frameCount,
+    const PlaybackLoopRange& loopRange);
 
 }

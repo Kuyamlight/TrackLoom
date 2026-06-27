@@ -8,6 +8,7 @@ namespace trackloom {
 namespace {
 
 constexpr double tickCeilEpsilon = 0.000000001;
+constexpr double sampleFrameEpsilon = 0.000000001;
 
 bool isValidSampleRate(double sampleRate)
 {
@@ -85,6 +86,123 @@ int sampleOffsetForEvent(
     return static_cast<int>(clampedOffset);
 }
 
+bool isValidLoopRange(const PlaybackLoopRange& loopRange)
+{
+    return loopRange.startTick >= 0 && loopRange.endTick > loopRange.startTick;
+}
+
+double positiveModulo(double value, double divisor)
+{
+    const auto result = std::fmod(value, divisor);
+    if (result < 0.0) {
+        return result + divisor;
+    }
+
+    return result;
+}
+
+std::optional<double> normalizedTransportSecondsInLoop(
+    const Project& project,
+    const Transport& transport,
+    const PlaybackLoopRange& loopRange)
+{
+    const auto loopStartSeconds = project.tickToSeconds(loopRange.startTick);
+    const auto loopEndSeconds = project.tickToSeconds(loopRange.endTick);
+    const auto loopDurationSeconds = loopEndSeconds - loopStartSeconds;
+
+    if (!std::isfinite(loopStartSeconds)
+        || !std::isfinite(loopEndSeconds)
+        || !std::isfinite(loopDurationSeconds)
+        || loopDurationSeconds <= 0.0) {
+        return std::nullopt;
+    }
+
+    const auto transportSeconds = static_cast<double>(transport.currentSample()) / transport.sampleRate();
+    if (!std::isfinite(transportSeconds)) {
+        return std::nullopt;
+    }
+
+    // Transport 保存的是绝对 sample 位置；循环播放要把它投影回循环自己的秒数范围。
+    return loopStartSeconds + positiveModulo(transportSeconds - loopStartSeconds, loopDurationSeconds);
+}
+
+std::int64_t loopTickForSeconds(
+    const Project& project,
+    double seconds,
+    const PlaybackLoopRange& loopRange)
+{
+    auto tick = secondsToTickCeil(project, seconds);
+
+    if (tick < loopRange.startTick) {
+        return loopRange.startTick;
+    }
+    if (tick >= loopRange.endTick) {
+        return loopRange.startTick;
+    }
+
+    return tick;
+}
+
+std::optional<int> frameCountUntilLoopEnd(
+    const Project& project,
+    double sampleRate,
+    std::int64_t startTick,
+    std::int64_t loopEndTick)
+{
+    const auto startSeconds = project.tickToSeconds(startTick);
+    const auto endSeconds = project.tickToSeconds(loopEndTick);
+    const auto secondsUntilEnd = endSeconds - startSeconds;
+    const auto framesUntilEnd = secondsUntilEnd * sampleRate;
+
+    if (!std::isfinite(secondsUntilEnd) || !std::isfinite(framesUntilEnd) || framesUntilEnd <= 0.0) {
+        return std::nullopt;
+    }
+
+    if (framesUntilEnd > static_cast<double>(std::numeric_limits<int>::max())) {
+        return std::numeric_limits<int>::max();
+    }
+
+    // 精确边界可能算出 480.000000001；减去极小量后 ceil，避免多吃一帧。
+    const auto roundedFrames = static_cast<int>(std::ceil(framesUntilEnd - sampleFrameEpsilon));
+    return std::max(1, roundedFrames);
+}
+
+std::int64_t tickAtSegmentEnd(
+    const Project& project,
+    std::int64_t startTick,
+    int frameCount,
+    double sampleRate,
+    std::int64_t loopEndTick)
+{
+    const auto startSeconds = project.tickToSeconds(startTick);
+    const auto endSeconds = startSeconds + (static_cast<double>(frameCount) / sampleRate);
+    auto endTick = secondsToTickCeil(project, endSeconds);
+
+    endTick = std::min(endTick, loopEndTick);
+    if (endTick < startTick) {
+        return startTick;
+    }
+
+    return endTick;
+}
+
+int sampleOffsetForEventInLoopWindow(
+    const Project& project,
+    double sampleRate,
+    const MidiPlaybackEvent& event,
+    const LoopedPlaybackTickWindow& window)
+{
+    const auto windowStartSeconds = project.tickToSeconds(window.window.startTick);
+    const auto eventSeconds = project.tickToSeconds(event.absoluteTick);
+    const auto localOffsetSamples = std::llround((eventSeconds - windowStartSeconds) * sampleRate);
+    const auto blockOffsetSamples = localOffsetSamples + window.sampleOffset;
+    const auto minimumOffset = static_cast<std::int64_t>(window.sampleOffset);
+    const auto maximumOffset = static_cast<std::int64_t>(window.sampleOffset + window.frameCount - 1);
+    const auto clampedOffset = std::clamp<std::int64_t>(blockOffsetSamples, minimumOffset, maximumOffset);
+
+    return static_cast<int>(clampedOffset);
+}
+
 }
 
 std::optional<PlaybackTickWindow> playbackTickWindowForBlock(
@@ -142,6 +260,99 @@ std::vector<ScheduledMidiPlaybackEvent> collectScheduledMidiPlaybackEventsForBlo
             event,
             sampleOffsetForEvent(project, transport, event, frameCount)
         });
+    }
+
+    return scheduledEvents;
+}
+
+std::vector<LoopedPlaybackTickWindow> playbackTickWindowsForLoopedBlock(
+    const Project& project,
+    const Transport& transport,
+    int frameCount,
+    const PlaybackLoopRange& loopRange)
+{
+    if (!transport.isPlaying()
+        || frameCount <= 0
+        || !isValidSampleRate(transport.sampleRate())
+        || !isValidLoopRange(loopRange)
+        || transport.currentSample() < 0) {
+        return {};
+    }
+
+    const auto normalizedSeconds = normalizedTransportSecondsInLoop(project, transport, loopRange);
+    if (!normalizedSeconds.has_value()) {
+        return {};
+    }
+
+    std::vector<LoopedPlaybackTickWindow> windows;
+    auto segmentStartTick = loopTickForSeconds(project, *normalizedSeconds, loopRange);
+    auto remainingFrameCount = frameCount;
+    auto blockSampleOffset = 0;
+
+    while (remainingFrameCount > 0) {
+        const auto framesUntilEnd = frameCountUntilLoopEnd(
+            project,
+            transport.sampleRate(),
+            segmentStartTick,
+            loopRange.endTick);
+
+        if (!framesUntilEnd.has_value()) {
+            return {};
+        }
+
+        if (*framesUntilEnd >= remainingFrameCount) {
+            windows.push_back(LoopedPlaybackTickWindow {
+                PlaybackTickWindow {
+                    segmentStartTick,
+                    tickAtSegmentEnd(
+                        project,
+                        segmentStartTick,
+                        remainingFrameCount,
+                        transport.sampleRate(),
+                        loopRange.endTick)
+                },
+                blockSampleOffset,
+                remainingFrameCount
+            });
+            break;
+        }
+
+        windows.push_back(LoopedPlaybackTickWindow {
+            PlaybackTickWindow { segmentStartTick, loopRange.endTick },
+            blockSampleOffset,
+            *framesUntilEnd
+        });
+
+        remainingFrameCount -= *framesUntilEnd;
+        blockSampleOffset += *framesUntilEnd;
+        segmentStartTick = loopRange.startTick;
+    }
+
+    return windows;
+}
+
+std::vector<ScheduledMidiPlaybackEvent> collectScheduledMidiPlaybackEventsForLoopedBlock(
+    const Project& project,
+    const Transport& transport,
+    int frameCount,
+    const PlaybackLoopRange& loopRange)
+{
+    const auto windows = playbackTickWindowsForLoopedBlock(project, transport, frameCount, loopRange);
+    std::vector<ScheduledMidiPlaybackEvent> scheduledEvents;
+
+    for (const auto& window : windows) {
+        const auto midiEvents = collectMidiPlaybackEvents(
+            project,
+            window.window.startTick,
+            window.window.endTick);
+        scheduledEvents.reserve(scheduledEvents.size() + midiEvents.size());
+
+        for (const auto& event : midiEvents) {
+            scheduledEvents.push_back(ScheduledMidiPlaybackEvent {
+                event,
+                sampleOffsetForEventInLoopWindow(project, transport.sampleRate(), event, window)
+            });
+        }
     }
 
     return scheduledEvents;

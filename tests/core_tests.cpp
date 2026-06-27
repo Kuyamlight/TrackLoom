@@ -1379,6 +1379,123 @@ void playbackClockRejectsStoppedOrInvalidScheduledBlocks()
     require(trackloom::collectScheduledMidiPlaybackEventsForBlock(project, transport, -1).empty(), "negative frame block should not schedule midi events");
 }
 
+void playbackClockSplitsLoopedBlockAtLoopEnd()
+{
+    trackloom::Project project("Loop Clock");
+    trackloom::Transport transport;
+    const trackloom::PlaybackLoopRange loop { 960, 1920 };
+
+    require(transport.setSampleRate(1920.0), "loop split sample rate should make one sample equal one tick");
+    require(transport.seekToSample(1440), "loop split transport should start before loop end");
+    transport.play();
+
+    const auto windows = trackloom::playbackTickWindowsForLoopedBlock(project, transport, 960, loop);
+
+    require(windows.size() == 2, "looped block should split at loop end");
+    require(windows[0].window.startTick == 1440, "first looped window should start at transport tick");
+    require(windows[0].window.endTick == 1920, "first looped window should end at loop right boundary");
+    require(windows[0].sampleOffset == 0, "first looped window should start at block sample zero");
+    require(windows[0].frameCount == 480, "first looped window should consume frames until loop end");
+    require(windows[1].window.startTick == 960, "second looped window should wrap to loop start");
+    require(windows[1].window.endTick == 1440, "second looped window should cover remaining loop ticks");
+    require(windows[1].sampleOffset == 480, "second looped window should keep block-wide sample offset");
+    require(windows[1].frameCount == 480, "second looped window should consume remaining frames");
+    require(transport.currentSample() == 1440, "looped window calculation should not advance transport");
+}
+
+void playbackClockSchedulesMidiEventsAcrossLoopWrap()
+{
+    trackloom::Project project("Loop Clock");
+    trackloom::Transport transport;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Loop Phrase", trackloom::ClipType::Midi, 960, 960);
+    const trackloom::PlaybackLoopRange loop { 960, 1920 };
+
+    require(clip.has_value(), "loop midi clip should exist before scheduling");
+    require(project.createMidiNote(clip->id, 720, 120, 67, 80, 1).has_value(), "pre-wrap note should exist");
+    require(project.createMidiNote(clip->id, 0, 120, 60, 100, 1).has_value(), "post-wrap note should exist");
+    require(transport.setSampleRate(1920.0), "loop midi sample rate should make one sample equal one tick");
+    require(transport.seekToSample(1440), "loop midi transport should start before loop end");
+    transport.play();
+
+    const auto events = trackloom::collectScheduledMidiPlaybackEventsForLoopedBlock(project, transport, 960, loop);
+
+    require(events.size() == 4, "looped scheduler should collect events before and after wrap");
+    require(events[0].event.type == trackloom::MidiPlaybackEventType::NoteOn, "first loop event should start pre-wrap note");
+    require(events[0].event.absoluteTick == 1680, "first loop event should keep pre-wrap note-on tick");
+    require(events[0].sampleOffset == 240, "first loop event should use pre-wrap block offset");
+    require(events[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "second loop event should release pre-wrap note");
+    require(events[1].event.absoluteTick == 1800, "second loop event should keep pre-wrap note-off tick");
+    require(events[1].sampleOffset == 360, "second loop event should use pre-wrap release offset");
+    require(events[2].event.type == trackloom::MidiPlaybackEventType::NoteOn, "third loop event should start wrapped note");
+    require(events[2].event.absoluteTick == 960, "third loop event should keep wrapped note-on tick");
+    require(events[2].sampleOffset == 480, "third loop event should keep block-wide wrapped offset");
+    require(events[3].event.type == trackloom::MidiPlaybackEventType::NoteOff, "fourth loop event should release wrapped note");
+    require(events[3].event.absoluteTick == 1080, "fourth loop event should keep wrapped note-off tick");
+    require(events[3].sampleOffset == 600, "fourth loop event should keep block-wide wrapped release offset");
+}
+
+void playbackClockRejectsInvalidLoopedBlocks()
+{
+    trackloom::Project project("Loop Clock");
+    trackloom::Transport transport;
+    const trackloom::PlaybackLoopRange validLoop { 960, 1920 };
+    const trackloom::PlaybackLoopRange reversedLoop { 1920, 960 };
+    const trackloom::PlaybackLoopRange negativeLoop { -1, 960 };
+
+    require(transport.setSampleRate(1920.0), "invalid loop test sample rate should be set");
+    require(trackloom::playbackTickWindowsForLoopedBlock(project, transport, 480, validLoop).empty(), "stopped transport should not produce looped windows");
+    require(trackloom::collectScheduledMidiPlaybackEventsForLoopedBlock(project, transport, 480, validLoop).empty(), "stopped transport should not schedule looped events");
+    transport.play();
+
+    require(trackloom::playbackTickWindowsForLoopedBlock(project, transport, 0, validLoop).empty(), "zero frame looped block should be rejected");
+    require(trackloom::playbackTickWindowsForLoopedBlock(project, transport, -1, validLoop).empty(), "negative frame looped block should be rejected");
+    require(trackloom::playbackTickWindowsForLoopedBlock(project, transport, 480, reversedLoop).empty(), "reversed loop range should be rejected");
+    require(trackloom::playbackTickWindowsForLoopedBlock(project, transport, 480, negativeLoop).empty(), "negative loop start should be rejected");
+}
+
+void playbackClockNormalizesTransportPositionIntoLoopRange()
+{
+    trackloom::Project project("Loop Clock");
+    trackloom::Transport transport;
+    const trackloom::PlaybackLoopRange loop { 960, 1920 };
+
+    require(transport.setSampleRate(1920.0), "loop normalize sample rate should make one sample equal one tick");
+    require(transport.seekToSample(2400), "loop normalize transport should seek past one loop cycle");
+    transport.play();
+
+    const auto windows = trackloom::playbackTickWindowsForLoopedBlock(project, transport, 480, loop);
+
+    require(windows.size() == 1, "normalized transport position should produce one looped window");
+    require(windows[0].window.startTick == 1440, "transport sample after loop cycle should normalize to tick 1440");
+    require(windows[0].window.endTick == 1920, "normalized window should end at loop boundary");
+    require(windows[0].sampleOffset == 0, "normalized window should still start at block sample zero");
+    require(windows[0].frameCount == 480, "normalized window should cover the requested frames");
+}
+
+void playbackClockSplitsLoopedBlockAcrossTempoMappedLoop()
+{
+    trackloom::Project project("Loop Clock");
+    trackloom::Transport transport;
+    const trackloom::PlaybackLoopRange loop { 960, 1920 };
+
+    require(project.createTempoEvent(960, 60.0).has_value(), "loop tempo change should exist before split test");
+    require(transport.setSampleRate(960.0), "tempo loop sample rate should make slow-tempo tick math visible");
+    require(transport.seekToSample(960), "tempo loop transport should start at tick 1440");
+    transport.play();
+
+    const auto windows = trackloom::playbackTickWindowsForLoopedBlock(project, transport, 960, loop);
+
+    require(windows.size() == 2, "tempo-mapped looped block should split at loop end");
+    require(windows[0].window.startTick == 1440, "tempo-mapped first window should start at normalized tick");
+    require(windows[0].window.endTick == 1920, "tempo-mapped first window should end at loop boundary");
+    require(windows[0].frameCount == 480, "tempo-mapped first window should consume slow-tempo frames to loop end");
+    require(windows[1].window.startTick == 960, "tempo-mapped second window should wrap to loop start");
+    require(windows[1].window.endTick == 1440, "tempo-mapped second window should cover remaining slow-tempo ticks");
+    require(windows[1].sampleOffset == 480, "tempo-mapped wrapped window should keep block-wide offset");
+    require(windows[1].frameCount == 480, "tempo-mapped wrapped window should consume remaining frames");
+}
+
 void midiDispatchConvertsNoteEventsToOutputMessages()
 {
     const auto noteOn = makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 12, 1, 60, 100);
@@ -5632,6 +5749,11 @@ int main()
         playbackClockSchedulesMidiEventsWithSampleOffsets();
         playbackClockSchedulesMidiEventsAcrossTempoChange();
         playbackClockRejectsStoppedOrInvalidScheduledBlocks();
+        playbackClockSplitsLoopedBlockAtLoopEnd();
+        playbackClockSchedulesMidiEventsAcrossLoopWrap();
+        playbackClockRejectsInvalidLoopedBlocks();
+        playbackClockNormalizesTransportPositionIntoLoopRange();
+        playbackClockSplitsLoopedBlockAcrossTempoMappedLoop();
         midiDispatchConvertsNoteEventsToOutputMessages();
         midiDispatchSendsEventsInOrder();
         midiDispatchAcceptsEmptyEventList();
