@@ -9,6 +9,7 @@
 #include "AudioEngine.h"
 #include "Command.h"
 #include "MidiPlayback.h"
+#include "PlaybackClock.h"
 #include "ProjectFile.h"
 #include "Project.h"
 #include "ProjectSerializer.h"
@@ -1122,6 +1123,98 @@ void midiPlaybackIgnoresAudioClips()
     const auto events = trackloom::collectMidiPlaybackEvents(project, 0, 960);
 
     require(events.empty(), "audio clip should not produce midi playback events");
+}
+
+void playbackClockConvertsDefaultTempoBlockToTickWindow()
+{
+    trackloom::Project project("Clock");
+    trackloom::Transport transport;
+
+    require(transport.setSampleRate(48000.0), "sample rate should be set before clock test");
+    require(transport.seekToSample(24000), "transport should seek before clock test");
+    transport.play();
+
+    const auto window = trackloom::playbackTickWindowForBlock(project, transport, 24000);
+
+    require(window.has_value(), "playing transport should produce tick window");
+    require(window->startTick == 960, "0.5 seconds at 120 BPM should start at tick 960");
+    require(window->endTick == 1920, "1.0 seconds at 120 BPM should end at tick 1920");
+    require(transport.currentSample() == 24000, "window calculation should not advance transport");
+}
+
+void playbackClockHandlesTempoChangeInsideBlock()
+{
+    trackloom::Project project("Clock");
+    trackloom::Transport transport;
+
+    require(project.createTempoEvent(960, 60.0).has_value(), "tempo change should exist before clock test");
+    require(transport.setSampleRate(48000.0), "sample rate should be set before tempo clock test");
+    require(transport.seekToSample(0), "transport should start at sample zero");
+    transport.play();
+
+    const auto window = trackloom::playbackTickWindowForBlock(project, transport, 72000);
+
+    require(window.has_value(), "tempo-changing block should produce tick window");
+    require(window->startTick == 0, "block should start at tick zero");
+    require(window->endTick == 1920, "0.0s to 1.5s should cross 120 BPM then 60 BPM to tick 1920");
+}
+
+void playbackClockRejectsStoppedOrInvalidBlocks()
+{
+    trackloom::Project project("Clock");
+    trackloom::Transport transport;
+
+    require(transport.setSampleRate(48000.0), "sample rate should be set before invalid clock test");
+    require(!trackloom::playbackTickWindowForBlock(project, transport, 24000).has_value(), "stopped transport should not produce playback window");
+    transport.play();
+    require(!trackloom::playbackTickWindowForBlock(project, transport, 0).has_value(), "zero frame block should not produce playback window");
+    require(!trackloom::playbackTickWindowForBlock(project, transport, -1).has_value(), "negative frame block should not produce playback window");
+}
+
+void playbackClockCollectsMidiEventsForTransportBlock()
+{
+    trackloom::Project project("Clock");
+    trackloom::Transport transport;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 960);
+
+    require(clip.has_value(), "clip should exist before block event collection");
+    const auto note = project.createMidiNote(clip->id, 0, 480, 60, 100, 1);
+    require(note.has_value(), "note should exist before block event collection");
+    require(transport.setSampleRate(48000.0), "sample rate should be set before block event collection");
+    require(transport.seekToSample(24000), "transport should seek to note-on sample");
+    transport.play();
+
+    const auto events = trackloom::collectMidiPlaybackEventsForBlock(project, transport, 24000);
+
+    require(events.size() == 2, "block should collect note on and note off");
+    require(events[0].type == trackloom::MidiPlaybackEventType::NoteOn, "first block event should be note on");
+    require(events[0].absoluteTick == 960, "note on should occur at block start tick");
+    require(events[1].type == trackloom::MidiPlaybackEventType::NoteOff, "second block event should be note off");
+    require(events[1].absoluteTick == 1440, "note off should occur inside block");
+}
+
+void playbackClockUsesHalfOpenBlockBoundary()
+{
+    trackloom::Project project("Clock");
+    trackloom::Transport transport;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 1920, 960);
+
+    require(clip.has_value(), "clip should exist before boundary test");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "boundary note should exist");
+    require(transport.setSampleRate(48000.0), "sample rate should be set before boundary test");
+    require(transport.seekToSample(0), "transport should start at sample zero for boundary test");
+    transport.play();
+
+    const auto firstBlockEvents = trackloom::collectMidiPlaybackEventsForBlock(project, transport, 48000);
+    require(firstBlockEvents.empty(), "first block should exclude event at right boundary");
+
+    require(transport.seekToSample(48000), "transport should seek to second block");
+    const auto secondBlockEvents = trackloom::collectMidiPlaybackEventsForBlock(project, transport, 24000);
+
+    require(secondBlockEvents.size() == 1, "second block should include event at left boundary");
+    require(secondBlockEvents[0].absoluteTick == 1920, "second block event should occur at boundary tick");
 }
 
 void renameClipCommandSupportsUndoAndRedo()
@@ -4314,6 +4407,11 @@ int main()
         midiPlaybackHiddenTrackStillPlays();
         midiPlaybackRejectsInvalidWindows();
         midiPlaybackIgnoresAudioClips();
+        playbackClockConvertsDefaultTempoBlockToTickWindow();
+        playbackClockHandlesTempoChangeInsideBlock();
+        playbackClockRejectsStoppedOrInvalidBlocks();
+        playbackClockCollectsMidiEventsForTransportBlock();
+        playbackClockUsesHalfOpenBlockBoundary();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();

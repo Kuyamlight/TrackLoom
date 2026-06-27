@@ -9,6 +9,7 @@ add_library(trackloom_core STATIC
     AudioTrackPlayback.cpp
     AudioEngine.cpp
     MidiPlayback.cpp
+    PlaybackClock.cpp
     Project.cpp
     Command.cpp
     ProjectFile.cpp
