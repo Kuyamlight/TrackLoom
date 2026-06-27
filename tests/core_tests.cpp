@@ -7,6 +7,7 @@
 #include "AudioGain.h"
 #include "AudioMixer.h"
 #include "AudioEngine.h"
+#include "AudioEngineMidiBridge.h"
 #include "Command.h"
 #include "MidiDispatch.h"
 #include "MidiPlayback.h"
@@ -3919,6 +3920,76 @@ void audioEngineExposesScheduledMidiEventsForRenderedBlock()
     require(transport.currentSample() == 1440, "engine scheduled render should advance after collection");
 }
 
+void audioEngineMidiBridgeDispatchesRenderedScheduledEvents()
+{
+    trackloom::Project project("Engine MIDI");
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    RecordingMidiEventReceiver receiver;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Bridge Phrase", trackloom::ClipType::Midi, 960, 960);
+
+    require(clip.has_value(), "bridge clip should exist before render");
+    require(project.createMidiNote(clip->id, 0, 240, 60, 100, 1).has_value(), "bridge note should exist before render");
+    require(engine.prepare(1920.0, 2, 480), "bridge engine prepare should succeed");
+    require(transport.seekToSample(960), "bridge transport should seek to note-on block");
+    transport.play();
+
+    trackloom::AudioEngineRenderResult result;
+    require(engine.renderNextBlockWithMidi(transport, block, project, result), "bridge render should produce scheduled events");
+
+    const auto dispatchResult = trackloom::dispatchAudioEngineMidiEvents(result, receiver);
+
+    require(dispatchResult.success, "bridge dispatch should succeed for rendered scheduled events");
+    require(dispatchResult.attemptedEventCount == 2, "bridge dispatch should attempt both rendered events");
+    require(dispatchResult.deliveredEventCount == 2, "bridge dispatch should deliver both rendered events");
+    require(dispatchResult.failedEventIndex == -1, "successful bridge dispatch should not report failed index");
+    require(receiver.events().size() == 2, "bridge receiver should record two scheduled events");
+    require(receiver.messages().size() == 2, "bridge receiver should record two midi output messages");
+    require(receiver.events()[0] == result.scheduledMidiEvents[0], "bridge receiver should get first rendered event unchanged");
+    require(receiver.events()[1] == result.scheduledMidiEvents[1], "bridge receiver should get second rendered event unchanged");
+    require(receiver.messages()[0].statusByte == 0x90, "bridge note on should become midi note-on status");
+    require(receiver.messages()[0].sampleOffset == 0, "bridge note on should keep rendered sample offset");
+    require(receiver.messages()[1].statusByte == 0x80, "bridge note off should become midi note-off status");
+    require(receiver.messages()[1].sampleOffset == 240, "bridge note off should keep rendered sample offset");
+    require(transport.currentSample() == 1440, "bridge dispatch should not rewind or advance transport");
+}
+
+void audioEngineMidiBridgeAcceptsEmptyRenderResult()
+{
+    trackloom::AudioEngineRenderResult result;
+    RecordingMidiEventReceiver receiver;
+
+    const auto dispatchResult = trackloom::dispatchAudioEngineMidiEvents(result, receiver);
+
+    require(dispatchResult.success, "empty bridge dispatch should succeed");
+    require(dispatchResult.attemptedEventCount == 0, "empty bridge dispatch should attempt no events");
+    require(dispatchResult.deliveredEventCount == 0, "empty bridge dispatch should deliver no events");
+    require(dispatchResult.failedEventIndex == -1, "empty bridge dispatch should not report failed index");
+    require(receiver.messages().empty(), "empty bridge dispatch should not call receiver");
+}
+
+void audioEngineMidiBridgeStopsWhenReceiverFails()
+{
+    trackloom::AudioEngineRenderResult result;
+    result.scheduledMidiEvents = {
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100),
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 120, 1, 64, 90)
+    };
+    FailingMidiEventReceiver receiver(2);
+
+    const auto dispatchResult = trackloom::dispatchAudioEngineMidiEvents(result, receiver);
+
+    require(!dispatchResult.success, "bridge dispatch should fail when receiver rejects an event");
+    require(dispatchResult.attemptedEventCount == 2, "bridge dispatch should count the failed event as attempted");
+    require(dispatchResult.deliveredEventCount == 1, "bridge dispatch should count only accepted events as delivered");
+    require(dispatchResult.failedEventIndex == 1, "bridge dispatch should preserve zero-based failure index");
+    require(receiver.callCount() == 2, "bridge dispatch should stop immediately after receiver failure");
+    require(receiver.messages().size() == 2, "receiver should only see events up to the failure");
+}
+
 void audioEngineClearsScheduledMidiEventsWhenStoppedOrFailed()
 {
     trackloom::Project project("Engine MIDI");
@@ -5007,6 +5078,9 @@ int main()
         audioEngineClearsMidiEventsWhenRenderRequestFails();
         audioEngineCollectsMidiEventsBeforeAdvancingTransport();
         audioEngineExposesScheduledMidiEventsForRenderedBlock();
+        audioEngineMidiBridgeDispatchesRenderedScheduledEvents();
+        audioEngineMidiBridgeAcceptsEmptyRenderResult();
+        audioEngineMidiBridgeStopsWhenReceiverFails();
         audioEngineClearsScheduledMidiEventsWhenStoppedOrFailed();
         sineToneSourceRejectsInvalidParameters();
         sourceMixerSumsPreparedSources();
