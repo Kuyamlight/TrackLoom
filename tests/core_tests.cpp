@@ -2552,6 +2552,142 @@ void projectPlaybackSessionCanReleaseActiveMidiNotes()
     require(receiver.messages()[1].sampleOffset == 24, "project playback session release should keep requested sample offset");
 }
 
+void projectPlaybackSessionStopsAfterReleasingActiveMidiNotes()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "safe stop clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "safe stop note should exist");
+    require(session.prepare(1920.0, 2, 480), "safe stop prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "safe stop should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "safe stop should rebuild midi output");
+    require(transport.seekToSample(960), "safe stop transport should seek");
+    transport.play();
+
+    const auto blockResult = session.renderNextBlock(transport, block, project);
+    require(blockResult.renderSucceeded, "safe stop initial render should succeed");
+    require(session.activeMidiNoteCount() == 1, "safe stop should have active note before stop");
+
+    const auto stopResult = session.stopPlayback(transport, 32);
+
+    require(stopResult.success, "safe stop should succeed after midi release");
+    require(stopResult.transportChanged, "safe stop should report transport changed");
+    require(stopResult.midiRelease.success, "safe stop should report successful midi release");
+    require(stopResult.midiRelease.deliveredEventCount == 1, "safe stop should deliver release note off");
+    require(!transport.isPlaying(), "safe stop should stop transport after release");
+    require(session.activeMidiNoteCount() == 0, "safe stop should clear active midi notes");
+    require(receiver.events().size() == 2, "safe stop receiver should record note on and release note off");
+    require(receiver.events()[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "safe stop release should be note off");
+    require(receiver.events()[1].sampleOffset == 32, "safe stop release should use requested sample offset");
+}
+
+void projectPlaybackSessionDoesNotStopWhenMidiReleaseFails()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    FailingMidiEventReceiver receiver(2);
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "failed safe stop clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "failed safe stop note should exist");
+    require(session.prepare(1920.0, 2, 480), "failed safe stop prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "failed safe stop should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "failed safe stop should rebuild midi output");
+    require(transport.seekToSample(960), "failed safe stop transport should seek");
+    transport.play();
+
+    const auto blockResult = session.renderNextBlock(transport, block, project);
+    require(blockResult.renderSucceeded, "failed safe stop initial render should succeed");
+    require(blockResult.midiDispatch.success, "failed safe stop note on should be delivered");
+    require(session.activeMidiNoteCount() == 1, "failed safe stop should have active note before stop");
+
+    const auto stopResult = session.stopPlayback(transport, 16);
+
+    require(!stopResult.success, "safe stop should fail when midi release fails");
+    require(!stopResult.transportChanged, "safe stop should not change transport when release fails");
+    require(!stopResult.midiRelease.success, "safe stop should expose failed midi release");
+    require(transport.isPlaying(), "safe stop should keep transport playing when release fails");
+    require(session.activeMidiNoteCount() == 1, "safe stop should keep active midi note after release failure");
+}
+
+void projectPlaybackSessionSeeksAfterReleasingActiveMidiNotes()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> firstSamples(2 * 480, 0.0f);
+    std::vector<float> secondSamples(2 * 960, 0.0f);
+    trackloom::AudioBlock firstBlock(firstSamples.data(), 2, 480);
+    trackloom::AudioBlock secondBlock(secondSamples.data(), 2, 960);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "safe seek clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "safe seek note should exist");
+    require(session.prepare(1920.0, 2, 960), "safe seek prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "safe seek should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "safe seek should rebuild midi output");
+    require(transport.seekToSample(960), "safe seek transport should seek to note start");
+    transport.play();
+
+    const auto firstResult = session.renderNextBlock(transport, firstBlock, project);
+    require(firstResult.renderSucceeded, "safe seek initial render should succeed");
+    require(session.activeMidiNoteCount() == 1, "safe seek should have active note before seek");
+
+    const auto seekResult = session.seekPlaybackToSample(transport, 1200, 20);
+
+    require(seekResult.success, "safe seek should succeed after midi release");
+    require(seekResult.transportChanged, "safe seek should report transport changed");
+    require(seekResult.midiRelease.success, "safe seek should report successful release");
+    require(transport.currentSample() == 1200, "safe seek should move transport after release");
+    require(session.activeMidiNoteCount() == 0, "safe seek should clear active note before new block");
+
+    const auto secondResult = session.renderNextBlock(transport, secondBlock, project);
+
+    require(secondResult.renderSucceeded, "safe seek chased render should succeed");
+    require(receiver.events().size() == 4, "safe seek should record original note, release, chased note, and real release");
+    require(receiver.events()[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "safe seek should release before moving");
+    require(receiver.events()[1].sampleOffset == 20, "safe seek release should use requested sample offset");
+    require(receiver.events()[2].event.type == trackloom::MidiPlaybackEventType::NoteOn, "safe seek next block should chase held note");
+    require(receiver.events()[2].event.absoluteTick == 1200, "safe seek chase should use new transport tick");
+    require(receiver.events()[3].event.type == trackloom::MidiPlaybackEventType::NoteOff, "safe seek next block should release at real note end");
+    require(session.activeMidiNoteCount() == 0, "safe seek should leave no active note after real release");
+}
+
+void projectPlaybackSessionRejectsInvalidSafeSeek()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+
+    require(transport.seekToSample(960), "invalid safe seek transport should start at known sample");
+    const auto unpreparedResult = session.seekPlaybackToSample(transport, 1200, 0);
+    require(!unpreparedResult.success, "unprepared safe seek should fail");
+    require(!unpreparedResult.transportChanged, "unprepared safe seek should not change transport");
+    require(transport.currentSample() == 960, "unprepared safe seek should keep transport sample");
+
+    require(session.prepare(1920.0, 2, 480), "invalid safe seek prepare should succeed");
+    const auto negativeResult = session.seekPlaybackToSample(transport, -1, 0);
+    require(!negativeResult.success, "negative safe seek should fail");
+    require(!negativeResult.transportChanged, "negative safe seek should not change transport");
+    require(transport.currentSample() == 960, "negative safe seek should keep transport sample");
+}
+
 void projectPlaybackSessionRejectsPrepareWhileMidiNotesAreActive()
 {
     trackloom::Project project("Project Playback Session");
@@ -6192,6 +6328,10 @@ int main()
         projectPlaybackSessionDoesNotDispatchMidiWhenAudioRenderFails();
         projectPlaybackSessionRendersStoppedBlockWithoutMidi();
         projectPlaybackSessionCanReleaseActiveMidiNotes();
+        projectPlaybackSessionStopsAfterReleasingActiveMidiNotes();
+        projectPlaybackSessionDoesNotStopWhenMidiReleaseFails();
+        projectPlaybackSessionSeeksAfterReleasingActiveMidiNotes();
+        projectPlaybackSessionRejectsInvalidSafeSeek();
         projectPlaybackSessionRejectsPrepareWhileMidiNotesAreActive();
         projectPlaybackSessionRejectsUseBeforePrepare();
         renameClipCommandSupportsUndoAndRedo();

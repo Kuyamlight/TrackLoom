@@ -100,6 +100,53 @@ bool ProjectPlaybackSession::requestMidiChaseOnNextBlock()
     return true;
 }
 
+ProjectPlaybackControlResult ProjectPlaybackSession::stopPlayback(
+    Transport& transport,
+    int releaseSampleOffset)
+{
+    ProjectPlaybackControlResult result;
+    if (!prepared_) {
+        return result;
+    }
+
+    result.midiRelease = releaseActiveMidiNotes(releaseSampleOffset);
+    if (!result.midiRelease.success) {
+        return result;
+    }
+
+    transport.stop();
+    chaseNextMidiBlock_ = true;
+    result.transportChanged = true;
+    result.success = true;
+    return result;
+}
+
+ProjectPlaybackControlResult ProjectPlaybackSession::seekPlaybackToSample(
+    Transport& transport,
+    std::int64_t targetSample,
+    int releaseSampleOffset)
+{
+    ProjectPlaybackControlResult result;
+    if (!prepared_ || targetSample < 0) {
+        return result;
+    }
+
+    result.midiRelease = releaseActiveMidiNotes(releaseSampleOffset);
+    if (!result.midiRelease.success) {
+        return result;
+    }
+
+    if (!transport.seekToSample(targetSample)) {
+        result.success = false;
+        return result;
+    }
+
+    chaseNextMidiBlock_ = true;
+    result.transportChanged = true;
+    result.success = true;
+    return result;
+}
+
 ProjectPlaybackBlockResult ProjectPlaybackSession::renderNextBlock(
     Transport& transport,
     AudioBlock block,

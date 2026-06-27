@@ -5,6 +5,7 @@
 #include "MidiOutputSession.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace trackloom {
@@ -15,6 +16,14 @@ struct ProjectPlaybackBlockResult {
     bool renderSucceeded = false;
     AudioEngineRenderResult renderResult;
     MidiDispatchResult midiDispatch;
+};
+
+// ProjectPlaybackControlResult 记录停止、跳转等播放控制命令的结果。
+// midiRelease 单独暴露，方便调用方区分“释放失败”和“Transport 改变失败”。
+struct ProjectPlaybackControlResult {
+    bool success = false;
+    MidiDispatchResult midiRelease;
+    bool transportChanged = false;
 };
 
 // ProjectPlaybackSession 是项目播放的核心协调层。
@@ -39,6 +48,15 @@ public:
 
     // 外部发生 seek、重新起播或手动释放后，可请求下一次正在播放的 block 做一次 MIDI chase。
     bool requestMidiChaseOnNextBlock();
+
+    // stopPlayback 会先释放活动 MIDI 音符，再停止 Transport；释放失败时不会停止播放头。
+    ProjectPlaybackControlResult stopPlayback(Transport& transport, int releaseSampleOffset);
+
+    // seekPlaybackToSample 会先释放活动 MIDI 音符，再移动 Transport；seek 成功后下一帧会做一次 chase。
+    ProjectPlaybackControlResult seekPlaybackToSample(
+        Transport& transport,
+        std::int64_t targetSample,
+        int releaseSampleOffset);
 
     // renderNextBlock 先渲染音频和收集 scheduled MIDI，再在渲染成功后分发 MIDI。
     // MIDI 分发失败会写入返回值，但不会回滚已经完成的音频 block 或 Transport 推进。
