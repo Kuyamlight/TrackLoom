@@ -17,6 +17,7 @@
 #include "ProjectFile.h"
 #include "Project.h"
 #include "ProjectMidiOutputGraph.h"
+#include "ProjectPlaybackSession.h"
 #include "ProjectSerializer.h"
 #include "Transport.h"
 
@@ -131,6 +132,14 @@ public:
 private:
     float value_ = 0.0f;
     int renderCount_ = 0;
+};
+
+class FailingAudioSource final : public trackloom::AudioSource {
+public:
+    bool render(trackloom::AudioBlock, double) override
+    {
+        return false;
+    }
 };
 
 class RecordingMidiEventReceiver final : public trackloom::MidiEventReceiver {
@@ -1936,6 +1945,221 @@ void midiOutputSessionAcceptsEmptyDispatchAndRelease()
     require(releaseResult.success, "midi output session should accept empty release");
     require(releaseResult.attemptedEventCount == 0, "empty release should attempt no events");
     require(session.activeNoteCount() == 0, "empty dispatch and release should keep no active notes");
+}
+
+void projectPlaybackSessionRendersAudioAndDispatchesMidi()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.50f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 960);
+
+    require(clip.has_value(), "project playback session clip should exist");
+    require(project.createMidiNote(clip->id, 0, 240, 60, 100, 1).has_value(), "project playback session note should exist");
+    require(session.prepare(1920.0, 2, 480), "project playback session prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "project playback session should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "project playback session should rebuild midi output");
+    require(session.audioSourceCount() == 1, "project playback session should expose audio source count");
+    require(session.midiReceiverCount() == 1, "project playback session should expose midi receiver count");
+    require(transport.seekToSample(960), "project playback session transport should seek to note block");
+    transport.play();
+
+    const auto blockResult = session.renderNextBlock(transport, block, project);
+
+    require(blockResult.renderSucceeded, "project playback session render should succeed");
+    require(blockResult.renderResult.scheduledMidiEvents.size() == 2, "project playback session should collect note on and note off");
+    require(blockResult.midiDispatch.success, "project playback session midi dispatch should succeed");
+    require(blockResult.midiDispatch.deliveredEventCount == 2, "project playback session should dispatch both midi events");
+    require(receiver.events().size() == 2, "project playback session receiver should record both midi events");
+    require(allSamplesNear(samples, 0.50f), "project playback session should render bound audio source");
+    require(transport.currentSample() == 1440, "project playback session should advance transport after render");
+}
+
+void projectPlaybackSessionKeepsAudioRenderWhenMidiDispatchFails()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.25f);
+    FailingMidiEventReceiver receiver(1);
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 960);
+
+    require(clip.has_value(), "project playback session failing midi clip should exist");
+    require(project.createMidiNote(clip->id, 0, 240, 60, 100, 1).has_value(), "project playback session failing midi note should exist");
+    require(session.prepare(1920.0, 2, 480), "project playback session failing midi prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "project playback session failing midi should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "project playback session failing midi should rebuild midi output");
+    require(transport.seekToSample(960), "project playback session failing midi transport should seek");
+    transport.play();
+
+    const auto blockResult = session.renderNextBlock(transport, block, project);
+
+    require(blockResult.renderSucceeded, "midi output failure should not turn audio render into failure");
+    require(!blockResult.midiDispatch.success, "project playback session should report midi dispatch failure separately");
+    require(blockResult.midiDispatch.failedEventIndex == 0, "project playback session should keep midi failure index");
+    require(allSamplesNear(samples, 0.25f), "midi output failure should not erase rendered audio");
+    require(transport.currentSample() == 1440, "midi output failure should not roll back transport");
+    require(session.activeMidiNoteCount() == 0, "undelivered midi note should not become active through session");
+}
+
+void projectPlaybackSessionDoesNotDispatchMidiWhenAudioRenderFails()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    FailingAudioSource source;
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 480, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 960);
+
+    require(clip.has_value(), "project playback session failing audio clip should exist");
+    require(project.createMidiNote(clip->id, 0, 240, 60, 100, 1).has_value(), "project playback session failing audio note should exist");
+    require(session.prepare(1920.0, 2, 480), "project playback session failing audio prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "project playback session failing audio should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "project playback session failing audio should rebuild midi output");
+    require(transport.seekToSample(960), "project playback session failing audio transport should seek");
+    transport.play();
+
+    const auto blockResult = session.renderNextBlock(transport, block, project);
+
+    require(!blockResult.renderSucceeded, "project playback session should report audio render failure");
+    require(blockResult.midiDispatch.attemptedEventCount == 0, "audio render failure should not attempt midi dispatch");
+    require(receiver.events().empty(), "audio render failure should not dispatch midi events");
+    require(allSamplesNear(samples, 0.0f), "audio render failure should clear output block");
+    require(transport.currentSample() == 960, "audio render failure should not advance transport");
+}
+
+void projectPlaybackSessionRendersStoppedBlockWithoutMidi()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    CountingAudioSource source(0.50f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 480, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 960);
+
+    require(clip.has_value(), "project playback session stopped clip should exist");
+    require(project.createMidiNote(clip->id, 0, 240, 60, 100, 1).has_value(), "project playback session stopped note should exist");
+    require(session.prepare(1920.0, 2, 480), "project playback session stopped prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "project playback session stopped should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "project playback session stopped should rebuild midi output");
+    require(transport.seekToSample(960), "project playback session stopped transport should seek");
+
+    const auto blockResult = session.renderNextBlock(transport, block, project);
+
+    require(blockResult.renderSucceeded, "stopped project playback session render should succeed");
+    require(blockResult.renderResult.scheduledMidiEvents.empty(), "stopped render should not collect midi events");
+    require(blockResult.midiDispatch.success, "stopped render should dispatch empty midi result successfully");
+    require(receiver.events().empty(), "stopped render should not send midi events");
+    require(source.renderCount() == 0, "stopped render should not process audio source");
+    require(allSamplesNear(samples, 0.0f), "stopped render should clear audio block to silence");
+    require(transport.currentSample() == 960, "stopped render should not advance transport");
+}
+
+void projectPlaybackSessionCanReleaseActiveMidiNotes()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "project playback session release clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "project playback session release note should exist");
+    require(session.prepare(1920.0, 2, 480), "project playback session release prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "project playback session release should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "project playback session release should rebuild midi output");
+    require(transport.seekToSample(960), "project playback session release transport should seek");
+    transport.play();
+
+    const auto blockResult = session.renderNextBlock(transport, block, project);
+
+    require(blockResult.renderSucceeded, "project playback session long-note render should succeed");
+    require(blockResult.midiDispatch.success, "project playback session long-note midi dispatch should succeed");
+    require(receiver.events().size() == 1, "long note first block should send only note on");
+    require(session.activeMidiNoteCount() == 1, "long note note on should remain active after first block");
+
+    const auto releaseResult = session.releaseActiveMidiNotes(24);
+
+    require(releaseResult.success, "project playback session should release active midi notes");
+    require(releaseResult.deliveredEventCount == 1, "project playback session release should deliver one note off");
+    require(session.activeMidiNoteCount() == 0, "project playback session release should clear active midi note");
+    require(receiver.events().size() == 2, "project playback session receiver should record note on and release note off");
+    require(receiver.events()[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "project playback session release should generate note off");
+    require(receiver.messages()[1].sampleOffset == 24, "project playback session release should keep requested sample offset");
+}
+
+void projectPlaybackSessionRejectsPrepareWhileMidiNotesAreActive()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "project playback session active prepare clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "project playback session active prepare note should exist");
+    require(session.prepare(1920.0, 2, 480), "project playback session active prepare initial prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "project playback session active prepare should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "project playback session active prepare should rebuild midi output");
+    require(transport.seekToSample(960), "project playback session active prepare transport should seek");
+    transport.play();
+
+    const auto blockResult = session.renderNextBlock(transport, block, project);
+
+    require(blockResult.renderSucceeded, "project playback session active prepare render should succeed");
+    require(session.activeMidiNoteCount() == 1, "project playback session active prepare should keep long note active");
+    require(!session.prepare(48000.0, 2, 512), "project playback session should reject prepare while midi notes are active");
+    require(session.isPrepared(), "rejected active prepare should keep previous prepared state");
+    require(numbersNear(session.sampleRate(), 1920.0), "rejected active prepare should keep previous sample rate");
+    require(session.maxBlockFrames() == 480, "rejected active prepare should keep previous max block frames");
+    require(session.activeMidiNoteCount() == 1, "rejected active prepare should keep active midi note");
+    require(session.releaseActiveMidiNotes(0).success, "project playback session should still release after rejected active prepare");
+}
+
+void projectPlaybackSessionRejectsUseBeforePrepare()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.50f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 480, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    transport.play();
+
+    require(!session.isPrepared(), "new project playback session should start unprepared");
+    require(!session.rebuildAudioGraph(project, { { track.id, &source } }), "unprepared session should reject audio rebuild");
+    require(!session.rebuildMidiOutput(project, { { track.id, &receiver } }), "unprepared session should reject midi rebuild");
+
+    const auto blockResult = session.renderNextBlock(transport, block, project);
+
+    require(!blockResult.renderSucceeded, "unprepared session should reject render");
+    require(blockResult.midiDispatch.attemptedEventCount == 0, "unprepared render should not dispatch midi");
+    require(transport.currentSample() == 0, "unprepared render should not advance transport");
 }
 
 void renameClipCommandSupportsUndoAndRedo()
@@ -5430,6 +5654,13 @@ int main()
         midiOutputSessionReleaseClearsStackedMatchingNotes();
         midiOutputSessionRejectsRebuildWhileNotesAreActive();
         midiOutputSessionAcceptsEmptyDispatchAndRelease();
+        projectPlaybackSessionRendersAudioAndDispatchesMidi();
+        projectPlaybackSessionKeepsAudioRenderWhenMidiDispatchFails();
+        projectPlaybackSessionDoesNotDispatchMidiWhenAudioRenderFails();
+        projectPlaybackSessionRendersStoppedBlockWithoutMidi();
+        projectPlaybackSessionCanReleaseActiveMidiNotes();
+        projectPlaybackSessionRejectsPrepareWhileMidiNotesAreActive();
+        projectPlaybackSessionRejectsUseBeforePrepare();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();

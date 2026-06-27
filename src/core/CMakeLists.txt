@@ -16,6 +16,7 @@ add_library(trackloom_core STATIC
     PlaybackClock.cpp
     Project.cpp
     ProjectMidiOutputGraph.cpp
+    ProjectPlaybackSession.cpp
     Command.cpp
     ProjectFile.cpp
     ProjectSerializer.cpp
