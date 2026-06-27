@@ -14,6 +14,7 @@ add_library(trackloom_core STATIC
     MidiTrackRouter.cpp
     PlaybackClock.cpp
     Project.cpp
+    ProjectMidiOutputGraph.cpp
     Command.cpp
     ProjectFile.cpp
     ProjectSerializer.cpp

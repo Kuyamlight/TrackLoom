@@ -15,6 +15,7 @@
 #include "PlaybackClock.h"
 #include "ProjectFile.h"
 #include "Project.h"
+#include "ProjectMidiOutputGraph.h"
 #include "ProjectSerializer.h"
 #include "Transport.h"
 
@@ -1603,6 +1604,150 @@ void midiTrackRouterAcceptsEmptyBindings()
     require(missingResult.attemptedEventCount == 1, "empty router missing route should count one attempted event");
     require(missingResult.deliveredEventCount == 0, "empty router missing route should deliver no events");
     require(missingResult.failedEventIndex == 0, "empty router should fail at the first routed event");
+}
+
+void projectMidiOutputGraphDispatchesRenderedInstrumentTracks()
+{
+    trackloom::Project project("Project MIDI Output");
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    trackloom::ProjectMidiOutputGraph graph;
+    RecordingMidiEventReceiver leadReceiver;
+    RecordingMidiEventReceiver padReceiver;
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto padTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto leadClip = project.createClip(leadTrack.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 960);
+    const auto padClip = project.createClip(padTrack.id, "Pad Phrase", trackloom::ClipType::Midi, 960, 960);
+
+    require(leadClip.has_value(), "project midi graph lead clip should exist");
+    require(padClip.has_value(), "project midi graph pad clip should exist");
+    require(project.createMidiNote(leadClip->id, 0, 240, 60, 100, 1).has_value(), "project midi graph lead note should exist");
+    require(project.createMidiNote(padClip->id, 0, 240, 64, 90, 2).has_value(), "project midi graph pad note should exist");
+    require(engine.prepare(1920.0, 2, 480), "project midi graph engine prepare should succeed");
+    require(transport.seekToSample(960), "project midi graph transport should seek to first note block");
+    transport.play();
+
+    trackloom::AudioEngineRenderResult renderResult;
+    require(engine.renderNextBlockWithMidi(transport, block, project, renderResult), "project midi graph render should expose scheduled events");
+    require(renderResult.scheduledMidiEvents.size() == 4, "project midi graph render should expose two note pairs");
+    require(graph.rebuild(project, {
+        { leadTrack.id, &leadReceiver },
+        { padTrack.id, &padReceiver },
+    }), "project midi graph should accept instrument track bindings");
+
+    const auto dispatchResult = graph.dispatch(renderResult);
+
+    require(dispatchResult.success, "project midi graph dispatch should succeed for bound instrument tracks");
+    require(dispatchResult.attemptedEventCount == 4, "project midi graph dispatch should attempt both note on and note off pairs");
+    require(dispatchResult.deliveredEventCount == 4, "project midi graph dispatch should deliver every rendered event");
+    require(dispatchResult.failedEventIndex == -1, "successful project midi graph dispatch should not report failed index");
+    require(leadReceiver.events().size() == 2, "lead receiver should get lead note on and off");
+    require(padReceiver.events().size() == 2, "pad receiver should get pad note on and off");
+    require(leadReceiver.events()[0].event.trackId == leadTrack.id, "lead receiver first event should keep lead track id");
+    require(padReceiver.events()[0].event.trackId == padTrack.id, "pad receiver first event should keep pad track id");
+    require(leadReceiver.messages().size() == 2, "lead receiver should get two project midi messages");
+    require(padReceiver.messages().size() == 2, "pad receiver should get two project midi messages");
+    require(leadReceiver.messages()[0].sampleOffset == 0, "lead note on should keep rendered sample offset");
+    require(padReceiver.messages()[0].sampleOffset == 0, "pad note on should keep rendered sample offset");
+    require(transport.currentSample() == 1440, "project midi graph dispatch should not move transport");
+}
+
+void projectMidiOutputGraphRejectsInvalidBindingsWithoutReplacingOldRoutes()
+{
+    trackloom::Project project("Project MIDI Output");
+    trackloom::ProjectMidiOutputGraph graph;
+    RecordingMidiEventReceiver leadReceiver;
+    RecordingMidiEventReceiver replacementReceiver;
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audioTrack = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto folderTrack = project.createTrack("Folder", trackloom::TrackType::Folder);
+
+    require(graph.rebuild(project, { { leadTrack.id, &leadReceiver } }), "project midi graph should accept initial instrument binding");
+    require(!graph.rebuild(project, { { "missing-track", &replacementReceiver } }), "project midi graph should reject missing track binding");
+    require(!graph.rebuild(project, { { audioTrack.id, &replacementReceiver } }), "project midi graph should reject audio track binding");
+    require(!graph.rebuild(project, { { folderTrack.id, &replacementReceiver } }), "project midi graph should reject folder track binding");
+    require(!graph.rebuild(project, { { leadTrack.id, nullptr } }), "project midi graph should reject null receiver binding");
+    require(!graph.rebuild(project, {
+        { leadTrack.id, &leadReceiver },
+        { leadTrack.id, &replacementReceiver },
+    }), "project midi graph should reject duplicate track bindings");
+
+    trackloom::AudioEngineRenderResult renderResult;
+    renderResult.scheduledMidiEvents.push_back(
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, leadTrack.id));
+
+    const auto dispatchResult = graph.dispatch(renderResult);
+
+    require(dispatchResult.success, "old project midi graph route should remain active after failed rebuilds");
+    require(graph.receiverCount() == 1, "failed project midi graph rebuilds should preserve receiver count");
+    require(leadReceiver.events().size() == 1, "old lead receiver should still receive events");
+    require(replacementReceiver.events().empty(), "rejected replacement receiver should not receive events");
+}
+
+void projectMidiOutputGraphReportsUnboundRenderedTracks()
+{
+    trackloom::Project project("Project MIDI Output");
+    trackloom::ProjectMidiOutputGraph graph;
+    RecordingMidiEventReceiver leadReceiver;
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto padTrack = project.createTrack("Pad", trackloom::TrackType::Instrument);
+
+    require(graph.rebuild(project, { { leadTrack.id, &leadReceiver } }), "project midi graph should accept lead binding");
+
+    trackloom::AudioEngineRenderResult renderResult;
+    renderResult.scheduledMidiEvents.push_back(
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 64, 90, padTrack.id));
+
+    const auto dispatchResult = graph.dispatch(renderResult);
+
+    require(!dispatchResult.success, "project midi graph should fail when rendered track has no receiver");
+    require(dispatchResult.attemptedEventCount == 1, "unbound rendered track should count as attempted");
+    require(dispatchResult.deliveredEventCount == 0, "unbound rendered track should not be delivered");
+    require(dispatchResult.failedEventIndex == 0, "unbound rendered track should fail at index zero");
+    require(leadReceiver.events().empty(), "unbound pad event should not call lead receiver");
+}
+
+void projectMidiOutputGraphPropagatesDownstreamFailure()
+{
+    trackloom::Project project("Project MIDI Output");
+    trackloom::ProjectMidiOutputGraph graph;
+    FailingMidiEventReceiver receiver(2);
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    require(graph.rebuild(project, { { leadTrack.id, &receiver } }), "project midi graph should accept failing receiver binding");
+
+    trackloom::AudioEngineRenderResult renderResult;
+    renderResult.scheduledMidiEvents = {
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100, leadTrack.id),
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOff, 120, 1, 60, 0, leadTrack.id),
+    };
+
+    const auto dispatchResult = graph.dispatch(renderResult);
+
+    require(!dispatchResult.success, "project midi graph should propagate downstream receiver failure");
+    require(dispatchResult.attemptedEventCount == 2, "downstream failure should count the failed event as attempted");
+    require(dispatchResult.deliveredEventCount == 1, "downstream failure should only count accepted events");
+    require(dispatchResult.failedEventIndex == 1, "downstream failure should keep dispatch failed index");
+    require(receiver.callCount() == 2, "project midi graph should stop after downstream failure");
+}
+
+void projectMidiOutputGraphAcceptsEmptyBindingsForEmptyRenderResult()
+{
+    trackloom::Project project("Project MIDI Output");
+    trackloom::ProjectMidiOutputGraph graph;
+    trackloom::AudioEngineRenderResult renderResult;
+
+    require(graph.rebuild(project, {}), "project midi graph should accept empty bindings");
+
+    const auto dispatchResult = graph.dispatch(renderResult);
+
+    require(dispatchResult.success, "project midi graph should accept empty render results");
+    require(dispatchResult.attemptedEventCount == 0, "empty project midi graph dispatch should attempt no events");
+    require(dispatchResult.deliveredEventCount == 0, "empty project midi graph dispatch should deliver no events");
+    require(dispatchResult.failedEventIndex == -1, "empty project midi graph dispatch should not report failed index");
+    require(graph.receiverCount() == 0, "empty project midi graph should report zero receivers");
 }
 
 void renameClipCommandSupportsUndoAndRedo()
@@ -5085,6 +5230,11 @@ int main()
         midiTrackRouterPreservesReceiverFailure();
         midiTrackRouterValidatesBindingsWithoutReplacingPreviousRoutes();
         midiTrackRouterAcceptsEmptyBindings();
+        projectMidiOutputGraphDispatchesRenderedInstrumentTracks();
+        projectMidiOutputGraphRejectsInvalidBindingsWithoutReplacingOldRoutes();
+        projectMidiOutputGraphReportsUnboundRenderedTracks();
+        projectMidiOutputGraphPropagatesDownstreamFailure();
+        projectMidiOutputGraphAcceptsEmptyBindingsForEmptyRenderResult();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
