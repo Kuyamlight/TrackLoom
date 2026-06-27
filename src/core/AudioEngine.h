@@ -1,6 +1,6 @@
 #pragma once
 
-#include "MidiPlayback.h"
+#include "PlaybackClock.h"
 #include "Project.h"
 #include "Transport.h"
 
@@ -59,6 +59,7 @@ private:
 // 当前只暴露 MIDI 播放事件；后续如果要加入计量、诊断或插件延迟信息，也应放在这里。
 struct AudioEngineRenderResult {
     std::vector<MidiPlaybackEvent> midiEvents;
+    std::vector<ScheduledMidiPlaybackEvent> scheduledMidiEvents;
 };
 
 // AudioEngine 是最小实时渲染骨架。

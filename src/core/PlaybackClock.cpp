@@ -1,5 +1,6 @@
 #include "PlaybackClock.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -70,6 +71,20 @@ std::int64_t secondsToTickCeil(const Project& project, double seconds)
     return segmentStartTick + secondsToTicksCeil(localSeconds, segmentBpm);
 }
 
+int sampleOffsetForEvent(
+    const Project& project,
+    const Transport& transport,
+    const MidiPlaybackEvent& event,
+    int frameCount)
+{
+    const auto blockStartSeconds = static_cast<double>(transport.currentSample()) / transport.sampleRate();
+    const auto eventSeconds = project.tickToSeconds(event.absoluteTick);
+    const auto eventOffsetSamples = std::llround((eventSeconds - blockStartSeconds) * transport.sampleRate());
+    const auto clampedOffset = std::clamp<std::int64_t>(eventOffsetSamples, 0, frameCount - 1);
+
+    return static_cast<int>(clampedOffset);
+}
+
 }
 
 std::optional<PlaybackTickWindow> playbackTickWindowForBlock(
@@ -106,6 +121,30 @@ std::vector<MidiPlaybackEvent> collectMidiPlaybackEventsForBlock(
     }
 
     return collectMidiPlaybackEvents(project, window->startTick, window->endTick);
+}
+
+std::vector<ScheduledMidiPlaybackEvent> collectScheduledMidiPlaybackEventsForBlock(
+    const Project& project,
+    const Transport& transport,
+    int frameCount)
+{
+    const auto window = playbackTickWindowForBlock(project, transport, frameCount);
+    if (!window.has_value()) {
+        return {};
+    }
+
+    const auto midiEvents = collectMidiPlaybackEvents(project, window->startTick, window->endTick);
+    std::vector<ScheduledMidiPlaybackEvent> scheduledEvents;
+    scheduledEvents.reserve(midiEvents.size());
+
+    for (const auto& event : midiEvents) {
+        scheduledEvents.push_back(ScheduledMidiPlaybackEvent {
+            event,
+            sampleOffsetForEvent(project, transport, event, frameCount)
+        });
+    }
+
+    return scheduledEvents;
 }
 
 }

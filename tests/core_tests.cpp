@@ -1217,6 +1217,66 @@ void playbackClockUsesHalfOpenBlockBoundary()
     require(secondBlockEvents[0].absoluteTick == 1920, "second block event should occur at boundary tick");
 }
 
+void playbackClockSchedulesMidiEventsWithSampleOffsets()
+{
+    trackloom::Project project("Clock");
+    trackloom::Transport transport;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 960);
+
+    require(clip.has_value(), "scheduled midi clip should exist");
+    require(project.createMidiNote(clip->id, 0, 240, 60, 100, 1).has_value(), "scheduled midi note should exist");
+    require(transport.setSampleRate(1920.0), "scheduled midi sample rate should be set");
+    require(transport.seekToSample(960), "scheduled midi transport should seek to block start");
+    transport.play();
+
+    const auto events = trackloom::collectScheduledMidiPlaybackEventsForBlock(project, transport, 480);
+
+    require(events.size() == 2, "scheduled block should contain note on and note off");
+    require(events[0].event.type == trackloom::MidiPlaybackEventType::NoteOn, "first scheduled event should be note on");
+    require(events[0].event.absoluteTick == 960, "note on should keep absolute tick");
+    require(events[0].sampleOffset == 0, "note on at block start should use sample offset zero");
+    require(events[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "second scheduled event should be note off");
+    require(events[1].event.absoluteTick == 1200, "note off should keep absolute tick");
+    require(events[1].sampleOffset == 240, "note off should use its block-local sample offset");
+    require(transport.currentSample() == 960, "scheduled collection should not advance transport");
+}
+
+void playbackClockSchedulesMidiEventsAcrossTempoChange()
+{
+    trackloom::Project project("Clock");
+    trackloom::Transport transport;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Slow Phrase", trackloom::ClipType::Midi, 1440, 960);
+
+    require(project.createTempoEvent(960, 60.0).has_value(), "tempo change should exist before scheduled offset test");
+    require(clip.has_value(), "tempo scheduled midi clip should exist");
+    require(project.createMidiNote(clip->id, 0, 120, 64, 90, 1).has_value(), "tempo scheduled midi note should exist");
+    require(transport.setSampleRate(960.0), "tempo scheduled sample rate should be set");
+    require(transport.seekToSample(480), "tempo scheduled transport should seek to tempo-change sample");
+    transport.play();
+
+    const auto events = trackloom::collectScheduledMidiPlaybackEventsForBlock(project, transport, 960);
+
+    require(events.size() == 2, "tempo scheduled block should contain note on and note off");
+    require(events[0].event.absoluteTick == 1440, "tempo scheduled note on should keep absolute tick");
+    require(events[0].sampleOffset == 480, "tempo scheduled note on should account for slower tempo after change");
+    require(events[1].event.absoluteTick == 1560, "tempo scheduled note off should keep absolute tick");
+    require(events[1].sampleOffset == 600, "tempo scheduled note off should account for slower tempo after change");
+}
+
+void playbackClockRejectsStoppedOrInvalidScheduledBlocks()
+{
+    trackloom::Project project("Clock");
+    trackloom::Transport transport;
+
+    require(transport.setSampleRate(1920.0), "scheduled invalid sample rate should be set");
+    require(trackloom::collectScheduledMidiPlaybackEventsForBlock(project, transport, 480).empty(), "stopped transport should not schedule midi events");
+    transport.play();
+    require(trackloom::collectScheduledMidiPlaybackEventsForBlock(project, transport, 0).empty(), "zero frame block should not schedule midi events");
+    require(trackloom::collectScheduledMidiPlaybackEventsForBlock(project, transport, -1).empty(), "negative frame block should not schedule midi events");
+}
+
 void renameClipCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Clips");
@@ -3625,6 +3685,86 @@ void audioEngineCollectsMidiEventsBeforeAdvancingTransport()
     require(transport.currentSample() == 960, "second boundary render should advance after collection");
 }
 
+void audioEngineExposesScheduledMidiEventsForRenderedBlock()
+{
+    trackloom::Project project("Engine MIDI");
+    trackloom::AudioEngine engine;
+    trackloom::Transport transport;
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Scheduled Phrase", trackloom::ClipType::Midi, 960, 960);
+
+    require(clip.has_value(), "engine scheduled clip should exist");
+    require(project.createMidiNote(clip->id, 0, 240, 60, 100, 1).has_value(), "engine scheduled note should exist");
+    require(engine.prepare(1920.0, 2, 480), "engine prepare should succeed for scheduled midi render");
+    require(transport.seekToSample(960), "engine scheduled transport should seek to block start");
+    transport.play();
+
+    trackloom::AudioEngineRenderResult result;
+    require(engine.renderNextBlockWithMidi(transport, block, project, result), "engine scheduled midi render should succeed");
+
+    require(result.midiEvents.size() == 2, "engine should still expose raw midi events");
+    require(result.scheduledMidiEvents.size() == 2, "engine should expose scheduled midi events");
+    require(result.scheduledMidiEvents[0].event == result.midiEvents[0], "scheduled event should wrap the first raw event");
+    require(result.scheduledMidiEvents[0].sampleOffset == 0, "engine scheduled note on should use offset zero");
+    require(result.scheduledMidiEvents[1].event == result.midiEvents[1], "scheduled event should wrap the second raw event");
+    require(result.scheduledMidiEvents[1].sampleOffset == 240, "engine scheduled note off should use block-local offset");
+    require(transport.currentSample() == 1440, "engine scheduled render should advance after collection");
+}
+
+void audioEngineClearsScheduledMidiEventsWhenStoppedOrFailed()
+{
+    trackloom::Project project("Engine MIDI");
+    trackloom::AudioEngine engine;
+    trackloom::Transport stoppedTransport;
+    trackloom::Transport failedTransport;
+    std::vector<float> samples(2 * 480, 1.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+
+    require(engine.prepare(1920.0, 2, 480), "engine prepare should succeed before stopped scheduled render");
+
+    trackloom::AudioEngineRenderResult stoppedResult;
+    stoppedResult.scheduledMidiEvents.push_back(trackloom::ScheduledMidiPlaybackEvent {
+        trackloom::MidiPlaybackEvent {
+            trackloom::MidiPlaybackEventType::NoteOn,
+            "old-track",
+            "old-clip",
+            "old-note",
+            0,
+            60,
+            100,
+            1
+        },
+        12
+    });
+
+    require(engine.renderNextBlockWithMidi(stoppedTransport, block, project, stoppedResult), "stopped scheduled render should succeed");
+    require(stoppedResult.scheduledMidiEvents.empty(), "stopped scheduled render should clear stale scheduled events");
+
+    trackloom::AudioEngine unpreparedEngine;
+    trackloom::AudioEngineRenderResult failedResult;
+    failedResult.scheduledMidiEvents.push_back(trackloom::ScheduledMidiPlaybackEvent {
+        trackloom::MidiPlaybackEvent {
+            trackloom::MidiPlaybackEventType::NoteOn,
+            "old-track",
+            "old-clip",
+            "old-note",
+            0,
+            60,
+            100,
+            1
+        },
+        24
+    });
+
+    require(failedTransport.seekToSample(128), "failed scheduled transport should seek before render");
+    failedTransport.play();
+    require(!unpreparedEngine.renderNextBlockWithMidi(failedTransport, block, project, failedResult), "unprepared scheduled render should fail");
+    require(failedResult.scheduledMidiEvents.empty(), "failed scheduled render should clear stale scheduled events");
+    require(failedTransport.currentSample() == 128, "failed scheduled render should not advance transport");
+}
+
 void sineToneSourceRejectsInvalidParameters()
 {
     trackloom::SineToneSource tone;
@@ -4534,6 +4674,9 @@ int main()
         playbackClockRejectsStoppedOrInvalidBlocks();
         playbackClockCollectsMidiEventsForTransportBlock();
         playbackClockUsesHalfOpenBlockBoundary();
+        playbackClockSchedulesMidiEventsWithSampleOffsets();
+        playbackClockSchedulesMidiEventsAcrossTempoChange();
+        playbackClockRejectsStoppedOrInvalidScheduledBlocks();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
@@ -4652,6 +4795,8 @@ int main()
         audioEngineClearsMidiEventsWhenStopped();
         audioEngineClearsMidiEventsWhenRenderRequestFails();
         audioEngineCollectsMidiEventsBeforeAdvancingTransport();
+        audioEngineExposesScheduledMidiEventsForRenderedBlock();
+        audioEngineClearsScheduledMidiEventsWhenStoppedOrFailed();
         sineToneSourceRejectsInvalidParameters();
         sourceMixerSumsPreparedSources();
         sourceMixerRendersSilenceWhenEmpty();
