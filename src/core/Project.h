@@ -95,11 +95,22 @@ struct TempoEvent {
     bool operator==(const TempoEvent&) const = default;
 };
 
+// TimeSignatureEvent 是工程级拍号事件，表示从某个 tick 开始使用新的小节拍号。
+// 本阶段只保存分子和分母；小节编号、节拍器、网格吸附和 MIDI meta event 会在后续模块单独实现。
+struct TimeSignatureEvent {
+    std::string id;
+    std::int64_t tick = 0;
+    int numerator = 4;
+    int denominator = 4;
+
+    bool operator==(const TimeSignatureEvent&) const = default;
+};
+
 // Project 是 TrackLoom 自有工程格式的最小核心状态。
 // 后续 UI、AI 和导入器都应通过命令系统修改它，避免绕过验证、撤销和历史记录。
 class Project {
 public:
-    static constexpr int currentFormatVersion = 8;
+    static constexpr int currentFormatVersion = 9;
     static constexpr std::int64_t ticksPerQuarterNote = 960;
 
     explicit Project(std::string name = "Untitled");
@@ -116,6 +127,8 @@ public:
     std::optional<TimelineMarker> findMarkerById(const std::string& id) const;
     const std::vector<TempoEvent>& tempoEvents() const;
     std::optional<TempoEvent> findTempoEventById(const std::string& id) const;
+    const std::vector<TimeSignatureEvent>& timeSignatureEvents() const;
+    std::optional<TimeSignatureEvent> findTimeSignatureEventById(const std::string& id) const;
 
     // createTrack 用于创建全新轨道，并分配本工程内稳定的可读 ID。
     Track createTrack(std::string name, TrackType type);
@@ -208,6 +221,24 @@ public:
     double tempoAtTick(std::int64_t tick) const;
     double tickToSeconds(std::int64_t tick) const;
 
+    // createTimeSignatureEvent 创建非默认拍号事件。默认 meter-1 始终留在 tick 0。
+    std::optional<TimeSignatureEvent> createTimeSignatureEvent(
+        std::int64_t tick,
+        int numerator,
+        int denominator);
+
+    // insertExistingTimeSignatureEvent 用于撤销重做或读取文件时恢复已有 ID。
+    bool insertExistingTimeSignatureEvent(const TimeSignatureEvent& event);
+    bool removeTimeSignatureEventById(const std::string& id);
+
+    // setTimeSignature 只修改拍号值；moveTimeSignatureEventToTick 只移动非默认拍号事件。
+    bool setTimeSignature(const std::string& id, int numerator, int denominator);
+    bool moveTimeSignatureEventToTick(const std::string& id, std::int64_t tick);
+
+    // timeSignatureAtTick 和 ticksPerMeasureAtTick 提供确定性小节结构查询，不读取实时音频状态。
+    TimeSignatureEvent timeSignatureAtTick(std::int64_t tick) const;
+    std::int64_t ticksPerMeasureAtTick(std::int64_t tick) const;
+
 private:
     int formatVersion_ = currentFormatVersion;
     std::string name_;
@@ -215,10 +246,12 @@ private:
     std::vector<TimelineClip> clips_;
     std::vector<TimelineMarker> markers_;
     std::vector<TempoEvent> tempoEvents_;
+    std::vector<TimeSignatureEvent> timeSignatureEvents_;
     int nextTrackNumber_ = 1;
     int nextClipNumber_ = 1;
     int nextMarkerNumber_ = 1;
     int nextTempoNumber_ = 1;
+    int nextTimeSignatureNumber_ = 1;
 
     // 读取旧轨道 ID 后推进计数器，避免下一次新建轨道撞上已有 ID。
     void observeTrackId(const std::string& id);
@@ -231,6 +264,9 @@ private:
 
     // 读取旧速度事件 ID 后推进计数器，避免下一次新建速度事件撞上已有 ID。
     void observeTempoEventId(const std::string& id);
+
+    // 读取旧拍号事件 ID 后推进计数器，避免下一次新建拍号事件撞上已有 ID。
+    void observeTimeSignatureEventId(const std::string& id);
 };
 
 std::string toString(TrackType type);
@@ -242,5 +278,6 @@ bool isValidTrackViewState(TrackType type, TrackViewState state);
 bool isValidClipTiming(std::int64_t startTick, std::int64_t lengthTick);
 bool isValidMarkerTick(std::int64_t tick);
 bool isValidTempoBpm(double beatsPerMinute);
+bool isValidTimeSignature(int numerator, int denominator);
 
 }

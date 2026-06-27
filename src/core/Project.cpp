@@ -17,6 +17,15 @@ double ticksToSeconds(std::int64_t ticks, double beatsPerMinute)
         * (60.0 / beatsPerMinute);
 }
 
+std::int64_t ticksPerMeasure(const TimeSignatureEvent& event)
+{
+    // 分母表示“一拍是哪种音符”。以 960 PPQ 为基准，4/4 为 3840 tick，6/8 为 2880 tick。
+    return static_cast<std::int64_t>(event.numerator)
+        * Project::ticksPerQuarterNote
+        * 4
+        / event.denominator;
+}
+
 bool trackCanOwnClip(const Track& track, ClipType clipType)
 {
     // 片段类型和轨道类型先保持严格对应，避免把 MIDI 放到音频轨或把音频放到乐器轨。
@@ -38,6 +47,8 @@ Project::Project(std::string name)
 {
     tempoEvents_.push_back({ "tempo-1", 0, 120.0 });
     observeTempoEventId("tempo-1");
+    timeSignatureEvents_.push_back({ "meter-1", 0, 4, 4 });
+    observeTimeSignatureEventId("meter-1");
 }
 
 int Project::formatVersion() const
@@ -121,6 +132,24 @@ std::optional<TempoEvent> Project::findTempoEventById(const std::string& id) con
     });
 
     if (it == tempoEvents_.end()) {
+        return std::nullopt;
+    }
+
+    return *it;
+}
+
+const std::vector<TimeSignatureEvent>& Project::timeSignatureEvents() const
+{
+    return timeSignatureEvents_;
+}
+
+std::optional<TimeSignatureEvent> Project::findTimeSignatureEventById(const std::string& id) const
+{
+    const auto it = std::find_if(timeSignatureEvents_.begin(), timeSignatureEvents_.end(), [&](const TimeSignatureEvent& event) {
+        return event.id == id;
+    });
+
+    if (it == timeSignatureEvents_.end()) {
         return std::nullopt;
     }
 
@@ -753,6 +782,133 @@ double Project::tickToSeconds(std::int64_t tick) const
     return seconds;
 }
 
+std::optional<TimeSignatureEvent> Project::createTimeSignatureEvent(
+    std::int64_t tick,
+    int numerator,
+    int denominator)
+{
+    TimeSignatureEvent event {
+        "meter-" + std::to_string(nextTimeSignatureNumber_),
+        tick,
+        numerator,
+        denominator
+    };
+
+    if (!insertExistingTimeSignatureEvent(event)) {
+        return std::nullopt;
+    }
+
+    return event;
+}
+
+bool Project::insertExistingTimeSignatureEvent(const TimeSignatureEvent& event)
+{
+    if (event.id.empty() || !isValidMarkerTick(event.tick) || !isValidTimeSignature(event.numerator, event.denominator)) {
+        return false;
+    }
+
+    if (findTimeSignatureEventById(event.id).has_value()) {
+        return false;
+    }
+
+    const auto duplicateTick = std::find_if(timeSignatureEvents_.begin(), timeSignatureEvents_.end(), [&](const TimeSignatureEvent& existingEvent) {
+        return existingEvent.tick == event.tick;
+    });
+    if (duplicateTick != timeSignatureEvents_.end()) {
+        return false;
+    }
+
+    timeSignatureEvents_.push_back(event);
+    std::sort(timeSignatureEvents_.begin(), timeSignatureEvents_.end(), [](const TimeSignatureEvent& left, const TimeSignatureEvent& right) {
+        return left.tick < right.tick;
+    });
+    observeTimeSignatureEventId(event.id);
+    return true;
+}
+
+bool Project::removeTimeSignatureEventById(const std::string& id)
+{
+    const auto it = std::find_if(timeSignatureEvents_.begin(), timeSignatureEvents_.end(), [&](const TimeSignatureEvent& event) {
+        return event.id == id;
+    });
+
+    if (it == timeSignatureEvents_.end() || it->tick == 0 || timeSignatureEvents_.size() <= 1) {
+        return false;
+    }
+
+    timeSignatureEvents_.erase(it);
+    return true;
+}
+
+bool Project::setTimeSignature(const std::string& id, int numerator, int denominator)
+{
+    if (!isValidTimeSignature(numerator, denominator)) {
+        return false;
+    }
+
+    const auto it = std::find_if(timeSignatureEvents_.begin(), timeSignatureEvents_.end(), [&](const TimeSignatureEvent& event) {
+        return event.id == id;
+    });
+
+    if (it == timeSignatureEvents_.end()) {
+        return false;
+    }
+
+    it->numerator = numerator;
+    it->denominator = denominator;
+    return true;
+}
+
+bool Project::moveTimeSignatureEventToTick(const std::string& id, std::int64_t tick)
+{
+    if (!isValidMarkerTick(tick)) {
+        return false;
+    }
+
+    const auto it = std::find_if(timeSignatureEvents_.begin(), timeSignatureEvents_.end(), [&](const TimeSignatureEvent& event) {
+        return event.id == id;
+    });
+
+    if (it == timeSignatureEvents_.end() || it->tick == 0 || it->tick == tick) {
+        return false;
+    }
+
+    const auto duplicateTick = std::find_if(timeSignatureEvents_.begin(), timeSignatureEvents_.end(), [&](const TimeSignatureEvent& event) {
+        return event.id != id && event.tick == tick;
+    });
+    if (duplicateTick != timeSignatureEvents_.end()) {
+        return false;
+    }
+
+    it->tick = tick;
+    std::sort(timeSignatureEvents_.begin(), timeSignatureEvents_.end(), [](const TimeSignatureEvent& left, const TimeSignatureEvent& right) {
+        return left.tick < right.tick;
+    });
+    return true;
+}
+
+TimeSignatureEvent Project::timeSignatureAtTick(std::int64_t tick) const
+{
+    if (timeSignatureEvents_.empty()) {
+        return { "meter-1", 0, 4, 4 };
+    }
+
+    TimeSignatureEvent currentEvent = timeSignatureEvents_.front();
+    for (const auto& event : timeSignatureEvents_) {
+        if (event.tick > tick) {
+            break;
+        }
+        currentEvent = event;
+    }
+
+    return currentEvent;
+}
+
+std::int64_t Project::ticksPerMeasureAtTick(std::int64_t tick) const
+{
+    return ticksPerMeasure(timeSignatureAtTick(tick));
+}
+
 void Project::observeTrackId(const std::string& id)
 {
     constexpr std::string_view prefix = "track-";
@@ -822,6 +978,24 @@ void Project::observeTempoEventId(const std::string& id)
 
     if (result.ec == std::errc{} && result.ptr == last && parsedNumber >= nextTempoNumber_) {
         nextTempoNumber_ = parsedNumber + 1;
+    }
+}
+
+void Project::observeTimeSignatureEventId(const std::string& id)
+{
+    constexpr std::string_view prefix = "meter-";
+    if (id.rfind(prefix, 0) != 0) {
+        return;
+    }
+
+    int parsedNumber = 0;
+    const auto numberPart = std::string_view(id).substr(prefix.size());
+    const auto* first = numberPart.data();
+    const auto* last = first + numberPart.size();
+    const auto result = std::from_chars(first, last, parsedNumber);
+
+    if (result.ec == std::errc{} && result.ptr == last && parsedNumber >= nextTimeSignatureNumber_) {
+        nextTimeSignatureNumber_ = parsedNumber + 1;
     }
 }
 
@@ -911,6 +1085,16 @@ bool isValidTempoBpm(double beatsPerMinute)
     return std::isfinite(beatsPerMinute)
         && beatsPerMinute >= 20.0
         && beatsPerMinute <= 300.0;
+}
+
+bool isValidTimeSignature(int numerator, int denominator)
+{
+    // 分子限制在常见创作范围内；分母必须是标准二分音符层级，避免坏文件生成无法解释的小节长度。
+    const bool denominatorIsPowerOfTwo = denominator > 0 && (denominator & (denominator - 1)) == 0;
+    return numerator >= 1
+        && numerator <= 32
+        && denominatorIsPowerOfTwo
+        && denominator <= 64;
 }
 
 }

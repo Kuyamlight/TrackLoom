@@ -1230,6 +1230,230 @@ void DeleteTempoEventCommand::undo(Project& project)
     }
 }
 
+AddTimeSignatureEventCommand::AddTimeSignatureEventCommand(std::int64_t tick, int numerator, int denominator)
+    : tick_(tick)
+    , numerator_(numerator)
+    , denominator_(denominator)
+{
+}
+
+std::string AddTimeSignatureEventCommand::name() const
+{
+    return "AddTimeSignatureEvent";
+}
+
+CommandResult AddTimeSignatureEventCommand::validate(const Project& project) const
+{
+    if (!isValidMarkerTick(tick_)) {
+        return CommandResult::fail("Time signature tick is invalid.");
+    }
+
+    if (!isValidTimeSignature(numerator_, denominator_)) {
+        return CommandResult::fail("Time signature value is invalid.");
+    }
+
+    const auto duplicateTick = std::find_if(project.timeSignatureEvents().begin(), project.timeSignatureEvents().end(), [&](const TimeSignatureEvent& event) {
+        return event.tick == tick_;
+    });
+    if (duplicateTick != project.timeSignatureEvents().end()) {
+        return CommandResult::fail("Time signature tick already exists.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult AddTimeSignatureEventCommand::execute(Project& project)
+{
+    if (createdEvent_.has_value()) {
+        if (!project.insertExistingTimeSignatureEvent(*createdEvent_)) {
+            return CommandResult::fail("Time signature event already exists or is no longer valid.");
+        }
+        return CommandResult::ok();
+    }
+
+    createdEvent_ = project.createTimeSignatureEvent(tick_, numerator_, denominator_);
+    if (!createdEvent_.has_value()) {
+        return CommandResult::fail("Time signature event could not be created.");
+    }
+
+    return CommandResult::ok();
+}
+
+void AddTimeSignatureEventCommand::undo(Project& project)
+{
+    if (createdEvent_.has_value()) {
+        project.removeTimeSignatureEventById(createdEvent_->id);
+    }
+}
+
+SetTimeSignatureCommand::SetTimeSignatureCommand(std::string eventId, int numerator, int denominator)
+    : eventId_(std::move(eventId))
+    , numerator_(numerator)
+    , denominator_(denominator)
+{
+}
+
+std::string SetTimeSignatureCommand::name() const
+{
+    return "SetTimeSignature";
+}
+
+CommandResult SetTimeSignatureCommand::validate(const Project& project) const
+{
+    if (!isValidTimeSignature(numerator_, denominator_)) {
+        return CommandResult::fail("Time signature value is invalid.");
+    }
+
+    if (!project.findTimeSignatureEventById(eventId_).has_value()) {
+        return CommandResult::fail("Time signature event does not exist.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult SetTimeSignatureCommand::execute(Project& project)
+{
+    const auto event = project.findTimeSignatureEventById(eventId_);
+    if (!event.has_value()) {
+        return CommandResult::fail("Time signature event does not exist.");
+    }
+
+    if (!isValidTimeSignature(numerator_, denominator_)) {
+        return CommandResult::fail("Time signature value is invalid.");
+    }
+
+    if (!oldNumerator_.has_value()) {
+        oldNumerator_ = event->numerator;
+        oldDenominator_ = event->denominator;
+    }
+
+    if (!project.setTimeSignature(eventId_, numerator_, denominator_)) {
+        return CommandResult::fail("Time signature could not be changed.");
+    }
+
+    return CommandResult::ok();
+}
+
+void SetTimeSignatureCommand::undo(Project& project)
+{
+    if (oldNumerator_.has_value() && oldDenominator_.has_value()) {
+        project.setTimeSignature(eventId_, *oldNumerator_, *oldDenominator_);
+    }
+}
+
+MoveTimeSignatureEventCommand::MoveTimeSignatureEventCommand(std::string eventId, std::int64_t tick)
+    : eventId_(std::move(eventId))
+    , tick_(tick)
+{
+}
+
+std::string MoveTimeSignatureEventCommand::name() const
+{
+    return "MoveTimeSignatureEvent";
+}
+
+CommandResult MoveTimeSignatureEventCommand::validate(const Project& project) const
+{
+    const auto event = project.findTimeSignatureEventById(eventId_);
+    if (!event.has_value()) {
+        return CommandResult::fail("Time signature event does not exist.");
+    }
+
+    if (!isValidMarkerTick(tick_)) {
+        return CommandResult::fail("Time signature tick is invalid.");
+    }
+
+    if (event->tick == 0) {
+        return CommandResult::fail("Default time signature event cannot be moved.");
+    }
+
+    if (event->tick == tick_) {
+        return CommandResult::fail("Time signature event is already at target tick.");
+    }
+
+    const auto duplicateTick = std::find_if(project.timeSignatureEvents().begin(), project.timeSignatureEvents().end(), [&](const TimeSignatureEvent& otherEvent) {
+        return otherEvent.id != eventId_ && otherEvent.tick == tick_;
+    });
+    if (duplicateTick != project.timeSignatureEvents().end()) {
+        return CommandResult::fail("Time signature tick already exists.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult MoveTimeSignatureEventCommand::execute(Project& project)
+{
+    const auto event = project.findTimeSignatureEventById(eventId_);
+    if (!event.has_value()) {
+        return CommandResult::fail("Time signature event does not exist.");
+    }
+
+    if (!oldTick_.has_value()) {
+        oldTick_ = event->tick;
+    }
+
+    if (!project.moveTimeSignatureEventToTick(eventId_, tick_)) {
+        return CommandResult::fail("Time signature event could not be moved.");
+    }
+
+    return CommandResult::ok();
+}
+
+void MoveTimeSignatureEventCommand::undo(Project& project)
+{
+    if (oldTick_.has_value()) {
+        project.moveTimeSignatureEventToTick(eventId_, *oldTick_);
+    }
+}
+
+DeleteTimeSignatureEventCommand::DeleteTimeSignatureEventCommand(std::string eventId)
+    : eventId_(std::move(eventId))
+{
+}
+
+std::string DeleteTimeSignatureEventCommand::name() const
+{
+    return "DeleteTimeSignatureEvent";
+}
+
+CommandResult DeleteTimeSignatureEventCommand::validate(const Project& project) const
+{
+    const auto event = project.findTimeSignatureEventById(eventId_);
+    if (!event.has_value()) {
+        return CommandResult::fail("Time signature event does not exist.");
+    }
+
+    if (event->tick == 0) {
+        return CommandResult::fail("Default time signature event cannot be deleted.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult DeleteTimeSignatureEventCommand::execute(Project& project)
+{
+    if (!deletedEvent_.has_value()) {
+        const auto event = project.findTimeSignatureEventById(eventId_);
+        if (!event.has_value()) {
+            return CommandResult::fail("Time signature event does not exist.");
+        }
+        deletedEvent_ = *event;
+    }
+
+    if (!project.removeTimeSignatureEventById(deletedEvent_->id)) {
+        return CommandResult::fail("Time signature event could not be deleted.");
+    }
+
+    return CommandResult::ok();
+}
+
+void DeleteTimeSignatureEventCommand::undo(Project& project)
+{
+    if (deletedEvent_.has_value()) {
+        project.insertExistingTimeSignatureEvent(*deletedEvent_);
+    }
+}
+
 SetTrackPlaybackStateCommand::SetTrackPlaybackStateCommand(std::string trackId, TrackPlaybackState newState)
     : trackId_(std::move(trackId))
     , newState_(newState)

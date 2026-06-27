@@ -67,6 +67,15 @@ bool parseDoubleValue(const std::string& token, double& value)
     return input && input.eof();
 }
 
+bool parseIntValue(const std::string& token, int& value)
+{
+    std::istringstream input(token);
+    input >> value;
+
+    // 必须完整消费 token，避免 "4/4" 或 "4abc" 被误认为合法拍号字段。
+    return input && input.eof();
+}
+
 }
 
 LoadProjectResult LoadProjectResult::ok(Project project)
@@ -89,6 +98,14 @@ std::string saveProjectToText(const Project& project)
         output << "tempo " << event.id
                << ' ' << event.tick
                << ' ' << event.beatsPerMinute
+               << '\n';
+    }
+
+    for (const auto& event : project.timeSignatureEvents()) {
+        output << "time_signature " << event.id
+               << ' ' << event.tick
+               << ' ' << event.numerator
+               << ' ' << event.denominator
                << '\n';
     }
 
@@ -141,7 +158,7 @@ LoadProjectResult loadProjectFromText(const std::string& text)
     }
 
     std::istringstream header(line);
-    // v2 增加轨道播放状态；v3 增加轨道混音 gain；v4 增加 pan；v5 增加时间线片段；v6 增加轨道显示状态；v7 增加时间线标记；v8 增加速度图。
+    // v2 增加轨道播放状态；v3 增加轨道混音 gain；v4 增加 pan；v5 增加时间线片段；v6 增加轨道显示状态；v7 增加时间线标记；v8 增加速度图；v9 增加拍号图。
     // 旧版本读取后使用当前内存默认值，避免老工程因为新增字段无法打开。
     if (!(header >> keyword >> version) || keyword != "trackloom_project" || version < 1 || version > Project::currentFormatVersion) {
         return LoadProjectResult::fail("Unsupported or invalid project header.");
@@ -154,6 +171,7 @@ LoadProjectResult loadProjectFromText(const std::string& text)
     const std::string projectName = line.substr(std::string_view("name ").size());
     Project project(projectName);
     bool loadedDefaultTempoRecord = false;
+    bool loadedDefaultTimeSignatureRecord = false;
 
     while (std::getline(input, line)) {
         if (line.empty()) {
@@ -191,6 +209,45 @@ LoadProjectResult loadProjectFromText(const std::string& text)
 
             if (!project.insertExistingTempoEvent(event)) {
                 return LoadProjectResult::fail("Duplicate or invalid tempo event.");
+            }
+
+            continue;
+        }
+
+        if (startsWith(line, "time_signature ")) {
+            if (version < 9) {
+                return LoadProjectResult::fail("Time signature event requires project version 9.");
+            }
+
+            std::istringstream timeSignatureLine(line);
+            TimeSignatureEvent event;
+            std::string tickToken;
+            std::string numeratorToken;
+            std::string denominatorToken;
+
+            if (!(timeSignatureLine >> keyword >> event.id >> tickToken >> numeratorToken >> denominatorToken)) {
+                return LoadProjectResult::fail("Invalid time signature record.");
+            }
+            if (!parseInt64Value(tickToken, event.tick)
+                || !parseIntValue(numeratorToken, event.numerator)
+                || !parseIntValue(denominatorToken, event.denominator)) {
+                return LoadProjectResult::fail("Invalid time signature value.");
+            }
+
+            const auto existingEvent = project.findTimeSignatureEventById(event.id);
+            if (existingEvent.has_value()) {
+                if (event.id != "meter-1" || loadedDefaultTimeSignatureRecord || event.tick != 0) {
+                    return LoadProjectResult::fail("Duplicate or invalid time signature event.");
+                }
+                if (!project.setTimeSignature(event.id, event.numerator, event.denominator)) {
+                    return LoadProjectResult::fail("Invalid default time signature value.");
+                }
+                loadedDefaultTimeSignatureRecord = true;
+                continue;
+            }
+
+            if (!project.insertExistingTimeSignatureEvent(event)) {
+                return LoadProjectResult::fail("Duplicate or invalid time signature event.");
             }
 
             continue;

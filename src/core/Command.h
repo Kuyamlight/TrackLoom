@@ -409,6 +409,73 @@ private:
     std::optional<TempoEvent> deletedEvent_;
 };
 
+// AddTimeSignatureEventCommand 创建工程级拍号事件，并保存首次创建出的 ID 用于重做。
+// 拍号事件只影响小节结构查询，本阶段不驱动 Transport、UI 网格或实时音频线程。
+class AddTimeSignatureEventCommand final : public Command {
+public:
+    AddTimeSignatureEventCommand(std::int64_t tick, int numerator, int denominator);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::int64_t tick_ = 0;
+    int numerator_ = 4;
+    int denominator_ = 4;
+    std::optional<TimeSignatureEvent> createdEvent_;
+};
+
+// SetTimeSignatureCommand 修改拍号值，并保存旧分子和旧分母用于撤销。
+class SetTimeSignatureCommand final : public Command {
+public:
+    SetTimeSignatureCommand(std::string eventId, int numerator, int denominator);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string eventId_;
+    int numerator_ = 4;
+    int denominator_ = 4;
+    std::optional<int> oldNumerator_;
+    std::optional<int> oldDenominator_;
+};
+
+// MoveTimeSignatureEventCommand 移动非默认拍号事件；默认 meter-1 必须固定在 tick 0。
+class MoveTimeSignatureEventCommand final : public Command {
+public:
+    MoveTimeSignatureEventCommand(std::string eventId, std::int64_t tick);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string eventId_;
+    std::int64_t tick_ = 0;
+    std::optional<std::int64_t> oldTick_;
+};
+
+// DeleteTimeSignatureEventCommand 删除非默认拍号事件，并保存完整事件用于撤销。
+class DeleteTimeSignatureEventCommand final : public Command {
+public:
+    explicit DeleteTimeSignatureEventCommand(std::string eventId);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string eventId_;
+    std::optional<TimeSignatureEvent> deletedEvent_;
+};
+
 // SetTrackPlaybackStateCommand 修改轨道播放状态，并保存旧状态用于撤销。
 // 静音、独奏和禁用属于播放开关，不负责表达音量或其他混音参数。
 class SetTrackPlaybackStateCommand final : public Command {

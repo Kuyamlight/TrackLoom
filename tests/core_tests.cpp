@@ -823,6 +823,97 @@ void projectRejectsInvalidTempoEvents()
     require(project.tempoEvents().size() == 2, "invalid tempo operations should not add tempo events");
 }
 
+void newProjectStartsWithDefaultTimeSignatureEvent()
+{
+    trackloom::Project project("Meter");
+
+    require(project.timeSignatureEvents().size() == 1, "new project should start with one default time signature event");
+    require(project.timeSignatureEvents().front().id == "meter-1", "default time signature id should be stable");
+    require(project.timeSignatureEvents().front().tick == 0, "default time signature should start at tick zero");
+    require(project.timeSignatureEvents().front().numerator == 4, "default time signature numerator should be 4");
+    require(project.timeSignatureEvents().front().denominator == 4, "default time signature denominator should be 4");
+    require(project.timeSignatureAtTick(0).numerator == 4, "time signature at tick zero should use default numerator");
+    require(project.timeSignatureAtTick(0).denominator == 4, "time signature at tick zero should use default denominator");
+}
+
+void projectCanCreateTimeSignatureEvent()
+{
+    trackloom::Project project("Meter");
+
+    const auto laterMeter = project.createTimeSignatureEvent(3840, 3, 4);
+    const auto earlierMeter = project.createTimeSignatureEvent(1920, 6, 8);
+
+    require(laterMeter.has_value(), "later time signature event should be created");
+    require(earlierMeter.has_value(), "earlier time signature event should be created");
+    require(laterMeter->id == "meter-2", "first custom time signature id should follow default id");
+    require(earlierMeter->id == "meter-3", "second custom time signature id should advance");
+    require(project.timeSignatureEvents().size() == 3, "project should store default and custom time signature events");
+    require(project.timeSignatureEvents()[0].tick == 0, "default time signature should stay first");
+    require(project.timeSignatureEvents()[1].id == earlierMeter->id, "time signature events should be sorted by tick");
+    require(project.timeSignatureEvents()[2].id == laterMeter->id, "later time signature should stay after earlier event");
+}
+
+void projectCanQueryTimeSignatureAndMeasureLength()
+{
+    trackloom::Project project("Meter");
+
+    require(project.ticksPerMeasureAtTick(0) == 3840, "4/4 measure should be 3840 ticks at 960 PPQ");
+    require(project.createTimeSignatureEvent(3840, 3, 4).has_value(), "3/4 time signature should be created before query");
+    require(project.createTimeSignatureEvent(7680, 6, 8).has_value(), "6/8 time signature should be created before query");
+
+    require(project.timeSignatureAtTick(3839).numerator == 4, "time signature before change should use default numerator");
+    require(project.timeSignatureAtTick(3840).numerator == 3, "time signature at change tick should use new numerator");
+    require(project.timeSignatureAtTick(3840).denominator == 4, "time signature at change tick should use new denominator");
+    require(project.ticksPerMeasureAtTick(3840) == 2880, "3/4 measure should be 2880 ticks");
+    require(project.timeSignatureAtTick(7680).numerator == 6, "later time signature should use 6/8 numerator");
+    require(project.timeSignatureAtTick(7680).denominator == 8, "later time signature should use 6/8 denominator");
+    require(project.ticksPerMeasureAtTick(7680) == 2880, "6/8 measure should be 2880 ticks");
+}
+
+void projectRejectsInvalidTimeSignatureEvents()
+{
+    trackloom::Project project("Meter");
+    const auto meter = project.createTimeSignatureEvent(3840, 3, 4);
+    trackloom::TimeSignatureEvent duplicateId;
+    trackloom::TimeSignatureEvent duplicateTick;
+    trackloom::TimeSignatureEvent missingId;
+
+    require(meter.has_value(), "time signature event should be created before invalid tests");
+    duplicateId.id = meter->id;
+    duplicateId.tick = 7680;
+    duplicateId.numerator = 5;
+    duplicateId.denominator = 4;
+    duplicateTick.id = "meter-99";
+    duplicateTick.tick = meter->tick;
+    duplicateTick.numerator = 5;
+    duplicateTick.denominator = 4;
+    missingId.tick = 9600;
+    missingId.numerator = 5;
+    missingId.denominator = 4;
+
+    require(!project.createTimeSignatureEvent(-1, 4, 4).has_value(), "time signature should reject negative tick");
+    require(!project.createTimeSignatureEvent(7680, 0, 4).has_value(), "time signature should reject zero numerator");
+    require(!project.createTimeSignatureEvent(7680, 33, 4).has_value(), "time signature should reject too-large numerator");
+    require(!project.createTimeSignatureEvent(7680, 4, 3).has_value(), "time signature should reject non-power-of-two denominator");
+    require(!project.createTimeSignatureEvent(3840, 5, 4).has_value(), "time signature should reject duplicate tick");
+    require(!project.insertExistingTimeSignatureEvent(duplicateId), "time signature should reject duplicate id");
+    require(!project.insertExistingTimeSignatureEvent(duplicateTick), "time signature should reject duplicate tick");
+    require(!project.insertExistingTimeSignatureEvent(missingId), "time signature should reject empty id");
+    require(!project.setTimeSignature(meter->id, 0, 4), "time signature should reject invalid numerator update");
+    require(!project.setTimeSignature(meter->id, 4, 3), "time signature should reject invalid denominator update");
+    require(!project.setTimeSignature("missing-meter", 4, 4), "missing time signature update should fail");
+    require(!project.moveTimeSignatureEventToTick("meter-1", 480), "default time signature should not move away from tick zero");
+    require(!project.moveTimeSignatureEventToTick(meter->id, 0), "time signature move should reject duplicate default tick");
+    require(!project.removeTimeSignatureEventById("meter-1"), "default time signature should not be deleted");
+
+    const auto unchangedMeter = project.findTimeSignatureEventById(meter->id);
+    require(unchangedMeter.has_value(), "invalid time signature operations should keep original event");
+    require(unchangedMeter->tick == 3840, "failed time signature operations should keep original tick");
+    require(unchangedMeter->numerator == 3, "failed time signature operations should keep original numerator");
+    require(unchangedMeter->denominator == 4, "failed time signature operations should keep original denominator");
+    require(project.timeSignatureEvents().size() == 2, "invalid time signature operations should not add events");
+}
+
 void renameClipCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Clips");
@@ -1398,6 +1489,128 @@ void invalidTempoCommandDoesNotModifyProject()
     require(!commands.canUndo(), "failed tempo commands should not enter undo stack");
 }
 
+void addTimeSignatureEventCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Meter");
+    trackloom::CommandStack commands;
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::AddTimeSignatureEventCommand>(3840, 3, 4));
+
+    require(result.success, "add time signature command should succeed");
+    require(project.timeSignatureEvents().size() == 2, "add time signature command should store event");
+    require(project.timeSignatureEvents()[1].id == "meter-2", "add time signature command should create stable id");
+    require(project.timeSignatureEvents()[1].tick == 3840, "add time signature command should keep tick");
+    require(project.timeSignatureEvents()[1].numerator == 3, "add time signature command should keep numerator");
+    require(project.timeSignatureEvents()[1].denominator == 4, "add time signature command should keep denominator");
+
+    require(commands.undo(project), "add time signature undo should be available");
+    require(project.timeSignatureEvents().size() == 1, "undo should remove custom time signature event");
+
+    require(commands.redo(project), "add time signature redo should be available");
+    require(project.timeSignatureEvents().size() == 2, "redo should restore time signature event");
+    require(project.timeSignatureEvents()[1].id == "meter-2", "redo should preserve time signature id");
+}
+
+void setTimeSignatureCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Meter");
+    trackloom::CommandStack commands;
+
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetTimeSignatureCommand>("meter-1", 6, 8));
+
+    require(result.success, "set time signature command should succeed");
+    require(project.findTimeSignatureEventById("meter-1")->numerator == 6, "command should update default numerator");
+    require(project.findTimeSignatureEventById("meter-1")->denominator == 8, "command should update default denominator");
+
+    require(commands.undo(project), "set time signature undo should be available");
+    require(project.findTimeSignatureEventById("meter-1")->numerator == 4, "undo should restore default numerator");
+    require(project.findTimeSignatureEventById("meter-1")->denominator == 4, "undo should restore default denominator");
+
+    require(commands.redo(project), "set time signature redo should be available");
+    require(project.findTimeSignatureEventById("meter-1")->numerator == 6, "redo should restore new numerator");
+    require(project.findTimeSignatureEventById("meter-1")->denominator == 8, "redo should restore new denominator");
+}
+
+void moveTimeSignatureEventCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Meter");
+    trackloom::CommandStack commands;
+    const auto meter = project.createTimeSignatureEvent(3840, 3, 4);
+
+    require(meter.has_value(), "time signature should be created before command move");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::MoveTimeSignatureEventCommand>(meter->id, 7680));
+
+    require(result.success, "move time signature command should succeed");
+    require(project.findTimeSignatureEventById(meter->id)->tick == 7680, "move command should update time signature tick");
+
+    require(commands.undo(project), "move time signature undo should be available");
+    require(project.findTimeSignatureEventById(meter->id)->tick == 3840, "undo should restore time signature tick");
+
+    require(commands.redo(project), "move time signature redo should be available");
+    require(project.findTimeSignatureEventById(meter->id)->tick == 7680, "redo should restore time signature tick");
+}
+
+void deleteTimeSignatureEventCommandSupportsUndoAndRedo()
+{
+    trackloom::Project project("Meter");
+    trackloom::CommandStack commands;
+    const auto meter = project.createTimeSignatureEvent(3840, 3, 4);
+
+    require(meter.has_value(), "time signature should be created before command delete");
+    auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteTimeSignatureEventCommand>(meter->id));
+
+    require(result.success, "delete time signature command should succeed");
+    require(project.timeSignatureEvents().size() == 1, "delete time signature command should remove custom event");
+    require(!project.findTimeSignatureEventById(meter->id).has_value(), "delete time signature command should remove target event");
+
+    require(commands.undo(project), "delete time signature undo should be available");
+    require(project.timeSignatureEvents().size() == 2, "undo should restore time signature event");
+    require(project.findTimeSignatureEventById(meter->id).has_value(), "undo should restore target time signature event");
+    require(project.findTimeSignatureEventById(meter->id).value() == *meter, "undo should restore complete time signature state");
+
+    require(commands.redo(project), "delete time signature redo should be available");
+    require(project.timeSignatureEvents().size() == 1, "redo should delete custom time signature again");
+}
+
+void invalidTimeSignatureCommandDoesNotModifyProject()
+{
+    trackloom::Project project("Meter");
+    trackloom::CommandStack commands;
+    const auto meter = project.createTimeSignatureEvent(3840, 3, 4);
+
+    require(meter.has_value(), "time signature should be created before invalid commands");
+    auto duplicateTickAddResult = commands.execute(
+        project,
+        std::make_unique<trackloom::AddTimeSignatureEventCommand>(3840, 5, 4));
+    auto invalidValueResult = commands.execute(
+        project,
+        std::make_unique<trackloom::SetTimeSignatureCommand>(meter->id, 0, 4));
+    auto moveDefaultResult = commands.execute(
+        project,
+        std::make_unique<trackloom::MoveTimeSignatureEventCommand>("meter-1", 480));
+    auto deleteDefaultResult = commands.execute(
+        project,
+        std::make_unique<trackloom::DeleteTimeSignatureEventCommand>("meter-1"));
+
+    require(!duplicateTickAddResult.success, "duplicate tick add time signature command should fail");
+    require(!invalidValueResult.success, "invalid time signature command should fail");
+    require(!moveDefaultResult.success, "move default time signature command should fail");
+    require(!deleteDefaultResult.success, "delete default time signature command should fail");
+    require(project.timeSignatureEvents().size() == 2, "failed time signature commands should keep event count");
+    require(project.findTimeSignatureEventById(meter->id).value() == *meter, "failed commands should not modify time signature");
+    require(project.findTimeSignatureEventById("meter-1")->numerator == 4, "failed commands should keep default numerator");
+    require(project.findTimeSignatureEventById("meter-1")->denominator == 4, "failed commands should keep default denominator");
+    require(!commands.canUndo(), "failed time signature commands should not enter undo stack");
+}
+
 void renameTrackCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Tracks");
@@ -1744,7 +1957,7 @@ void projectCanRoundTripTrackRename()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 8\n") == 0, "track rename should use current project format version");
+    require(saved.find("trackloom_project 9\n") == 0, "track rename should use current project format version");
     require(loaded.project.has_value(), "project with renamed track should load");
     require(loaded.project->findTrackById(track.id).has_value(), "loaded project should keep renamed track id");
     require(loaded.project->findTrackById(track.id)->name == "Lead", "loaded project should keep renamed track name");
@@ -1794,7 +2007,7 @@ void projectCanRoundTripTrackReorder()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 8\n") == 0, "track reorder should use current project format version");
+    require(saved.find("trackloom_project 9\n") == 0, "track reorder should use current project format version");
     require(loaded.project.has_value(), "project with reordered tracks should load");
     require(loaded.project->tracks()[0].id == leadTrack.id, "loaded project should keep first track order");
     require(loaded.project->tracks()[1].id == vocalTrack.id, "loaded project should keep shifted track order");
@@ -1819,7 +2032,7 @@ void projectCanRoundTripTrackViewState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 8\n") == 0, "saved view project should use current format version");
+    require(saved.find("trackloom_project 9\n") == 0, "saved view project should use current format version");
     require(saved.find("track_view_state " + leadTrack.id + " hidden=1 collapsed=0\n") != std::string::npos, "saved project should include hidden state");
     require(saved.find("track_view_state " + folderTrack.id + " hidden=1 collapsed=1\n") != std::string::npos, "saved project should include folder collapsed state");
     require(loaded.project.has_value(), "project with view state should load");
@@ -1840,7 +2053,7 @@ void projectCanRoundTripTrackPlaybackState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 8\n") == 0, "saved project should use current format version");
+    require(saved.find("trackloom_project 9\n") == 0, "saved project should use current format version");
     require(loaded.project.has_value(), "project with playback state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
     require(loadedTrack.has_value(), "loaded project should contain track");
@@ -1860,7 +2073,7 @@ void projectCanRoundTripTrackMixState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 8\n") == 0, "saved mix project should use current format version");
+    require(saved.find("trackloom_project 9\n") == 0, "saved mix project should use current format version");
     require(saved.find("track_mix_state " + track.id + " gain=0.25 pan=-0.5\n") != std::string::npos, "saved project should include track mix state");
     require(loaded.project.has_value(), "project with mix state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
@@ -1880,7 +2093,7 @@ void projectCanRoundTripTimelineClips()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 8\n") == 0, "saved clip project should use current format version");
+    require(saved.find("trackloom_project 9\n") == 0, "saved clip project should use current format version");
     require(saved.find("clip clip-1 " + instrumentTrack.id + " Midi 0 960 Intro Melody\n") != std::string::npos, "saved project should include midi clip record");
     require(saved.find("clip clip-2 " + audioTrack.id + " Audio 960 1920 Vocal Take\n") != std::string::npos, "saved project should include audio clip record");
     require(loaded.project.has_value(), "project with clips should load");
@@ -2050,7 +2263,7 @@ void projectCanRoundTripTimelineMarkers()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 8\n") == 0, "saved marker project should use current format version");
+    require(saved.find("trackloom_project 9\n") == 0, "saved marker project should use current format version");
     require(saved.find("marker " + introMarker->id + " 0 Intro\n") != std::string::npos, "saved project should include intro marker");
     require(saved.find("marker " + verseMarker->id + " 1920 Verse A\n") != std::string::npos, "saved project should include edited marker");
     require(loaded.project.has_value(), "project with markers should load");
@@ -2093,7 +2306,7 @@ void projectCanRoundTripTempoEvents()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 8\n") == 0, "saved tempo project should use current format version");
+    require(saved.find("trackloom_project 9\n") == 0, "saved tempo project should use current format version");
     require(saved.find("tempo tempo-1 0 100\n") != std::string::npos, "saved project should include default tempo record");
     require(saved.find("tempo " + customTempo->id + " 960 60\n") != std::string::npos, "saved project should include custom tempo record");
     require(loaded.project.has_value(), "project with tempo events should load");
@@ -2102,6 +2315,29 @@ void projectCanRoundTripTempoEvents()
     require(loaded.project->findTempoEventById(customTempo->id)->tick == 960, "loaded custom tempo should keep tick");
     require(numbersNear(loaded.project->findTempoEventById(customTempo->id)->beatsPerMinute, 60.0), "loaded custom tempo should keep BPM");
     require(numbersNear(loaded.project->tickToSeconds(1920), 1.6), "loaded tempo map should preserve tick-to-seconds conversion");
+}
+
+void projectCanRoundTripTimeSignatureEvents()
+{
+    trackloom::Project project("Meter Song");
+    require(project.setTimeSignature("meter-1", 6, 8), "default time signature should update before round trip");
+    const auto customMeter = project.createTimeSignatureEvent(3840, 3, 4);
+
+    require(customMeter.has_value(), "custom time signature should be created before round trip");
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("trackloom_project 9\n") == 0, "saved time signature project should use current format version");
+    require(saved.find("time_signature meter-1 0 6 8\n") != std::string::npos, "saved project should include default time signature record");
+    require(saved.find("time_signature " + customMeter->id + " 3840 3 4\n") != std::string::npos, "saved project should include custom time signature record");
+    require(loaded.project.has_value(), "project with time signature events should load");
+    require(loaded.project->timeSignatureEvents().size() == 2, "loaded project should keep time signature events");
+    require(loaded.project->findTimeSignatureEventById("meter-1")->numerator == 6, "loaded default time signature should keep numerator");
+    require(loaded.project->findTimeSignatureEventById("meter-1")->denominator == 8, "loaded default time signature should keep denominator");
+    require(loaded.project->findTimeSignatureEventById(customMeter->id)->tick == 3840, "loaded custom time signature should keep tick");
+    require(loaded.project->findTimeSignatureEventById(customMeter->id)->numerator == 3, "loaded custom time signature should keep numerator");
+    require(loaded.project->findTimeSignatureEventById(customMeter->id)->denominator == 4, "loaded custom time signature should keep denominator");
+    require(loaded.project->ticksPerMeasureAtTick(3840) == 2880, "loaded time signature map should preserve measure length");
 }
 
 void versionOneProjectLoadsDefaultPlaybackState()
@@ -2226,6 +2462,23 @@ void versionSevenProjectLoadsDefaultTempoMap()
     require(numbersNear(loaded.project->tempoEvents().front().beatsPerMinute, 120.0), "version 7 default tempo should be 120 BPM");
 }
 
+void versionEightProjectLoadsDefaultTimeSignatureMap()
+{
+    const std::string text =
+        "trackloom_project 8\n"
+        "name Tempo Song\n"
+        "tempo tempo-1 0 120\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(loaded.project.has_value(), "version 8 project should load with default time signature map");
+    require(loaded.project->timeSignatureEvents().size() == 1, "version 8 project should have one default time signature event");
+    require(loaded.project->timeSignatureEvents().front().id == "meter-1", "version 8 default time signature id should be stable");
+    require(loaded.project->timeSignatureEvents().front().tick == 0, "version 8 default time signature should start at tick zero");
+    require(loaded.project->timeSignatureEvents().front().numerator == 4, "version 8 default numerator should be 4");
+    require(loaded.project->timeSignatureEvents().front().denominator == 4, "version 8 default denominator should be 4");
+}
+
 void invalidTrackPlaybackStateRecordIsRejected()
 {
     const std::string text =
@@ -2310,6 +2563,19 @@ void invalidTempoRecordIsRejected()
 
     require(!loaded.project.has_value(), "negative tempo tick should fail");
     require(!loaded.error.empty(), "invalid tempo record should report an error");
+}
+
+void invalidTimeSignatureRecordIsRejected()
+{
+    const std::string text =
+        "trackloom_project 9\n"
+        "name Broken Meter Song\n"
+        "time_signature meter-2 3840 4 3\n";
+
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(!loaded.project.has_value(), "invalid time signature denominator should fail");
+    require(!loaded.error.empty(), "invalid time signature record should report an error");
 }
 
 void projectCanRoundTripNamesWithSpaces()
@@ -3473,6 +3739,10 @@ int main()
         projectCanCreateTempoEvent();
         projectCanConvertTicksToSeconds();
         projectRejectsInvalidTempoEvents();
+        newProjectStartsWithDefaultTimeSignatureEvent();
+        projectCanCreateTimeSignatureEvent();
+        projectCanQueryTimeSignatureAndMeasureLength();
+        projectRejectsInvalidTimeSignatureEvents();
         renameClipCommandSupportsUndoAndRedo();
         invalidRenameClipCommandDoesNotModifyProject();
         setClipTimingCommandSupportsUndoAndRedo();
@@ -3498,6 +3768,11 @@ int main()
         moveTempoEventCommandSupportsUndoAndRedo();
         deleteTempoEventCommandSupportsUndoAndRedo();
         invalidTempoCommandDoesNotModifyProject();
+        addTimeSignatureEventCommandSupportsUndoAndRedo();
+        setTimeSignatureCommandSupportsUndoAndRedo();
+        moveTimeSignatureEventCommandSupportsUndoAndRedo();
+        deleteTimeSignatureEventCommandSupportsUndoAndRedo();
+        invalidTimeSignatureCommandDoesNotModifyProject();
         renameTrackCommandSupportsUndoAndRedo();
         invalidRenameTrackCommandDoesNotModifyProject();
         deleteTrackCommandSupportsUndoAndRedo();
@@ -3529,6 +3804,7 @@ int main()
         projectCanRoundTripTimelineMarkers();
         projectCanSaveAfterTimelineMarkerDeletion();
         projectCanRoundTripTempoEvents();
+        projectCanRoundTripTimeSignatureEvents();
         versionOneProjectLoadsDefaultPlaybackState();
         versionTwoProjectLoadsDefaultMixState();
         versionThreeProjectLoadsDefaultPanState();
@@ -3536,12 +3812,14 @@ int main()
         versionFiveProjectLoadsDefaultTrackViewState();
         versionSixProjectLoadsWithoutTimelineMarkers();
         versionSevenProjectLoadsDefaultTempoMap();
+        versionEightProjectLoadsDefaultTimeSignatureMap();
         invalidTrackPlaybackStateRecordIsRejected();
         invalidTrackMixStateRecordIsRejected();
         invalidTrackViewStateRecordIsRejected();
         invalidClipRecordIsRejected();
         invalidMarkerRecordIsRejected();
         invalidTempoRecordIsRejected();
+        invalidTimeSignatureRecordIsRejected();
         projectCanRoundTripNamesWithSpaces();
         invalidTextIsRejected();
         projectCanSaveAndLoadFromFile();
