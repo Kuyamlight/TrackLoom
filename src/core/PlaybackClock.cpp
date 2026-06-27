@@ -203,6 +203,118 @@ int sampleOffsetForEventInLoopWindow(
     return static_cast<int>(clampedOffset);
 }
 
+int midiEventTypeSortKey(MidiPlaybackEventType type)
+{
+    switch (type) {
+    case MidiPlaybackEventType::NoteOff:
+        return 0;
+    case MidiPlaybackEventType::NoteOn:
+        return 1;
+    }
+
+    return 2;
+}
+
+bool midiEventSortsBefore(const MidiPlaybackEvent& left, const MidiPlaybackEvent& right)
+{
+    if (left.absoluteTick != right.absoluteTick) {
+        return left.absoluteTick < right.absoluteTick;
+    }
+    if (left.type != right.type) {
+        return midiEventTypeSortKey(left.type) < midiEventTypeSortKey(right.type);
+    }
+    if (left.trackId != right.trackId) {
+        return left.trackId < right.trackId;
+    }
+    if (left.clipId != right.clipId) {
+        return left.clipId < right.clipId;
+    }
+    if (left.noteId != right.noteId) {
+        return left.noteId < right.noteId;
+    }
+    if (left.noteNumber != right.noteNumber) {
+        return left.noteNumber < right.noteNumber;
+    }
+
+    return left.channel < right.channel;
+}
+
+std::optional<std::int64_t> midiNoteLengthTickForEvent(
+    const Project& project,
+    const MidiPlaybackEvent& event)
+{
+    // 合成边界 Note Off 只需要音符长度；按 clipId 和 noteId 查找，避免复制整个片段。
+    for (const auto& clip : project.clips()) {
+        if (clip.id != event.clipId) {
+            continue;
+        }
+
+        for (const auto& note : clip.midiNotes) {
+            if (note.id == event.noteId) {
+                return note.lengthTick;
+            }
+        }
+
+        return std::nullopt;
+    }
+
+    return std::nullopt;
+}
+
+std::int64_t saturatedNoteOffTick(std::int64_t noteOnTick, std::int64_t lengthTick)
+{
+    // 防御极端输入：如果长度相加会溢出，就把真实释放点视为很远的未来。
+    if (lengthTick > std::numeric_limits<std::int64_t>::max() - noteOnTick) {
+        return std::numeric_limits<std::int64_t>::max();
+    }
+
+    return noteOnTick + lengthTick;
+}
+
+void appendLoopBoundaryNoteOffEvents(
+    const Project& project,
+    const PlaybackLoopRange& loopRange,
+    const LoopedPlaybackTickWindow& window,
+    std::vector<MidiPlaybackEvent>& midiEvents)
+{
+    if (window.window.endTick != loopRange.endTick) {
+        return;
+    }
+
+    const auto initialEventCount = midiEvents.size();
+    // 只遍历真实收集到的 Note On；后面追加的合成 Note Off 不再反过来参与判断。
+    for (std::size_t index = 0; index < initialEventCount; ++index) {
+        const auto& event = midiEvents[index];
+        if (event.type != MidiPlaybackEventType::NoteOn) {
+            continue;
+        }
+
+        const auto lengthTick = midiNoteLengthTickForEvent(project, event);
+        if (!lengthTick.has_value()) {
+            continue;
+        }
+
+        const auto realNoteOffTick = saturatedNoteOffTick(event.absoluteTick, *lengthTick);
+        if (realNoteOffTick < loopRange.endTick) {
+            continue;
+        }
+
+        // 边界释放只处理本子窗口内新触发的长音符，不伪装成完整 MIDI chase。
+        midiEvents.push_back({
+            MidiPlaybackEventType::NoteOff,
+            event.trackId,
+            event.clipId,
+            event.noteId,
+            loopRange.endTick,
+            event.noteNumber,
+            0,
+            event.channel
+        });
+    }
+
+    std::sort(midiEvents.begin(), midiEvents.end(), midiEventSortsBefore);
+}
+
 }
 
 std::optional<PlaybackTickWindow> playbackTickWindowForBlock(
@@ -341,10 +453,11 @@ std::vector<ScheduledMidiPlaybackEvent> collectScheduledMidiPlaybackEventsForLoo
     std::vector<ScheduledMidiPlaybackEvent> scheduledEvents;
 
     for (const auto& window : windows) {
-        const auto midiEvents = collectMidiPlaybackEvents(
+        auto midiEvents = collectMidiPlaybackEvents(
             project,
             window.window.startTick,
             window.window.endTick);
+        appendLoopBoundaryNoteOffEvents(project, loopRange, window, midiEvents);
         scheduledEvents.reserve(scheduledEvents.size() + midiEvents.size());
 
         for (const auto& event : midiEvents) {

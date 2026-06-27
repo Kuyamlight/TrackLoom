@@ -1435,6 +1435,35 @@ void playbackClockSchedulesMidiEventsAcrossLoopWrap()
     require(events[3].sampleOffset == 600, "fourth loop event should keep block-wide wrapped release offset");
 }
 
+void playbackClockAddsLoopBoundaryNoteOffForLongNote()
+{
+    trackloom::Project project("Loop Clock");
+    trackloom::Transport transport;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Loop Phrase", trackloom::ClipType::Midi, 960, 1440);
+    const trackloom::PlaybackLoopRange loop { 960, 1920 };
+
+    require(clip.has_value(), "loop boundary release clip should exist");
+
+    // 这个音符在当前回绕前窗口内开始，但真实释放点超过循环右边界。
+    // 调度器必须在回绕前补一个 Note Off，避免输出层把音符带入下一轮循环。
+    require(project.createMidiNote(clip->id, 720, 480, 67, 80, 1).has_value(), "long loop note should exist");
+    require(transport.setSampleRate(1920.0), "loop boundary release sample rate should make one sample equal one tick");
+    require(transport.seekToSample(1440), "loop boundary release transport should start before loop end");
+    transport.play();
+
+    const auto events = trackloom::collectScheduledMidiPlaybackEventsForLoopedBlock(project, transport, 960, loop);
+
+    require(events.size() == 2, "loop boundary release should add note off before wrap");
+    require(events[0].event.type == trackloom::MidiPlaybackEventType::NoteOn, "loop boundary release should keep real note on first");
+    require(events[0].event.absoluteTick == 1680, "loop boundary release note on should keep real tick");
+    require(events[0].sampleOffset == 240, "loop boundary release note on should keep pre-wrap offset");
+    require(events[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "loop boundary release should synthesize note off");
+    require(events[1].event.noteId == events[0].event.noteId, "loop boundary release should target the same note");
+    require(events[1].event.absoluteTick == 1920, "loop boundary release should happen at loop end tick");
+    require(events[1].sampleOffset == 479, "loop boundary release should clamp to last pre-wrap sample");
+}
+
 void playbackClockRejectsInvalidLoopedBlocks()
 {
     trackloom::Project project("Loop Clock");
@@ -2133,6 +2162,41 @@ void projectPlaybackSessionRendersLoopedBlockAndDispatchesMidi()
     require(allSamplesNear(samples, 0.50f), "looped project playback should render bound audio source");
     require(transport.currentSample() == 2400, "looped project playback should advance transport linearly after render");
     require(session.activeMidiNoteCount() == 0, "looped project playback note pairs should leave no active midi notes");
+}
+
+void projectPlaybackSessionReleasesLoopBoundaryLongNote()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.50f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 960, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 960);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Loop Phrase", trackloom::ClipType::Midi, 960, 1440);
+    const trackloom::PlaybackLoopRange loop { 960, 1920 };
+
+    require(clip.has_value(), "loop boundary session clip should exist");
+
+    // 这个集成测试验证边界 Note Off 会真正进入输出会话，并清掉活动音符状态。
+    require(project.createMidiNote(clip->id, 720, 480, 67, 80, 1).has_value(), "loop boundary session long note should exist");
+    require(session.prepare(1920.0, 2, 960), "loop boundary session prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "loop boundary session should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "loop boundary session should rebuild midi output");
+    require(transport.seekToSample(1440), "loop boundary session transport should seek before loop end");
+    transport.play();
+
+    const auto blockResult = session.renderNextLoopedBlock(transport, block, project, loop);
+
+    require(blockResult.renderSucceeded, "loop boundary session render should succeed");
+    require(blockResult.renderResult.scheduledMidiEvents.size() == 2, "loop boundary session should schedule note on and boundary note off");
+    require(blockResult.midiDispatch.success, "loop boundary session midi dispatch should succeed");
+    require(blockResult.midiDispatch.deliveredEventCount == 2, "loop boundary session should dispatch both events");
+    require(receiver.events().size() == 2, "loop boundary session receiver should record both events");
+    require(receiver.events()[0].sampleOffset == 240, "loop boundary session note on should keep pre-wrap offset");
+    require(receiver.events()[1].sampleOffset == 479, "loop boundary session note off should use last pre-wrap sample");
+    require(session.activeMidiNoteCount() == 0, "loop boundary session should not leave an active midi note");
 }
 
 void projectPlaybackSessionRejectsInvalidLoopRangeWithoutDispatch()
@@ -5891,6 +5955,7 @@ int main()
         playbackClockRejectsStoppedOrInvalidScheduledBlocks();
         playbackClockSplitsLoopedBlockAtLoopEnd();
         playbackClockSchedulesMidiEventsAcrossLoopWrap();
+        playbackClockAddsLoopBoundaryNoteOffForLongNote();
         playbackClockRejectsInvalidLoopedBlocks();
         playbackClockNormalizesTransportPositionIntoLoopRange();
         playbackClockSplitsLoopedBlockAcrossTempoMappedLoop();
@@ -5918,6 +5983,7 @@ int main()
         midiOutputSessionAcceptsEmptyDispatchAndRelease();
         projectPlaybackSessionRendersAudioAndDispatchesMidi();
         projectPlaybackSessionRendersLoopedBlockAndDispatchesMidi();
+        projectPlaybackSessionReleasesLoopBoundaryLongNote();
         projectPlaybackSessionRejectsInvalidLoopRangeWithoutDispatch();
         projectPlaybackSessionKeepsAudioRenderWhenMidiDispatchFails();
         projectPlaybackSessionDoesNotDispatchMidiWhenAudioRenderFails();
