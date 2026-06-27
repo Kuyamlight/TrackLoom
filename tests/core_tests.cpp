@@ -1227,6 +1227,34 @@ void midiPlaybackIgnoresAudioClips()
     require(events.empty(), "audio clip should not produce midi playback events");
 }
 
+void midiPlaybackChasesActiveNoteAtWindowStart()
+{
+    trackloom::Project project("MIDI Playback");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1440);
+    const auto note = project.createMidiNote(clip->id, 0, 960, 60, 100, 1);
+
+    require(clip.has_value(), "chase clip should exist before playback collection");
+    require(note.has_value(), "chase note should exist before playback collection");
+
+    // 纯半开收集器不补发窗口开始前已经按下的音符，方便保留可预测的基础语义。
+    const auto pureEvents = trackloom::collectMidiPlaybackEvents(project, 1200, 1680);
+    require(pureEvents.empty(), "pure playback collection should not chase held notes");
+
+    // chase-aware 收集器用于真实播放输出：从音符中间开始播放时，需要在窗口起点补 Note On。
+    const auto chasedEvents = trackloom::collectMidiPlaybackEventsWithChase(project, 1200, 1680);
+
+    require(chasedEvents.size() == 1, "chase collection should emit one held note at window start");
+    require(chasedEvents[0].type == trackloom::MidiPlaybackEventType::NoteOn, "chase event should be note on");
+    require(chasedEvents[0].trackId == track.id, "chase event should keep track id");
+    require(chasedEvents[0].clipId == clip->id, "chase event should keep clip id");
+    require(chasedEvents[0].noteId == note->id, "chase event should keep note id");
+    require(chasedEvents[0].absoluteTick == 1200, "chase event should use the window start tick");
+    require(chasedEvents[0].noteNumber == 60, "chase event should keep pitch");
+    require(chasedEvents[0].velocity == 100, "chase event should keep original velocity");
+    require(chasedEvents[0].channel == 1, "chase event should keep channel");
+}
+
 void playbackClockConvertsDefaultTempoBlockToTickWindow()
 {
     trackloom::Project project("Clock");
@@ -1342,6 +1370,34 @@ void playbackClockSchedulesMidiEventsWithSampleOffsets()
     require(events[1].event.absoluteTick == 1200, "note off should keep absolute tick");
     require(events[1].sampleOffset == 240, "note off should use its block-local sample offset");
     require(transport.currentSample() == 960, "scheduled collection should not advance transport");
+}
+
+void playbackClockSchedulesChasedMidiAtBlockStart()
+{
+    trackloom::Project project("Clock");
+    trackloom::Transport transport;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1440);
+
+    require(clip.has_value(), "scheduled chase midi clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "scheduled chase midi note should exist");
+    require(transport.setSampleRate(1920.0), "scheduled chase sample rate should be set");
+    require(transport.seekToSample(1200), "scheduled chase transport should seek inside held note");
+    transport.play();
+
+    const auto events = trackloom::collectScheduledMidiPlaybackEventsForBlock(
+        project,
+        transport,
+        960,
+        trackloom::MidiChaseMode::Enabled);
+
+    require(events.size() == 2, "scheduled chase block should contain chased note on and real note off");
+    require(events[0].event.type == trackloom::MidiPlaybackEventType::NoteOn, "scheduled chase first event should be note on");
+    require(events[0].event.absoluteTick == 1200, "scheduled chase note on should use block start tick");
+    require(events[0].sampleOffset == 0, "scheduled chase note on should be at sample offset zero");
+    require(events[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "scheduled chase second event should be note off");
+    require(events[1].event.absoluteTick == 1920, "scheduled chase note off should keep real note end tick");
+    require(events[1].sampleOffset == 720, "scheduled chase note off should keep block-local release offset");
 }
 
 void playbackClockSchedulesMidiEventsAcrossTempoChange()
@@ -1462,6 +1518,36 @@ void playbackClockAddsLoopBoundaryNoteOffForLongNote()
     require(events[1].event.noteId == events[0].event.noteId, "loop boundary release should target the same note");
     require(events[1].event.absoluteTick == 1920, "loop boundary release should happen at loop end tick");
     require(events[1].sampleOffset == 479, "loop boundary release should clamp to last pre-wrap sample");
+}
+
+void playbackClockChasesWrappedLoopWindowStart()
+{
+    trackloom::Project project("Loop Clock");
+    trackloom::Transport transport;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 720, 480);
+    const trackloom::PlaybackLoopRange loop { 960, 1920 };
+
+    require(clip.has_value(), "wrapped chase clip should exist");
+    require(project.createMidiNote(clip->id, 0, 360, 64, 90, 1).has_value(), "wrapped chase note should exist");
+    require(transport.setSampleRate(1920.0), "wrapped chase sample rate should make one sample equal one tick");
+    require(transport.seekToSample(1680), "wrapped chase transport should start before loop end");
+    transport.play();
+
+    const auto events = trackloom::collectScheduledMidiPlaybackEventsForLoopedBlock(
+        project,
+        transport,
+        480,
+        loop,
+        trackloom::MidiChaseMode::Enabled);
+
+    require(events.size() == 2, "wrapped loop window should chase held note at loop start");
+    require(events[0].event.type == trackloom::MidiPlaybackEventType::NoteOn, "wrapped chase first event should be note on");
+    require(events[0].event.absoluteTick == 960, "wrapped chase note on should use loop start tick");
+    require(events[0].sampleOffset == 240, "wrapped chase note on should keep block-wide wrapped offset");
+    require(events[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "wrapped chase second event should be note off");
+    require(events[1].event.absoluteTick == 1080, "wrapped chase note off should keep real release tick");
+    require(events[1].sampleOffset == 360, "wrapped chase note off should keep block-wide release offset");
 }
 
 void playbackClockRejectsInvalidLoopedBlocks()
@@ -2124,6 +2210,117 @@ void projectPlaybackSessionRendersAudioAndDispatchesMidi()
     require(receiver.events().size() == 2, "project playback session receiver should record both midi events");
     require(allSamplesNear(samples, 0.50f), "project playback session should render bound audio source");
     require(transport.currentSample() == 1440, "project playback session should advance transport after render");
+}
+
+void projectPlaybackSessionChasesHeldMidiNote()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.50f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 960, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 960);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1440);
+
+    require(clip.has_value(), "project playback session chase clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "project playback session chase note should exist");
+    require(session.prepare(1920.0, 2, 960), "project playback session chase prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "project playback session chase should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "project playback session chase should rebuild midi output");
+    require(transport.seekToSample(1200), "project playback session chase transport should seek inside held note");
+    transport.play();
+
+    const auto blockResult = session.renderNextBlock(transport, block, project);
+
+    require(blockResult.renderSucceeded, "project playback session chase render should succeed");
+    require(blockResult.renderResult.scheduledMidiEvents.size() == 2, "project playback session chase should collect note on and note off");
+    require(blockResult.midiDispatch.success, "project playback session chase midi dispatch should succeed");
+    require(blockResult.midiDispatch.deliveredEventCount == 2, "project playback session chase should dispatch both events");
+    require(receiver.events().size() == 2, "project playback session chase receiver should record both events");
+    require(receiver.events()[0].event.type == trackloom::MidiPlaybackEventType::NoteOn, "project playback session chase first event should be note on");
+    require(receiver.events()[0].sampleOffset == 0, "project playback session chase note on should use sample offset zero");
+    require(receiver.events()[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "project playback session chase second event should be note off");
+    require(receiver.events()[1].sampleOffset == 720, "project playback session chase note off should keep release offset");
+    require(session.activeMidiNoteCount() == 0, "project playback session chase should not leave active midi notes");
+}
+
+void projectPlaybackSessionDoesNotRepeatMidiChaseOnContinuousBlocks()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.25f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> firstSamples(2 * 480, 0.0f);
+    std::vector<float> secondSamples(2 * 480, 0.0f);
+    trackloom::AudioBlock firstBlock(firstSamples.data(), 2, 480);
+    trackloom::AudioBlock secondBlock(secondSamples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1440);
+
+    require(clip.has_value(), "continuous chase clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "continuous chase note should exist");
+    require(session.prepare(1920.0, 2, 480), "continuous chase prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "continuous chase should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "continuous chase should rebuild midi output");
+    require(transport.seekToSample(1200), "continuous chase transport should seek inside held note");
+    transport.play();
+
+    const auto firstResult = session.renderNextBlock(transport, firstBlock, project);
+    const auto secondResult = session.renderNextBlock(transport, secondBlock, project);
+
+    require(firstResult.renderSucceeded, "continuous chase first render should succeed");
+    require(secondResult.renderSucceeded, "continuous chase second render should succeed");
+    require(receiver.events().size() == 2, "continuous chase should not repeat note on at the next block");
+    require(receiver.events()[0].event.type == trackloom::MidiPlaybackEventType::NoteOn, "continuous chase first event should be note on");
+    require(receiver.events()[0].sampleOffset == 0, "continuous chase note on should start first block");
+    require(receiver.events()[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "continuous chase second event should be real note off");
+    require(receiver.events()[1].sampleOffset == 240, "continuous chase note off should be inside second block");
+    require(session.activeMidiNoteCount() == 0, "continuous chase should clear active note after real note off");
+}
+
+void projectPlaybackSessionCanRequestMidiChaseAfterSeek()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.10f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> firstSamples(2 * 480, 0.0f);
+    std::vector<float> secondSamples(2 * 960, 0.0f);
+    trackloom::AudioBlock firstBlock(firstSamples.data(), 2, 480);
+    trackloom::AudioBlock secondBlock(secondSamples.data(), 2, 960);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1440);
+
+    require(!session.requestMidiChaseOnNextBlock(), "unprepared session should reject chase requests");
+    require(clip.has_value(), "requested chase clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "requested chase note should exist");
+    require(session.prepare(1920.0, 2, 960), "requested chase prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "requested chase should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "requested chase should rebuild midi output");
+    require(transport.seekToSample(0), "requested chase transport should start before note");
+    transport.play();
+
+    const auto firstResult = session.renderNextBlock(transport, firstBlock, project);
+    require(firstResult.renderSucceeded, "requested chase first render should succeed");
+    require(receiver.events().empty(), "requested chase first render should not emit midi before note");
+
+    require(transport.seekToSample(1200), "requested chase transport should seek inside held note");
+    require(session.requestMidiChaseOnNextBlock(), "prepared session should accept chase request");
+
+    const auto secondResult = session.renderNextBlock(transport, secondBlock, project);
+
+    require(secondResult.renderSucceeded, "requested chase second render should succeed");
+    require(receiver.events().size() == 2, "requested chase should emit chase note on and real note off after seek");
+    require(receiver.events()[0].event.type == trackloom::MidiPlaybackEventType::NoteOn, "requested chase first event should be note on");
+    require(receiver.events()[0].event.absoluteTick == 1200, "requested chase note on should use seeked block start");
+    require(receiver.events()[0].sampleOffset == 0, "requested chase note on should use sample offset zero");
+    require(receiver.events()[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "requested chase second event should be note off");
+    require(receiver.events()[1].sampleOffset == 720, "requested chase note off should keep release offset");
+    require(session.activeMidiNoteCount() == 0, "requested chase should leave no active midi notes after release");
 }
 
 void projectPlaybackSessionRendersLoopedBlockAndDispatchesMidi()
@@ -5945,17 +6142,20 @@ int main()
         midiPlaybackHiddenTrackStillPlays();
         midiPlaybackRejectsInvalidWindows();
         midiPlaybackIgnoresAudioClips();
+        midiPlaybackChasesActiveNoteAtWindowStart();
         playbackClockConvertsDefaultTempoBlockToTickWindow();
         playbackClockHandlesTempoChangeInsideBlock();
         playbackClockRejectsStoppedOrInvalidBlocks();
         playbackClockCollectsMidiEventsForTransportBlock();
         playbackClockUsesHalfOpenBlockBoundary();
         playbackClockSchedulesMidiEventsWithSampleOffsets();
+        playbackClockSchedulesChasedMidiAtBlockStart();
         playbackClockSchedulesMidiEventsAcrossTempoChange();
         playbackClockRejectsStoppedOrInvalidScheduledBlocks();
         playbackClockSplitsLoopedBlockAtLoopEnd();
         playbackClockSchedulesMidiEventsAcrossLoopWrap();
         playbackClockAddsLoopBoundaryNoteOffForLongNote();
+        playbackClockChasesWrappedLoopWindowStart();
         playbackClockRejectsInvalidLoopedBlocks();
         playbackClockNormalizesTransportPositionIntoLoopRange();
         playbackClockSplitsLoopedBlockAcrossTempoMappedLoop();
@@ -5982,6 +6182,9 @@ int main()
         midiOutputSessionRejectsRebuildWhileNotesAreActive();
         midiOutputSessionAcceptsEmptyDispatchAndRelease();
         projectPlaybackSessionRendersAudioAndDispatchesMidi();
+        projectPlaybackSessionChasesHeldMidiNote();
+        projectPlaybackSessionDoesNotRepeatMidiChaseOnContinuousBlocks();
+        projectPlaybackSessionCanRequestMidiChaseAfterSeek();
         projectPlaybackSessionRendersLoopedBlockAndDispatchesMidi();
         projectPlaybackSessionReleasesLoopBoundaryLongNote();
         projectPlaybackSessionRejectsInvalidLoopRangeWithoutDispatch();

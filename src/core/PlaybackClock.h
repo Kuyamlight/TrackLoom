@@ -47,6 +47,13 @@ struct LoopedPlaybackTickWindow {
     bool operator==(const LoopedPlaybackTickWindow&) const = default;
 };
 
+// MidiChaseMode 控制播放窗口是否补发窗口起点已经按下的 MIDI 音符。
+// 默认关闭，避免连续播放时每个 block 都重复触发长音符；需要起播或 seek chase 时显式开启。
+enum class MidiChaseMode {
+    Disabled,
+    Enabled
+};
+
 // playbackTickWindowForBlock 只把 Transport 当前 sample 窗口换算为 tick 窗口。
 // 它不推进播放头，也不收集事件，方便后续音频线程在明确边界内调用。
 std::optional<PlaybackTickWindow> playbackTickWindowForBlock(
@@ -55,18 +62,20 @@ std::optional<PlaybackTickWindow> playbackTickWindowForBlock(
     int frameCount);
 
 // collectMidiPlaybackEventsForBlock 是播放桥接便利函数。
-// 它先计算 block 的 tick 窗口，再复用已测试的 MIDI 调度器收集事件。
+// 只有 chaseMode 为 Enabled 时，才会为窗口起点已经按下的音符补发 chase Note On。
 std::vector<MidiPlaybackEvent> collectMidiPlaybackEventsForBlock(
     const Project& project,
     const Transport& transport,
-    int frameCount);
+    int frameCount,
+    MidiChaseMode chaseMode = MidiChaseMode::Disabled);
 
 // collectScheduledMidiPlaybackEventsForBlock 为后续设备或插件桥接准备 block 内 sample offset。
-// 它仍不发送事件，只把已验证的 MIDI 播放事件转换成当前 block 内的调度位置。
+// 它仍不发送事件，只把 MIDI 播放事件转换成当前 block 内的调度位置；chase 由调用方显式选择。
 std::vector<ScheduledMidiPlaybackEvent> collectScheduledMidiPlaybackEventsForBlock(
     const Project& project,
     const Transport& transport,
-    int frameCount);
+    int frameCount,
+    MidiChaseMode chaseMode = MidiChaseMode::Disabled);
 
 // playbackTickWindowsForLoopedBlock 把一个 block 拆成按播放顺序排列的循环子窗口。
 // 它只做确定性时间切分，不推进 Transport，也不修改工程或打开外部设备。
@@ -77,11 +86,12 @@ std::vector<LoopedPlaybackTickWindow> playbackTickWindowsForLoopedBlock(
     const PlaybackLoopRange& loopRange);
 
 // collectScheduledMidiPlaybackEventsForLoopedBlock 复用循环子窗口收集 MIDI 事件。
-// 返回的 sampleOffset 是原始 block 内的位置，即使事件发生在回绕后的第二段也不会从零重新计数。
+// 返回的 sampleOffset 是原始 block 内的位置；显式 chase 时回绕后的 chase 事件也按原始 block 继续计数。
 std::vector<ScheduledMidiPlaybackEvent> collectScheduledMidiPlaybackEventsForLoopedBlock(
     const Project& project,
     const Transport& transport,
     int frameCount,
-    const PlaybackLoopRange& loopRange);
+    const PlaybackLoopRange& loopRange,
+    MidiChaseMode chaseMode = MidiChaseMode::Disabled);
 
 }

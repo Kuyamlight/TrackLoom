@@ -87,12 +87,28 @@ public:
         const Project& project,
         AudioEngineRenderResult& result);
 
+    // 显式 chase 版本供上层播放会话在起播或 seek 后使用；普通连续播放应保持 Disabled。
+    bool renderNextBlockWithMidi(
+        Transport& transport,
+        AudioBlock block,
+        const Project& project,
+        MidiChaseMode chaseMode,
+        AudioEngineRenderResult& result);
+
     // 带音源版本用于后续把项目播放图和 MIDI 调度放在同一个 block 生命周期内。
     bool renderNextBlockWithMidi(
         Transport& transport,
         AudioBlock block,
         AudioSource* source,
         const Project& project,
+        AudioEngineRenderResult& result);
+
+    bool renderNextBlockWithMidi(
+        Transport& transport,
+        AudioBlock block,
+        AudioSource* source,
+        const Project& project,
+        MidiChaseMode chaseMode,
         AudioEngineRenderResult& result);
 
     // loop-aware MIDI 渲染显式使用调用方传入的循环范围。
@@ -104,6 +120,14 @@ public:
         const PlaybackLoopRange& loopRange,
         AudioEngineRenderResult& result);
 
+    bool renderNextBlockWithLoopedMidi(
+        Transport& transport,
+        AudioBlock block,
+        const Project& project,
+        const PlaybackLoopRange& loopRange,
+        MidiChaseMode chaseMode,
+        AudioEngineRenderResult& result);
+
     // 带音源版本沿用同一 block 生命周期：先收集循环 MIDI，再渲染音源，最后推进 Transport。
     bool renderNextBlockWithLoopedMidi(
         Transport& transport,
@@ -111,6 +135,15 @@ public:
         AudioSource* source,
         const Project& project,
         const PlaybackLoopRange& loopRange,
+        AudioEngineRenderResult& result);
+
+    bool renderNextBlockWithLoopedMidi(
+        Transport& transport,
+        AudioBlock block,
+        AudioSource* source,
+        const Project& project,
+        const PlaybackLoopRange& loopRange,
+        MidiChaseMode chaseMode,
         AudioEngineRenderResult& result);
 
 private:

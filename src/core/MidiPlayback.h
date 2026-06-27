@@ -37,4 +37,11 @@ std::vector<MidiPlaybackEvent> collectMidiPlaybackEvents(
     std::int64_t startTick,
     std::int64_t endTick);
 
+// collectMidiPlaybackEventsWithChase 在半开窗口事件之外，额外补发窗口起点已经处于按下状态的音符。
+// 这个函数用于真实播放输出；底层 collectMidiPlaybackEvents 仍保持纯半开窗口语义，方便测试和复用。
+std::vector<MidiPlaybackEvent> collectMidiPlaybackEventsWithChase(
+    const Project& project,
+    std::int64_t startTick,
+    std::int64_t endTick);
+
 }

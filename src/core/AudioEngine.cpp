@@ -193,7 +193,17 @@ bool AudioEngine::renderNextBlockWithMidi(
     const Project& project,
     AudioEngineRenderResult& result)
 {
-    return renderNextBlockWithMidi(transport, block, nullptr, project, result);
+    return renderNextBlockWithMidi(transport, block, nullptr, project, MidiChaseMode::Disabled, result);
+}
+
+bool AudioEngine::renderNextBlockWithMidi(
+    Transport& transport,
+    AudioBlock block,
+    const Project& project,
+    MidiChaseMode chaseMode,
+    AudioEngineRenderResult& result)
+{
+    return renderNextBlockWithMidi(transport, block, nullptr, project, chaseMode, result);
 }
 
 bool AudioEngine::renderNextBlockWithMidi(
@@ -201,6 +211,17 @@ bool AudioEngine::renderNextBlockWithMidi(
     AudioBlock block,
     AudioSource* source,
     const Project& project,
+    AudioEngineRenderResult& result)
+{
+    return renderNextBlockWithMidi(transport, block, source, project, MidiChaseMode::Disabled, result);
+}
+
+bool AudioEngine::renderNextBlockWithMidi(
+    Transport& transport,
+    AudioBlock block,
+    AudioSource* source,
+    const Project& project,
+    MidiChaseMode chaseMode,
     AudioEngineRenderResult& result)
 {
     // 每次调用先清空旧结果，避免停止播放或失败返回时调用方读到上一帧事件。
@@ -222,7 +243,11 @@ bool AudioEngine::renderNextBlockWithMidi(
         return false;
     }
 
-    result.scheduledMidiEvents = collectScheduledMidiPlaybackEventsForBlock(project, transport, block.frameCount());
+    result.scheduledMidiEvents = collectScheduledMidiPlaybackEventsForBlock(
+        project,
+        transport,
+        block.frameCount(),
+        chaseMode);
     copyScheduledEventsToRawEvents(result);
 
     if (source != nullptr && transport.isPlaying()) {
@@ -251,7 +276,25 @@ bool AudioEngine::renderNextBlockWithLoopedMidi(
     const PlaybackLoopRange& loopRange,
     AudioEngineRenderResult& result)
 {
-    return renderNextBlockWithLoopedMidi(transport, block, nullptr, project, loopRange, result);
+    return renderNextBlockWithLoopedMidi(
+        transport,
+        block,
+        nullptr,
+        project,
+        loopRange,
+        MidiChaseMode::Disabled,
+        result);
+}
+
+bool AudioEngine::renderNextBlockWithLoopedMidi(
+    Transport& transport,
+    AudioBlock block,
+    const Project& project,
+    const PlaybackLoopRange& loopRange,
+    MidiChaseMode chaseMode,
+    AudioEngineRenderResult& result)
+{
+    return renderNextBlockWithLoopedMidi(transport, block, nullptr, project, loopRange, chaseMode, result);
 }
 
 bool AudioEngine::renderNextBlockWithLoopedMidi(
@@ -260,6 +303,25 @@ bool AudioEngine::renderNextBlockWithLoopedMidi(
     AudioSource* source,
     const Project& project,
     const PlaybackLoopRange& loopRange,
+    AudioEngineRenderResult& result)
+{
+    return renderNextBlockWithLoopedMidi(
+        transport,
+        block,
+        source,
+        project,
+        loopRange,
+        MidiChaseMode::Disabled,
+        result);
+}
+
+bool AudioEngine::renderNextBlockWithLoopedMidi(
+    Transport& transport,
+    AudioBlock block,
+    AudioSource* source,
+    const Project& project,
+    const PlaybackLoopRange& loopRange,
+    MidiChaseMode chaseMode,
     AudioEngineRenderResult& result)
 {
     result.midiEvents.clear();
@@ -286,7 +348,8 @@ bool AudioEngine::renderNextBlockWithLoopedMidi(
         project,
         transport,
         block.frameCount(),
-        loopRange);
+        loopRange,
+        chaseMode);
     copyScheduledEventsToRawEvents(result);
 
     if (source != nullptr && transport.isPlaying()) {

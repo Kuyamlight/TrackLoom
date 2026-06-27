@@ -23,6 +23,7 @@ bool ProjectPlaybackSession::prepare(double sampleRate, int channelCount, int ma
     audioEngine_ = nextAudioEngine;
     audioGraph_ = std::move(nextAudioGraph);
     midiOutput_ = MidiOutputSession {};
+    chaseNextMidiBlock_ = true;
     prepared_ = true;
     return true;
 }
@@ -66,7 +67,12 @@ bool ProjectPlaybackSession::rebuildMidiOutput(
         return false;
     }
 
-    return midiOutput_.rebuild(project, bindings);
+    const auto rebuilt = midiOutput_.rebuild(project, bindings);
+    if (rebuilt) {
+        chaseNextMidiBlock_ = true;
+    }
+
+    return rebuilt;
 }
 
 std::size_t ProjectPlaybackSession::audioSourceCount() const
@@ -84,6 +90,16 @@ std::size_t ProjectPlaybackSession::activeMidiNoteCount() const
     return midiOutput_.activeNoteCount();
 }
 
+bool ProjectPlaybackSession::requestMidiChaseOnNextBlock()
+{
+    if (!prepared_) {
+        return false;
+    }
+
+    chaseNextMidiBlock_ = true;
+    return true;
+}
+
 ProjectPlaybackBlockResult ProjectPlaybackSession::renderNextBlock(
     Transport& transport,
     AudioBlock block,
@@ -95,15 +111,21 @@ ProjectPlaybackBlockResult ProjectPlaybackSession::renderNextBlock(
         return result;
     }
 
+    const auto shouldChase = chaseNextMidiBlock_ && transport.isPlaying();
     result.renderSucceeded = audioEngine_.renderNextBlockWithMidi(
         transport,
         block,
         &audioGraph_,
         project,
+        shouldChase ? MidiChaseMode::Enabled : MidiChaseMode::Disabled,
         result.renderResult);
 
     if (!result.renderSucceeded) {
         return result;
+    }
+
+    if (shouldChase) {
+        chaseNextMidiBlock_ = false;
     }
 
     result.midiDispatch = midiOutput_.dispatch(result.renderResult);
@@ -122,16 +144,22 @@ ProjectPlaybackBlockResult ProjectPlaybackSession::renderNextLoopedBlock(
         return result;
     }
 
+    const auto shouldChase = chaseNextMidiBlock_ && transport.isPlaying();
     result.renderSucceeded = audioEngine_.renderNextBlockWithLoopedMidi(
         transport,
         block,
         &audioGraph_,
         project,
         loopRange,
+        shouldChase ? MidiChaseMode::Enabled : MidiChaseMode::Disabled,
         result.renderResult);
 
     if (!result.renderSucceeded) {
         return result;
+    }
+
+    if (shouldChase) {
+        chaseNextMidiBlock_ = false;
     }
 
     result.midiDispatch = midiOutput_.dispatch(result.renderResult);
@@ -146,7 +174,12 @@ MidiDispatchResult ProjectPlaybackSession::releaseActiveMidiNotes(int sampleOffs
         return result;
     }
 
-    return midiOutput_.releaseAllActiveNotes(sampleOffset);
+    auto result = midiOutput_.releaseAllActiveNotes(sampleOffset);
+    if (result.success) {
+        chaseNextMidiBlock_ = true;
+    }
+
+    return result;
 }
 
 }

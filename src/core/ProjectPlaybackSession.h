@@ -37,6 +37,9 @@ public:
     std::size_t midiReceiverCount() const;
     std::size_t activeMidiNoteCount() const;
 
+    // 外部发生 seek、重新起播或手动释放后，可请求下一次正在播放的 block 做一次 MIDI chase。
+    bool requestMidiChaseOnNextBlock();
+
     // renderNextBlock 先渲染音频和收集 scheduled MIDI，再在渲染成功后分发 MIDI。
     // MIDI 分发失败会写入返回值，但不会回滚已经完成的音频 block 或 Transport 推进。
     ProjectPlaybackBlockResult renderNextBlock(
@@ -60,6 +63,7 @@ private:
     AudioEngine audioEngine_;
     ProjectPlaybackGraph audioGraph_;
     MidiOutputSession midiOutput_;
+    bool chaseNextMidiBlock_ = true;
 };
 
 }

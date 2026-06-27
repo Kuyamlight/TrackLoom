@@ -239,11 +239,20 @@ bool midiEventSortsBefore(const MidiPlaybackEvent& left, const MidiPlaybackEvent
     return left.channel < right.channel;
 }
 
-std::optional<std::int64_t> midiNoteLengthTickForEvent(
+std::int64_t saturatedTickSum(std::int64_t left, std::int64_t right)
+{
+    if (right > 0 && left > std::numeric_limits<std::int64_t>::max() - right) {
+        return std::numeric_limits<std::int64_t>::max();
+    }
+
+    return left + right;
+}
+
+std::optional<std::int64_t> midiNoteOffTickForEvent(
     const Project& project,
     const MidiPlaybackEvent& event)
 {
-    // 合成边界 Note Off 只需要音符长度；按 clipId 和 noteId 查找，避免复制整个片段。
+    // 合成边界 Note Off 必须使用工程里的真实音符结束点；chase Note On 的 tick 不是原始起点。
     for (const auto& clip : project.clips()) {
         if (clip.id != event.clipId) {
             continue;
@@ -251,7 +260,8 @@ std::optional<std::int64_t> midiNoteLengthTickForEvent(
 
         for (const auto& note : clip.midiNotes) {
             if (note.id == event.noteId) {
-                return note.lengthTick;
+                const auto noteOnTick = saturatedTickSum(clip.startTick, note.startTick);
+                return saturatedTickSum(noteOnTick, note.lengthTick);
             }
         }
 
@@ -259,16 +269,6 @@ std::optional<std::int64_t> midiNoteLengthTickForEvent(
     }
 
     return std::nullopt;
-}
-
-std::int64_t saturatedNoteOffTick(std::int64_t noteOnTick, std::int64_t lengthTick)
-{
-    // 防御极端输入：如果长度相加会溢出，就把真实释放点视为很远的未来。
-    if (lengthTick > std::numeric_limits<std::int64_t>::max() - noteOnTick) {
-        return std::numeric_limits<std::int64_t>::max();
-    }
-
-    return noteOnTick + lengthTick;
 }
 
 void appendLoopBoundaryNoteOffEvents(
@@ -289,13 +289,12 @@ void appendLoopBoundaryNoteOffEvents(
             continue;
         }
 
-        const auto lengthTick = midiNoteLengthTickForEvent(project, event);
-        if (!lengthTick.has_value()) {
+        const auto realNoteOffTick = midiNoteOffTickForEvent(project, event);
+        if (!realNoteOffTick.has_value()) {
             continue;
         }
 
-        const auto realNoteOffTick = saturatedNoteOffTick(event.absoluteTick, *lengthTick);
-        if (realNoteOffTick < loopRange.endTick) {
+        if (*realNoteOffTick < loopRange.endTick) {
             continue;
         }
 
@@ -343,11 +342,16 @@ std::optional<PlaybackTickWindow> playbackTickWindowForBlock(
 std::vector<MidiPlaybackEvent> collectMidiPlaybackEventsForBlock(
     const Project& project,
     const Transport& transport,
-    int frameCount)
+    int frameCount,
+    MidiChaseMode chaseMode)
 {
     const auto window = playbackTickWindowForBlock(project, transport, frameCount);
     if (!window.has_value()) {
         return {};
+    }
+
+    if (chaseMode == MidiChaseMode::Enabled) {
+        return collectMidiPlaybackEventsWithChase(project, window->startTick, window->endTick);
     }
 
     return collectMidiPlaybackEvents(project, window->startTick, window->endTick);
@@ -356,14 +360,17 @@ std::vector<MidiPlaybackEvent> collectMidiPlaybackEventsForBlock(
 std::vector<ScheduledMidiPlaybackEvent> collectScheduledMidiPlaybackEventsForBlock(
     const Project& project,
     const Transport& transport,
-    int frameCount)
+    int frameCount,
+    MidiChaseMode chaseMode)
 {
     const auto window = playbackTickWindowForBlock(project, transport, frameCount);
     if (!window.has_value()) {
         return {};
     }
 
-    const auto midiEvents = collectMidiPlaybackEvents(project, window->startTick, window->endTick);
+    const auto midiEvents = chaseMode == MidiChaseMode::Enabled
+        ? collectMidiPlaybackEventsWithChase(project, window->startTick, window->endTick)
+        : collectMidiPlaybackEvents(project, window->startTick, window->endTick);
     std::vector<ScheduledMidiPlaybackEvent> scheduledEvents;
     scheduledEvents.reserve(midiEvents.size());
 
@@ -447,16 +454,16 @@ std::vector<ScheduledMidiPlaybackEvent> collectScheduledMidiPlaybackEventsForLoo
     const Project& project,
     const Transport& transport,
     int frameCount,
-    const PlaybackLoopRange& loopRange)
+    const PlaybackLoopRange& loopRange,
+    MidiChaseMode chaseMode)
 {
     const auto windows = playbackTickWindowsForLoopedBlock(project, transport, frameCount, loopRange);
     std::vector<ScheduledMidiPlaybackEvent> scheduledEvents;
 
     for (const auto& window : windows) {
-        auto midiEvents = collectMidiPlaybackEvents(
-            project,
-            window.window.startTick,
-            window.window.endTick);
+        auto midiEvents = chaseMode == MidiChaseMode::Enabled
+            ? collectMidiPlaybackEventsWithChase(project, window.window.startTick, window.window.endTick)
+            : collectMidiPlaybackEvents(project, window.window.startTick, window.window.endTick);
         appendLoopBoundaryNoteOffEvents(project, loopRange, window, midiEvents);
         scheduledEvents.reserve(scheduledEvents.size() + midiEvents.size());
 
