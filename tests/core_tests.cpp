@@ -13,6 +13,7 @@
 #include "MidiPlayback.h"
 #include "MidiOutputSession.h"
 #include "MidiTrackRouter.h"
+#include "PlaybackControl.h"
 #include "PlaybackClock.h"
 #include "ProjectFile.h"
 #include "Project.h"
@@ -2839,6 +2840,192 @@ void projectPlaybackSessionRejectsSafeMidiOutputRebuildBeforePrepare()
     require(!rebuildResult.midiOutputChanged, "unprepared safe midi rebuild should not change midi output");
     require(session.midiReceiverCount() == 0, "unprepared safe midi rebuild should keep receiver count at zero");
     require(receiver.events().empty(), "unprepared safe midi rebuild should not send midi events");
+}
+
+void stopPlaybackCommandStopsAfterMidiRelease()
+{
+    trackloom::Project project("Playback Control");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "stop command clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "stop command note should exist");
+    require(session.prepare(1920.0, 2, 480), "stop command prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "stop command should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "stop command should rebuild midi output");
+    require(transport.seekToSample(960), "stop command transport should seek");
+    transport.play();
+
+    const auto renderResult = session.renderNextBlock(transport, block, project);
+    require(renderResult.renderSucceeded, "stop command first render should succeed");
+    require(session.activeMidiNoteCount() == 1, "stop command should have active note before command");
+
+    trackloom::StopPlaybackCommand command(32);
+    const auto result = command.execute(session, transport, project);
+
+    require(command.name() == "StopPlayback", "stop command should expose stable name");
+    require(result.success, "stop command should succeed");
+    require(result.transportControl.success, "stop command should expose transport control success");
+    require(result.transportControl.midiRelease.deliveredEventCount == 1, "stop command should release one note");
+    require(!transport.isPlaying(), "stop command should stop transport");
+    require(session.activeMidiNoteCount() == 0, "stop command should clear active note");
+    require(receiver.events().size() == 2, "stop command receiver should record note on and note off");
+    require(receiver.events()[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "stop command should send note off");
+    require(receiver.events()[1].sampleOffset == 32, "stop command should keep release sample offset");
+}
+
+void seekPlaybackCommandSeeksAfterMidiReleaseAndRequestsChase()
+{
+    trackloom::Project project("Playback Control");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> firstSamples(2 * 480, 0.0f);
+    std::vector<float> secondSamples(2 * 960, 0.0f);
+    trackloom::AudioBlock firstBlock(firstSamples.data(), 2, 480);
+    trackloom::AudioBlock secondBlock(secondSamples.data(), 2, 960);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "seek command clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "seek command note should exist");
+    require(session.prepare(1920.0, 2, 960), "seek command prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "seek command should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "seek command should rebuild midi output");
+    require(transport.seekToSample(960), "seek command transport should seek to note start");
+    transport.play();
+
+    const auto firstResult = session.renderNextBlock(transport, firstBlock, project);
+    require(firstResult.renderSucceeded, "seek command first render should succeed");
+    require(session.activeMidiNoteCount() == 1, "seek command should have active note before command");
+
+    trackloom::SeekPlaybackCommand command(1200, 20);
+    const auto result = command.execute(session, transport, project);
+
+    require(command.name() == "SeekPlayback", "seek command should expose stable name");
+    require(result.success, "seek command should succeed");
+    require(result.transportControl.success, "seek command should expose transport control success");
+    require(result.transportControl.midiRelease.deliveredEventCount == 1, "seek command should release one note");
+    require(transport.currentSample() == 1200, "seek command should move transport");
+    require(session.activeMidiNoteCount() == 0, "seek command should clear active note before chased block");
+
+    const auto secondResult = session.renderNextBlock(transport, secondBlock, project);
+
+    require(secondResult.renderSucceeded, "seek command chased render should succeed");
+    require(receiver.events().size() == 4, "seek command should record original note, release, chase, and real release");
+    require(receiver.events()[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "seek command should release before seek");
+    require(receiver.events()[2].event.type == trackloom::MidiPlaybackEventType::NoteOn, "seek command should request chase after seek");
+    require(receiver.events()[2].event.absoluteTick == 1200, "seek command chased note should start at target sample tick");
+}
+
+void seekPlaybackCommandRejectsNegativeTargetWithoutRelease()
+{
+    trackloom::Project project("Playback Control");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    RecordingMidiEventReceiver receiver;
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "negative seek command clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "negative seek command note should exist");
+    require(session.prepare(1920.0, 2, 480), "negative seek command prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "negative seek command should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "negative seek command should rebuild midi output");
+    require(transport.seekToSample(960), "negative seek command transport should seek");
+    transport.play();
+
+    const auto renderResult = session.renderNextBlock(transport, block, project);
+    require(renderResult.renderSucceeded, "negative seek command first render should succeed");
+    require(session.activeMidiNoteCount() == 1, "negative seek command should have active note before command");
+
+    trackloom::SeekPlaybackCommand command(-1, 12);
+    const auto result = command.execute(session, transport, project);
+
+    require(!result.success, "negative seek command should fail");
+    require(!result.transportControl.success, "negative seek command should not call safe seek");
+    require(transport.currentSample() == 1440, "negative seek command should not move transport");
+    require(session.activeMidiNoteCount() == 1, "negative seek command should not release active note");
+    require(receiver.events().size() == 1, "negative seek command should not send release note off");
+}
+
+void rebuildMidiOutputCommandSwitchesRoutesSafely()
+{
+    trackloom::Project project("Playback Control");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    RecordingMidiEventReceiver oldReceiver;
+    RecordingMidiEventReceiver newReceiver;
+    std::vector<float> firstSamples(2 * 480, 0.0f);
+    std::vector<float> secondSamples(2 * 480, 0.0f);
+    trackloom::AudioBlock firstBlock(firstSamples.data(), 2, 480);
+    trackloom::AudioBlock secondBlock(secondSamples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "rebuild command clip should exist");
+    require(project.createMidiNote(clip->id, 0, 1920, 60, 100, 1).has_value(), "rebuild command note should exist");
+    require(session.prepare(1920.0, 2, 480), "rebuild command prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "rebuild command should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &oldReceiver } }), "rebuild command should bind old receiver");
+    require(transport.seekToSample(960), "rebuild command transport should seek");
+    transport.play();
+
+    const auto firstResult = session.renderNextBlock(transport, firstBlock, project);
+    require(firstResult.renderSucceeded, "rebuild command first render should succeed");
+    require(session.activeMidiNoteCount() == 1, "rebuild command should have active note before command");
+
+    trackloom::RebuildMidiOutputCommand command({ { track.id, &newReceiver } }, 24);
+    const auto result = command.execute(session, transport, project);
+
+    require(command.name() == "RebuildMidiOutput", "rebuild command should expose stable name");
+    require(result.success, "rebuild command should succeed");
+    require(result.midiOutputRebuild.success, "rebuild command should expose safe rebuild success");
+    require(result.midiOutputRebuild.midiRelease.deliveredEventCount == 1, "rebuild command should release old active note");
+    require(oldReceiver.events().size() == 2, "rebuild command old receiver should receive note on and release");
+    require(newReceiver.events().empty(), "rebuild command new receiver should not receive old release");
+
+    const auto secondResult = session.renderNextBlock(transport, secondBlock, project);
+
+    require(secondResult.renderSucceeded, "rebuild command chased render should succeed");
+    require(newReceiver.events().size() == 1, "rebuild command should route chased note to new receiver");
+    require(newReceiver.events()[0].event.type == trackloom::MidiPlaybackEventType::NoteOn, "rebuild command chased event should be note on");
+}
+
+void playbackControlCommandsRejectUnpreparedSession()
+{
+    trackloom::Project project("Playback Control");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    RecordingMidiEventReceiver receiver;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    trackloom::StopPlaybackCommand stopCommand(0);
+    trackloom::SeekPlaybackCommand seekCommand(960, 0);
+    trackloom::RebuildMidiOutputCommand rebuildCommand({ { track.id, &receiver } }, 0);
+
+    const auto stopResult = stopCommand.execute(session, transport, project);
+    const auto seekResult = seekCommand.execute(session, transport, project);
+    const auto rebuildResult = rebuildCommand.execute(session, transport, project);
+
+    require(!stopResult.success, "unprepared stop command should fail");
+    require(!seekResult.success, "unprepared seek command should fail");
+    require(!rebuildResult.success, "unprepared rebuild command should fail");
+    require(!transport.isPlaying(), "unprepared playback commands should not start transport");
+    require(transport.currentSample() == 0, "unprepared playback commands should not move transport");
+    require(session.midiReceiverCount() == 0, "unprepared rebuild command should not bind receiver");
+    require(receiver.events().empty(), "unprepared rebuild command should not send events");
 }
 
 void projectPlaybackSessionRejectsPrepareWhileMidiNotesAreActive()
@@ -6489,6 +6676,11 @@ int main()
         projectPlaybackSessionKeepsMidiOutputWhenSafeRebuildReleaseFails();
         projectPlaybackSessionKeepsMidiOutputWhenSafeRebuildBindingFails();
         projectPlaybackSessionRejectsSafeMidiOutputRebuildBeforePrepare();
+        stopPlaybackCommandStopsAfterMidiRelease();
+        seekPlaybackCommandSeeksAfterMidiReleaseAndRequestsChase();
+        seekPlaybackCommandRejectsNegativeTargetWithoutRelease();
+        rebuildMidiOutputCommandSwitchesRoutesSafely();
+        playbackControlCommandsRejectUnpreparedSession();
         projectPlaybackSessionRejectsPrepareWhileMidiNotesAreActive();
         projectPlaybackSessionRejectsUseBeforePrepare();
         renameClipCommandSupportsUndoAndRedo();
