@@ -10,6 +10,7 @@
 #include "AudioEngineMidiBridge.h"
 #include "Command.h"
 #include "MidiDispatch.h"
+#include "MidiOutputDevice.h"
 #include "MidiPlayback.h"
 #include "MidiOutputSession.h"
 #include "MidiTrackRouter.h"
@@ -29,6 +30,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -205,6 +207,92 @@ private:
     int failAtCall_ = 1;
     int callCount_ = 0;
     std::vector<trackloom::ScheduledMidiPlaybackEvent> events_;
+    std::vector<trackloom::MidiOutputMessage> messages_;
+};
+
+class FakeMidiOutputDevicePort final : public trackloom::MidiOutputDevicePort {
+public:
+    FakeMidiOutputDevicePort(std::string id, std::string name)
+        : info_ { std::move(id), std::move(name) }
+    {
+    }
+
+    const trackloom::MidiOutputDeviceInfo& info() const override
+    {
+        return info_;
+    }
+
+    bool open() override
+    {
+        ++openCallCount_;
+        if (!openShouldSucceed_) {
+            return false;
+        }
+
+        open_ = true;
+        return true;
+    }
+
+    void close() override
+    {
+        ++closeCallCount_;
+        open_ = false;
+    }
+
+    bool isOpen() const override
+    {
+        return open_;
+    }
+
+    bool sendMidiMessage(const trackloom::MidiOutputMessage& message) override
+    {
+        ++sendCallCount_;
+        if (!open_ || !sendShouldSucceed_) {
+            return false;
+        }
+
+        messages_.push_back(message);
+        return true;
+    }
+
+    void setOpenShouldSucceed(bool shouldSucceed)
+    {
+        openShouldSucceed_ = shouldSucceed;
+    }
+
+    void setSendShouldSucceed(bool shouldSucceed)
+    {
+        sendShouldSucceed_ = shouldSucceed;
+    }
+
+    int openCallCount() const
+    {
+        return openCallCount_;
+    }
+
+    int closeCallCount() const
+    {
+        return closeCallCount_;
+    }
+
+    int sendCallCount() const
+    {
+        return sendCallCount_;
+    }
+
+    const std::vector<trackloom::MidiOutputMessage>& messages() const
+    {
+        return messages_;
+    }
+
+private:
+    trackloom::MidiOutputDeviceInfo info_;
+    bool open_ = false;
+    bool openShouldSucceed_ = true;
+    bool sendShouldSucceed_ = true;
+    int openCallCount_ = 0;
+    int closeCallCount_ = 0;
+    int sendCallCount_ = 0;
     std::vector<trackloom::MidiOutputMessage> messages_;
 };
 
@@ -1728,6 +1816,110 @@ void midiDispatchRejectsInvalidScheduledEvents()
     require(!trackloom::midiOutputMessageForEvent(invalidType).has_value(), "unknown midi event type should not convert");
     require(!invalidTypeResult.success, "unknown midi event type dispatch should fail");
     require(invalidTypeReceiver.messages().empty(), "unknown midi event type should not call receiver");
+}
+
+void midiOutputDeviceSendsMessagesThroughOpenPort()
+{
+    FakeMidiOutputDevicePort port("midi-out-1", "USB MIDI Out");
+    trackloom::MidiOutputDevice device(port);
+    const auto event = makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 7, 1, 60, 100);
+    const auto message = trackloom::midiOutputMessageForEvent(event);
+
+    require(message.has_value(), "device send test message should be valid");
+    require(device.open(), "midi output device should open the wrapped port");
+    require(device.isOpen(), "midi output device should report open state");
+
+    const auto sent = device.receiveMidiEvent(event, *message);
+
+    require(sent, "midi output device should send through an open port");
+    require(device.lastFailureReason() == trackloom::MidiOutputDeviceFailureReason::None,
+        "successful midi output device send should clear failure reason");
+    require(device.sentMessageCount() == 1, "midi output device should count successful sends");
+    require(port.openCallCount() == 1, "midi output device should open port once");
+    require(port.sendCallCount() == 1, "midi output device should call port send once");
+    require(port.messages().size() == 1, "midi output device port should record one message");
+    require(port.messages()[0] == *message, "midi output device should forward the exact dispatch message");
+    require(device.info().id == "midi-out-1", "midi output device should expose port id");
+    require(device.info().name == "USB MIDI Out", "midi output device should expose port name");
+}
+
+void midiOutputDeviceRejectsSendWhenPortIsClosed()
+{
+    FakeMidiOutputDevicePort port("midi-out-1", "USB MIDI Out");
+    trackloom::MidiOutputDevice device(port);
+    const auto event = makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100);
+    const auto message = trackloom::midiOutputMessageForEvent(event);
+
+    require(message.has_value(), "closed device test message should be valid");
+
+    const auto sent = device.receiveMidiEvent(event, *message);
+
+    require(!sent, "closed midi output device should reject sends");
+    require(device.lastFailureReason() == trackloom::MidiOutputDeviceFailureReason::DeviceNotOpen,
+        "closed midi output device should report device-not-open");
+    require(device.sentMessageCount() == 0, "closed midi output device should not count failed send");
+    require(port.sendCallCount() == 0, "closed midi output device should not call port send");
+}
+
+void midiOutputDeviceReportsOpenFailure()
+{
+    FakeMidiOutputDevicePort port("midi-out-1", "USB MIDI Out");
+    trackloom::MidiOutputDevice device(port);
+    port.setOpenShouldSucceed(false);
+
+    const auto opened = device.open();
+
+    require(!opened, "midi output device should report failed open");
+    require(!device.isOpen(), "failed midi output device open should keep closed state");
+    require(device.lastFailureReason() == trackloom::MidiOutputDeviceFailureReason::OpenRejected,
+        "failed midi output device open should expose open-rejected reason");
+    require(port.openCallCount() == 1, "failed midi output device open should still call port");
+}
+
+void midiOutputDeviceCanCloseAndReopenPort()
+{
+    FakeMidiOutputDevicePort port("midi-out-1", "USB MIDI Out");
+    trackloom::MidiOutputDevice device(port);
+    const auto event = makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100);
+    const auto message = trackloom::midiOutputMessageForEvent(event);
+
+    require(message.has_value(), "reopened device test message should be valid");
+    require(device.open(), "midi output device should open before close");
+
+    device.close();
+    const auto closedSend = device.receiveMidiEvent(event, *message);
+
+    require(!device.isOpen(), "closed midi output device should report closed state");
+    require(!closedSend, "closed midi output device should reject sends after explicit close");
+    require(device.lastFailureReason() == trackloom::MidiOutputDeviceFailureReason::DeviceNotOpen,
+        "closed midi output device should report device-not-open after explicit close");
+    require(port.closeCallCount() == 1, "midi output device should close port once");
+
+    require(device.open(), "midi output device should reopen after explicit close");
+    require(device.receiveMidiEvent(event, *message), "reopened midi output device should send messages again");
+    require(device.sentMessageCount() == 1, "reopened midi output device should count successful post-reopen send");
+}
+
+void midiOutputDeviceFailureStopsDispatch()
+{
+    FakeMidiOutputDevicePort port("midi-out-1", "USB MIDI Out");
+    trackloom::MidiOutputDevice device(port);
+    port.setSendShouldSucceed(false);
+    require(device.open(), "failing midi output device should still open before send failure");
+
+    const auto result = trackloom::dispatchScheduledMidiEvents({
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOn, 0, 1, 60, 100),
+        makeScheduledMidiEvent(trackloom::MidiPlaybackEventType::NoteOff, 120, 1, 60, 0),
+    }, device);
+
+    require(!result.success, "midi output device send failure should fail dispatch");
+    require(result.attemptedEventCount == 1, "midi output device send failure should stop at first attempted event");
+    require(result.deliveredEventCount == 0, "midi output device send failure should deliver no events");
+    require(result.failedEventIndex == 0, "midi output device send failure should keep failed index");
+    require(device.lastFailureReason() == trackloom::MidiOutputDeviceFailureReason::SendRejected,
+        "midi output device should expose send-rejected reason");
+    require(device.sentMessageCount() == 0, "midi output device should not count rejected sends");
+    require(port.sendCallCount() == 1, "midi output device should stop before second port send");
 }
 
 void midiTrackRouterRoutesEventsByTrackId()
@@ -6710,6 +6902,11 @@ int main()
         midiDispatchAcceptsEmptyEventList();
         midiDispatchStopsWhenReceiverFails();
         midiDispatchRejectsInvalidScheduledEvents();
+        midiOutputDeviceSendsMessagesThroughOpenPort();
+        midiOutputDeviceRejectsSendWhenPortIsClosed();
+        midiOutputDeviceReportsOpenFailure();
+        midiOutputDeviceCanCloseAndReopenPort();
+        midiOutputDeviceFailureStopsDispatch();
         midiTrackRouterRoutesEventsByTrackId();
         midiTrackRouterFailsWhenTrackHasNoReceiver();
         midiTrackRouterPreservesReceiverFailure();

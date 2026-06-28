@@ -10,6 +10,7 @@ add_library(trackloom_core STATIC
     AudioEngine.cpp
     AudioEngineMidiBridge.cpp
     MidiDispatch.cpp
+    MidiOutputDevice.cpp
     MidiPlayback.cpp
     MidiOutputSession.cpp
     MidiTrackRouter.cpp
