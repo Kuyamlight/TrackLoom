@@ -325,6 +325,64 @@ void juceMidiOutputDeviceListFindsCachedDevicesWithoutEnumerating()
     require(enumerateCount == 1, "cached lookup after refresh should not enumerate again");
 }
 
+void juceMidiOutputBindingRefreshPlansUnavailableDeviceRemoval()
+{
+    const std::vector<trackloom::MidiOutputDeviceTrackBinding> bindings {
+        { "track-a", deviceInfo("device-a", "Old Device A") },
+        { "track-b", deviceInfo("device-b", "Missing Device B") },
+        { "track-c", deviceInfo("device-c", "Device C") }
+    };
+    const std::vector<trackloom::MidiOutputDeviceInfo> visibleDevices {
+        deviceInfo("device-a", "Renamed Device A"),
+        deviceInfo("device-c", "Device C")
+    };
+
+    const auto plan = trackloom::planMidiOutputDeviceBindingRefresh(bindings, visibleDevices);
+
+    require(plan.availableBindings.size() == 2, "binding refresh should keep routable device bindings");
+    require(plan.availableBindings[0].trackId == "track-a",
+        "binding refresh should keep available bindings in original binding order");
+    require(plan.availableBindings[0].device.name == "Renamed Device A",
+        "binding refresh should update available binding display name from visible device list");
+    require(plan.availableBindings[1].trackId == "track-c",
+        "binding refresh should keep later available bindings after an unavailable binding");
+    require(plan.unavailableBindings.size() == 1,
+        "binding refresh should report one binding whose selected device disappeared");
+    require(plan.unavailableBindings[0].trackId == "track-b",
+        "binding refresh should report affected track id for disappeared device");
+    require(plan.unavailableBindings[0].device.name == "Missing Device B",
+        "binding refresh should preserve unavailable binding device info for UI and reconnect");
+    require(plan.requiresSafeRebuild,
+        "binding refresh should request safe rebuild when any active binding device disappeared");
+}
+
+void juceMidiOutputBindingRefreshKeepsAllVisibleBindingsWithoutRebuild()
+{
+    const std::vector<trackloom::MidiOutputDeviceTrackBinding> bindings {
+        { "track-a", deviceInfo("device-a", "Old Device A") },
+        { "track-b", deviceInfo("device-b", "Old Device B") }
+    };
+    const std::vector<trackloom::MidiOutputDeviceInfo> visibleDevices {
+        deviceInfo("device-b", "Device B Current"),
+        deviceInfo("device-a", "Device A Current")
+    };
+
+    const auto plan = trackloom::planMidiOutputDeviceBindingRefresh(bindings, visibleDevices);
+
+    require(plan.availableBindings.size() == 2,
+        "binding refresh should keep all bindings when all selected devices are visible");
+    require(plan.availableBindings[0].trackId == "track-a" && plan.availableBindings[1].trackId == "track-b",
+        "binding refresh should preserve binding order instead of visible-device order");
+    require(plan.availableBindings[0].device.name == "Device A Current",
+        "binding refresh should update first binding device info from visible list");
+    require(plan.availableBindings[1].device.name == "Device B Current",
+        "binding refresh should update second binding device info from visible list");
+    require(plan.unavailableBindings.empty(),
+        "binding refresh should report no unavailable bindings when all devices are visible");
+    require(!plan.requiresSafeRebuild,
+        "binding refresh should not request safe rebuild when all selected devices remain visible");
+}
+
 void juceMidiOutputPortRejectsUnknownDevice()
 {
     // 明确不存在的 id 应该打开失败，用它验证失败路径而不依赖真实硬件。
@@ -555,6 +613,8 @@ int main()
         juceMidiOutputDiffKeepsPredictableOrder();
         juceMidiOutputDeviceListRefreshesFromInjectedProvider();
         juceMidiOutputDeviceListFindsCachedDevicesWithoutEnumerating();
+        juceMidiOutputBindingRefreshPlansUnavailableDeviceRemoval();
+        juceMidiOutputBindingRefreshKeepsAllVisibleBindingsWithoutRebuild();
         juceMidiOutputPortRejectsUnknownDevice();
         juceMidiOutputFactoryPreservesDeviceInfo();
         juceMidiOutputDeviceManagerConnectsDeviceToPlaybackSession();

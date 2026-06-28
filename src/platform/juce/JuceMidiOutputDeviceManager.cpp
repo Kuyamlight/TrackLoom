@@ -18,6 +18,23 @@ bool hasTrackBinding(
     return false;
 }
 
+std::optional<MidiOutputDeviceInfo> findVisibleDeviceById(
+    const std::vector<MidiOutputDeviceInfo>& devices,
+    const std::string& deviceId)
+{
+    if (deviceId.empty()) {
+        return std::nullopt;
+    }
+
+    for (const auto& device : devices) {
+        if (device.id == deviceId) {
+            return device;
+        }
+    }
+
+    return std::nullopt;
+}
+
 bool isValidDeviceTrackBinding(
     const Project& project,
     const std::vector<MidiOutputDeviceTrackBinding>& acceptedBindings,
@@ -51,6 +68,29 @@ MidiOutputDeviceManagerFailureReason failureReasonFromSessionRebuild(
     return MidiOutputDeviceManagerFailureReason::OutputBindingRejected;
 }
 
+}
+
+MidiOutputDeviceBindingRefreshPlan planMidiOutputDeviceBindingRefresh(
+    const std::vector<MidiOutputDeviceTrackBinding>& bindings,
+    const std::vector<MidiOutputDeviceInfo>& visibleDevices)
+{
+    MidiOutputDeviceBindingRefreshPlan plan;
+    plan.availableBindings.reserve(bindings.size());
+    plan.unavailableBindings.reserve(bindings.size());
+
+    for (const auto& binding : bindings) {
+        const auto visibleDevice = findVisibleDeviceById(visibleDevices, binding.device.id);
+        if (visibleDevice.has_value()) {
+            // 可见设备使用最新快照，避免 UI 后续继续显示旧设备名称。
+            plan.availableBindings.push_back({ binding.trackId, *visibleDevice });
+        } else {
+            // 不可见设备保留原绑定信息，给 UI 提示和未来重连使用。
+            plan.unavailableBindings.push_back(binding);
+        }
+    }
+
+    plan.requiresSafeRebuild = !plan.unavailableBindings.empty();
+    return plan;
 }
 
 JuceMidiOutputDeviceManager::JuceMidiOutputDeviceManager(MidiOutputDevicePortFactory portFactory)
