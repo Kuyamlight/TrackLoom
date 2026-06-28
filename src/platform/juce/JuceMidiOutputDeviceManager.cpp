@@ -464,6 +464,41 @@ JuceMidiOutputRoutingController::rebuildSelectedProjectMidiOutputSafely(
     return result;
 }
 
+MidiOutputRoutingApplyResult
+JuceMidiOutputRoutingController::applySelectedProjectMidiOutputIfNeeded(
+    ProjectPlaybackSession& session,
+    const Project& project,
+    int releaseSampleOffset)
+{
+    MidiOutputRoutingApplyResult result;
+    result.bindingPlan = planMidiOutputDeviceBindingRefresh(
+        selectedBindings_,
+        deviceList_.devices());
+    result.openedDeviceCount = deviceManager_.openDeviceCount();
+
+    if (!midiOutputRoutingStateRequiresApply(routingState())) {
+        // 当前选择已经和运行态路由一致时，应用按钮可以成功返回，但不能重开真实设备。
+        result.success = true;
+        return result;
+    }
+
+    result.safeRebuildAttempted = true;
+    result.rebuild = deviceManager_.rebuildProjectMidiOutputSafely(
+        session,
+        project,
+        result.bindingPlan.availableBindings,
+        releaseSampleOffset);
+    result.success = result.rebuild.success;
+    result.failureReason = result.rebuild.failureReason;
+    result.openedDeviceCount = result.rebuild.openedDeviceCount;
+    if (result.success) {
+        // 离线选择继续保留在 selectedBindings_，但不能写成已经应用到运行态。
+        appliedBindings_ = result.bindingPlan.availableBindings;
+    }
+
+    return result;
+}
+
 MidiOutputRoutingRefreshResult
 JuceMidiOutputRoutingController::refreshDevicesAndRebuildSelectedProjectMidiOutputSafely(
     ProjectPlaybackSession& session,

@@ -118,6 +118,17 @@ struct MidiOutputRoutingRefreshResult {
     MidiOutputDeviceManagerRefreshResult outputRefresh;
 };
 
+// MidiOutputRoutingApplyResult 表示一次“应用当前选择”的结果。
+// safeRebuildAttempted 为 false 时表示当前选择已经生效，调用方不需要提示设备被重开。
+struct MidiOutputRoutingApplyResult {
+    bool success = false;
+    MidiOutputDeviceManagerFailureReason failureReason = MidiOutputDeviceManagerFailureReason::None;
+    MidiOutputDeviceBindingRefreshPlan bindingPlan;
+    bool safeRebuildAttempted = false;
+    MidiOutputDeviceManagerRebuildResult rebuild;
+    std::size_t openedDeviceCount = 0;
+};
+
 // MidiOutputRoutingState 是控制层给 UI 或诊断工具读取的一次性状态快照。
 // 它只描述当前内存状态，不写工程文件，也不触发设备枚举、端口打开或路由重建。
 struct MidiOutputRoutingState {
@@ -173,6 +184,11 @@ public:
     MidiOutputDeviceListDiff refreshDevices();
 
     MidiOutputDeviceManagerRebuildResult rebuildSelectedProjectMidiOutputSafely(
+        ProjectPlaybackSession& session,
+        const Project& project,
+        int releaseSampleOffset);
+
+    MidiOutputRoutingApplyResult applySelectedProjectMidiOutputIfNeeded(
         ProjectPlaybackSession& session,
         const Project& project,
         int releaseSampleOffset);

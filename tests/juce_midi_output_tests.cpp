@@ -1071,6 +1071,89 @@ void juceMidiOutputRoutingControllerClearsSelectionAndRoute()
         "routing controller should close old runtime device after selected route removal");
 }
 
+void juceMidiOutputRoutingControllerApplySkipsAlreadyAppliedRoutes()
+{
+    trackloom::Project project("JUCE MIDI routing controller");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputRoutingController controller(
+        []() {
+            return std::vector<trackloom::MidiOutputDeviceInfo> {
+                deviceInfo("device-a", "Device A")
+            };
+        },
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+
+    trackloom::ProjectPlaybackSession session;
+    require(session.prepare(1920.0, 2, 480), "routing controller apply no-op test session should prepare");
+    controller.refreshDevices();
+    require(controller.setTrackOutputDeviceById(track.id, "device-a"),
+        "routing controller apply no-op test should select cached device");
+
+    const auto firstApply = controller.applySelectedProjectMidiOutputIfNeeded(session, project, 0);
+    require(firstApply.success, "routing controller should apply pending selected route");
+    require(firstApply.safeRebuildAttempted,
+        "routing controller should rebuild while selected route is still pending");
+    require(factory.createdPortCount() == 1,
+        "routing controller should open one port for the first apply");
+
+    const auto deviceA = factory.latestStateForDevice("device-a");
+    const auto secondApply = controller.applySelectedProjectMidiOutputIfNeeded(session, project, 0);
+
+    require(secondApply.success, "routing controller should treat already-applied routes as a successful no-op");
+    require(!secondApply.safeRebuildAttempted,
+        "routing controller should not rebuild when selected routes already match runtime state");
+    require(secondApply.openedDeviceCount == 1,
+        "routing controller no-op apply should report the existing open device count");
+    require(factory.createdPortCount() == 1,
+        "routing controller no-op apply should not create another port");
+    require(deviceA != nullptr && deviceA->open,
+        "routing controller no-op apply should keep the existing device open");
+}
+
+void juceMidiOutputRoutingControllerApplyClearsStaleRoutes()
+{
+    trackloom::Project project("JUCE MIDI routing controller");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputRoutingController controller(
+        []() {
+            return std::vector<trackloom::MidiOutputDeviceInfo> {
+                deviceInfo("device-a", "Device A")
+            };
+        },
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+
+    trackloom::ProjectPlaybackSession session;
+    require(session.prepare(1920.0, 2, 480), "routing controller stale apply test session should prepare");
+    controller.refreshDevices();
+    require(controller.setTrackOutputDeviceById(track.id, "device-a"),
+        "routing controller stale apply test should select cached device");
+    require(controller.applySelectedProjectMidiOutputIfNeeded(session, project, 0).success,
+        "routing controller stale apply test should establish initial route");
+
+    const auto deviceA = factory.latestStateForDevice("device-a");
+    require(controller.clearTrackOutputDevice(track.id),
+        "routing controller stale apply test should clear existing selection");
+    const auto clearApply = controller.applySelectedProjectMidiOutputIfNeeded(session, project, 0);
+
+    require(clearApply.success, "routing controller should safely apply a cleared selection");
+    require(clearApply.safeRebuildAttempted,
+        "routing controller should rebuild when a stale applied route must be removed");
+    require(controller.openDeviceCount() == 0,
+        "routing controller should close runtime devices after applying cleared selection");
+    require(controller.routingState().appliedBindings.empty(),
+        "routing controller should remove stale applied bindings after successful apply");
+    require(deviceA != nullptr && deviceA->closeCallCount == 1,
+        "routing controller should close the stale runtime device after apply");
+}
+
 void juceMidiOutputPortRejectsUnknownDevice()
 {
     // 明确不存在的 id 应该打开失败，用它验证失败路径而不依赖真实硬件。
@@ -1317,6 +1400,8 @@ int main()
         juceMidiOutputRoutingControllerReportsRoutingStateSnapshot();
         juceMidiOutputRoutingControllerRefreshUpdatesSelectionWithoutRouteChurn();
         juceMidiOutputRoutingControllerClearsSelectionAndRoute();
+        juceMidiOutputRoutingControllerApplySkipsAlreadyAppliedRoutes();
+        juceMidiOutputRoutingControllerApplyClearsStaleRoutes();
         juceMidiOutputPortRejectsUnknownDevice();
         juceMidiOutputFactoryPreservesDeviceInfo();
         juceMidiOutputDeviceManagerConnectsDeviceToPlaybackSession();
