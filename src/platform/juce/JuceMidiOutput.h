@@ -5,6 +5,8 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 namespace trackloom {
@@ -20,6 +22,10 @@ juce::MidiMessage juceMidiMessageFromOutputMessage(const MidiOutputMessage& mess
 // 枚举当前系统可打开的 JUCE MIDI 输出设备。
 // 没有外接设备时返回空列表，这是正常状态，不应视为错误。
 std::vector<MidiOutputDeviceInfo> availableJuceMidiOutputDevices();
+
+// 按稳定设备 id 查找当前可见的 JUCE MIDI 输出设备。
+// 设备不在线或 id 为空时返回空结果，调用方据此决定跳过、提示或失败。
+std::optional<MidiOutputDeviceInfo> findJuceMidiOutputDeviceById(const std::string& deviceId);
 
 // JUCE MIDI 输出端口是核心 MidiOutputDevicePort 的平台实现。
 // 它只管理真实设备句柄，不参与播放调度、活动音符追踪或工程数据修改。

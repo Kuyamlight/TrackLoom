@@ -199,6 +199,15 @@ void juceMidiOutputEnumeratesWithoutHardwareAssumptions()
     }
 }
 
+void juceMidiOutputFindsNoMissingDeviceId()
+{
+    // 这个 id 故意使用 TrackLoom 专属前缀，避免和真实系统设备撞名。
+    const auto missingDevice = trackloom::findJuceMidiOutputDeviceById(
+        "trackloom-missing-midi-output-device");
+
+    require(!missingDevice.has_value(), "juce midi output lookup should return empty for missing device id");
+}
+
 void juceMidiOutputPortRejectsUnknownDevice()
 {
     // 明确不存在的 id 应该打开失败，用它验证失败路径而不依赖真实硬件。
@@ -424,6 +433,7 @@ int main()
         juceMidiOutputMapsDeviceInfo();
         juceMidiOutputConvertsCoreMessageBytes();
         juceMidiOutputEnumeratesWithoutHardwareAssumptions();
+        juceMidiOutputFindsNoMissingDeviceId();
         juceMidiOutputPortRejectsUnknownDevice();
         juceMidiOutputFactoryPreservesDeviceInfo();
         juceMidiOutputDeviceManagerConnectsDeviceToPlaybackSession();

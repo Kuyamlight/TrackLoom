@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -35,6 +37,21 @@ std::vector<MidiOutputDeviceInfo> availableJuceMidiOutputDevices()
     }
 
     return devices;
+}
+
+std::optional<MidiOutputDeviceInfo> findJuceMidiOutputDeviceById(const std::string& deviceId)
+{
+    if (deviceId.empty()) {
+        return std::nullopt;
+    }
+
+    for (const auto& device : availableJuceMidiOutputDevices()) {
+        if (device.id == deviceId) {
+            return device;
+        }
+    }
+
+    return std::nullopt;
 }
 
 JuceMidiOutputPort::JuceMidiOutputPort(MidiOutputDeviceInfo info)
