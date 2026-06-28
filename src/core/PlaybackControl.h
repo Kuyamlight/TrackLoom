@@ -9,10 +9,22 @@
 
 namespace trackloom {
 
+// PlaybackControlFailureReason 是播放控制命令对外暴露的稳定失败原因。
+// message 可以改写成本地化文本；这个枚举不能随意重命名，否则 UI 和 AI 工具会失去稳定判断依据。
+enum class PlaybackControlFailureReason {
+    None,
+    SessionNotPrepared,
+    InvalidTargetSample,
+    MidiReleaseFailed,
+    TransportChangeRejected,
+    MidiOutputRebuildRejected
+};
+
 // PlaybackControlResult 是播放控制命令的统一返回值。
 // transportControl 和 midiOutputRebuild 保留底层细节，方便 UI 或日志解释失败原因。
 struct PlaybackControlResult {
     bool success = false;
+    PlaybackControlFailureReason failureReason = PlaybackControlFailureReason::None;
     std::string message;
     ProjectPlaybackControlResult transportControl;
     ProjectPlaybackMidiOutputRebuildResult midiOutputRebuild;

@@ -18,18 +18,40 @@ struct ProjectPlaybackBlockResult {
     MidiDispatchResult midiDispatch;
 };
 
+// ProjectPlaybackControlFailureReason 是会话层播放控制失败的稳定原因码。
+// UI 和 AI 工具应读取这个枚举做分支判断，不要解析给人看的 message 字符串。
+enum class ProjectPlaybackControlFailureReason {
+    None,
+    SessionNotPrepared,
+    InvalidTargetSample,
+    MidiReleaseFailed,
+    TransportRejected
+};
+
 // ProjectPlaybackControlResult 记录停止、跳转等播放控制命令的结果。
 // midiRelease 单独暴露，方便调用方区分“释放失败”和“Transport 改变失败”。
 struct ProjectPlaybackControlResult {
     bool success = false;
+    ProjectPlaybackControlFailureReason failureReason = ProjectPlaybackControlFailureReason::None;
     MidiDispatchResult midiRelease;
     bool transportChanged = false;
+};
+
+// ProjectPlaybackMidiOutputRebuildFailureReason 是安全重建 MIDI 输出的稳定失败原因。
+// 它把“旧音符没释放”和“新绑定被拒绝”分开，避免调用方只能看到一个 false。
+enum class ProjectPlaybackMidiOutputRebuildFailureReason {
+    None,
+    SessionNotPrepared,
+    MidiReleaseFailed,
+    OutputBindingRejected
 };
 
 // ProjectPlaybackMidiOutputRebuildResult 记录安全切换 MIDI 输出的结果。
 // midiRelease 表示旧输出释放是否成功；midiOutputChanged 表示新绑定是否真正生效。
 struct ProjectPlaybackMidiOutputRebuildResult {
     bool success = false;
+    ProjectPlaybackMidiOutputRebuildFailureReason failureReason =
+        ProjectPlaybackMidiOutputRebuildFailureReason::None;
     MidiDispatchResult midiRelease;
     bool midiOutputChanged = false;
 };

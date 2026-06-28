@@ -5,11 +5,76 @@
 namespace trackloom {
 namespace {
 
-PlaybackControlResult failedPlaybackControl(std::string message)
+PlaybackControlResult failedPlaybackControl(
+    PlaybackControlFailureReason failureReason,
+    std::string message)
 {
     PlaybackControlResult result;
+    result.failureReason = failureReason;
     result.message = std::move(message);
     return result;
+}
+
+PlaybackControlFailureReason playbackControlFailureReasonFor(
+    ProjectPlaybackControlFailureReason failureReason)
+{
+    switch (failureReason) {
+    case ProjectPlaybackControlFailureReason::None:
+        return PlaybackControlFailureReason::None;
+    case ProjectPlaybackControlFailureReason::SessionNotPrepared:
+        return PlaybackControlFailureReason::SessionNotPrepared;
+    case ProjectPlaybackControlFailureReason::InvalidTargetSample:
+        return PlaybackControlFailureReason::InvalidTargetSample;
+    case ProjectPlaybackControlFailureReason::MidiReleaseFailed:
+        return PlaybackControlFailureReason::MidiReleaseFailed;
+    case ProjectPlaybackControlFailureReason::TransportRejected:
+        return PlaybackControlFailureReason::TransportChangeRejected;
+    }
+
+    return PlaybackControlFailureReason::TransportChangeRejected;
+}
+
+PlaybackControlFailureReason playbackControlFailureReasonFor(
+    ProjectPlaybackMidiOutputRebuildFailureReason failureReason)
+{
+    switch (failureReason) {
+    case ProjectPlaybackMidiOutputRebuildFailureReason::None:
+        return PlaybackControlFailureReason::None;
+    case ProjectPlaybackMidiOutputRebuildFailureReason::SessionNotPrepared:
+        return PlaybackControlFailureReason::SessionNotPrepared;
+    case ProjectPlaybackMidiOutputRebuildFailureReason::MidiReleaseFailed:
+        return PlaybackControlFailureReason::MidiReleaseFailed;
+    case ProjectPlaybackMidiOutputRebuildFailureReason::OutputBindingRejected:
+        return PlaybackControlFailureReason::MidiOutputRebuildRejected;
+    }
+
+    return PlaybackControlFailureReason::MidiOutputRebuildRejected;
+}
+
+std::string messageFor(PlaybackControlFailureReason failureReason)
+{
+    switch (failureReason) {
+    case PlaybackControlFailureReason::None:
+        return {};
+    case PlaybackControlFailureReason::SessionNotPrepared:
+        return "Playback session is not prepared.";
+    case PlaybackControlFailureReason::InvalidTargetSample:
+        return "Target sample must not be negative.";
+    case PlaybackControlFailureReason::MidiReleaseFailed:
+        return "Active MIDI notes could not be released.";
+    case PlaybackControlFailureReason::TransportChangeRejected:
+        return "Transport rejected the playback control change.";
+    case PlaybackControlFailureReason::MidiOutputRebuildRejected:
+        return "MIDI output rebuild was rejected.";
+    }
+
+    return "Playback control failed.";
+}
+
+void finishFailedPlaybackControlResult(PlaybackControlResult& result)
+{
+    result.success = false;
+    result.message = messageFor(result.failureReason);
 }
 
 }
@@ -30,14 +95,17 @@ PlaybackControlResult StopPlaybackCommand::execute(
     const Project&) const
 {
     if (!session.isPrepared()) {
-        return failedPlaybackControl("Playback session is not prepared.");
+        return failedPlaybackControl(
+            PlaybackControlFailureReason::SessionNotPrepared,
+            messageFor(PlaybackControlFailureReason::SessionNotPrepared));
     }
 
     PlaybackControlResult result;
     result.transportControl = session.stopPlayback(transport, releaseSampleOffset_);
     result.success = result.transportControl.success;
     if (!result.success) {
-        result.message = "Stop playback failed.";
+        result.failureReason = playbackControlFailureReasonFor(result.transportControl.failureReason);
+        finishFailedPlaybackControlResult(result);
     }
     return result;
 }
@@ -59,17 +127,22 @@ PlaybackControlResult SeekPlaybackCommand::execute(
     const Project&) const
 {
     if (targetSample_ < 0) {
-        return failedPlaybackControl("Target sample must not be negative.");
+        return failedPlaybackControl(
+            PlaybackControlFailureReason::InvalidTargetSample,
+            messageFor(PlaybackControlFailureReason::InvalidTargetSample));
     }
     if (!session.isPrepared()) {
-        return failedPlaybackControl("Playback session is not prepared.");
+        return failedPlaybackControl(
+            PlaybackControlFailureReason::SessionNotPrepared,
+            messageFor(PlaybackControlFailureReason::SessionNotPrepared));
     }
 
     PlaybackControlResult result;
     result.transportControl = session.seekPlaybackToSample(transport, targetSample_, releaseSampleOffset_);
     result.success = result.transportControl.success;
     if (!result.success) {
-        result.message = "Seek playback failed.";
+        result.failureReason = playbackControlFailureReasonFor(result.transportControl.failureReason);
+        finishFailedPlaybackControlResult(result);
     }
     return result;
 }
@@ -93,14 +166,17 @@ PlaybackControlResult RebuildMidiOutputCommand::execute(
     const Project& project) const
 {
     if (!session.isPrepared()) {
-        return failedPlaybackControl("Playback session is not prepared.");
+        return failedPlaybackControl(
+            PlaybackControlFailureReason::SessionNotPrepared,
+            messageFor(PlaybackControlFailureReason::SessionNotPrepared));
     }
 
     PlaybackControlResult result;
     result.midiOutputRebuild = session.rebuildMidiOutputSafely(project, bindings_, releaseSampleOffset_);
     result.success = result.midiOutputRebuild.success;
     if (!result.success) {
-        result.message = "Rebuild MIDI output failed.";
+        result.failureReason = playbackControlFailureReasonFor(result.midiOutputRebuild.failureReason);
+        finishFailedPlaybackControlResult(result);
     }
     return result;
 }

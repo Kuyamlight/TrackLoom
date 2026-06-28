@@ -3028,6 +3028,76 @@ void playbackControlCommandsRejectUnpreparedSession()
     require(receiver.events().empty(), "unprepared rebuild command should not send events");
 }
 
+void playbackControlCommandsReportStableFailureReasons()
+{
+    trackloom::Project project("Playback Control");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    RecordingMidiEventReceiver receiver;
+    const auto instrumentTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audioTrack = project.createTrack("Audio", trackloom::TrackType::Audio);
+
+    trackloom::StopPlaybackCommand unpreparedStop(0);
+    trackloom::SeekPlaybackCommand negativeSeek(-1, 0);
+    trackloom::RebuildMidiOutputCommand unpreparedRebuild({ { instrumentTrack.id, &receiver } }, 0);
+
+    const auto unpreparedStopResult = unpreparedStop.execute(session, transport, project);
+    const auto negativeSeekResult = negativeSeek.execute(session, transport, project);
+    const auto unpreparedRebuildResult = unpreparedRebuild.execute(session, transport, project);
+
+    require(unpreparedStopResult.failureReason == trackloom::PlaybackControlFailureReason::SessionNotPrepared,
+        "unprepared stop should report stable session-not-prepared reason");
+    require(negativeSeekResult.failureReason == trackloom::PlaybackControlFailureReason::InvalidTargetSample,
+        "negative seek should report stable invalid-target reason");
+    require(unpreparedRebuildResult.failureReason == trackloom::PlaybackControlFailureReason::SessionNotPrepared,
+        "unprepared rebuild should report stable session-not-prepared reason");
+
+    require(session.prepare(1920.0, 2, 480), "failure reason session should prepare");
+    trackloom::RebuildMidiOutputCommand invalidRebuild({ { audioTrack.id, &receiver } }, 0);
+    const auto invalidRebuildResult = invalidRebuild.execute(session, transport, project);
+
+    require(invalidRebuildResult.failureReason == trackloom::PlaybackControlFailureReason::MidiOutputRebuildRejected,
+        "invalid rebuild binding should report stable midi output rebuild rejection");
+    require(invalidRebuildResult.midiOutputRebuild.failureReason == trackloom::ProjectPlaybackMidiOutputRebuildFailureReason::OutputBindingRejected,
+        "invalid rebuild binding should expose lower-level output binding rejection");
+}
+
+void stopPlaybackCommandReportsMidiReleaseFailureReason()
+{
+    trackloom::Project project("Playback Control");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    FailingMidiEventReceiver receiver(2);
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "release failure command clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "release failure command note should exist");
+    require(session.prepare(1920.0, 2, 480), "release failure command prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "release failure command should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &receiver } }), "release failure command should rebuild midi output");
+    require(transport.seekToSample(960), "release failure command transport should seek");
+    transport.play();
+
+    const auto renderResult = session.renderNextBlock(transport, block, project);
+    require(renderResult.renderSucceeded, "release failure command first render should succeed");
+    require(session.activeMidiNoteCount() == 1, "release failure command should have active note before stop");
+
+    trackloom::StopPlaybackCommand command(0);
+    const auto result = command.execute(session, transport, project);
+
+    require(!result.success, "release failure command should fail");
+    require(result.failureReason == trackloom::PlaybackControlFailureReason::MidiReleaseFailed,
+        "release failure command should report stable midi release failure");
+    require(result.transportControl.failureReason == trackloom::ProjectPlaybackControlFailureReason::MidiReleaseFailed,
+        "release failure command should expose lower-level midi release failure");
+    require(transport.isPlaying(), "release failure command should keep transport playing");
+    require(session.activeMidiNoteCount() == 1, "release failure command should keep active note for retry");
+}
+
 void projectPlaybackSessionRejectsPrepareWhileMidiNotesAreActive()
 {
     trackloom::Project project("Project Playback Session");
@@ -6681,6 +6751,8 @@ int main()
         seekPlaybackCommandRejectsNegativeTargetWithoutRelease();
         rebuildMidiOutputCommandSwitchesRoutesSafely();
         playbackControlCommandsRejectUnpreparedSession();
+        playbackControlCommandsReportStableFailureReasons();
+        stopPlaybackCommandReportsMidiReleaseFailureReason();
         projectPlaybackSessionRejectsPrepareWhileMidiNotesAreActive();
         projectPlaybackSessionRejectsUseBeforePrepare();
         renameClipCommandSupportsUndoAndRedo();

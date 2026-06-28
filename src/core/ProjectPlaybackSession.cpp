@@ -82,16 +82,21 @@ ProjectPlaybackMidiOutputRebuildResult ProjectPlaybackSession::rebuildMidiOutput
 {
     ProjectPlaybackMidiOutputRebuildResult result;
     if (!prepared_) {
+        result.failureReason = ProjectPlaybackMidiOutputRebuildFailureReason::SessionNotPrepared;
         return result;
     }
 
     result.midiRelease = releaseActiveMidiNotes(releaseSampleOffset);
     if (!result.midiRelease.success) {
+        result.failureReason = ProjectPlaybackMidiOutputRebuildFailureReason::MidiReleaseFailed;
         return result;
     }
 
     result.midiOutputChanged = rebuildMidiOutput(project, bindings);
     result.success = result.midiOutputChanged;
+    if (!result.success) {
+        result.failureReason = ProjectPlaybackMidiOutputRebuildFailureReason::OutputBindingRejected;
+    }
     return result;
 }
 
@@ -126,11 +131,13 @@ ProjectPlaybackControlResult ProjectPlaybackSession::stopPlayback(
 {
     ProjectPlaybackControlResult result;
     if (!prepared_) {
+        result.failureReason = ProjectPlaybackControlFailureReason::SessionNotPrepared;
         return result;
     }
 
     result.midiRelease = releaseActiveMidiNotes(releaseSampleOffset);
     if (!result.midiRelease.success) {
+        result.failureReason = ProjectPlaybackControlFailureReason::MidiReleaseFailed;
         return result;
     }
 
@@ -147,17 +154,24 @@ ProjectPlaybackControlResult ProjectPlaybackSession::seekPlaybackToSample(
     int releaseSampleOffset)
 {
     ProjectPlaybackControlResult result;
-    if (!prepared_ || targetSample < 0) {
+    if (!prepared_) {
+        result.failureReason = ProjectPlaybackControlFailureReason::SessionNotPrepared;
+        return result;
+    }
+
+    if (targetSample < 0) {
+        result.failureReason = ProjectPlaybackControlFailureReason::InvalidTargetSample;
         return result;
     }
 
     result.midiRelease = releaseActiveMidiNotes(releaseSampleOffset);
     if (!result.midiRelease.success) {
+        result.failureReason = ProjectPlaybackControlFailureReason::MidiReleaseFailed;
         return result;
     }
 
     if (!transport.seekToSample(targetSample)) {
-        result.success = false;
+        result.failureReason = ProjectPlaybackControlFailureReason::TransportRejected;
         return result;
     }
 
