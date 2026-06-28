@@ -54,6 +54,17 @@ struct MidiOutputDeviceManagerRebuildResult {
     std::size_t openedDeviceCount = 0;
 };
 
+// MidiOutputDeviceManagerRefreshResult 连接“设备刷新计划”和“安全重建结果”。
+// safeRebuildAttempted 为 false 时表示没有设备消失，旧路由保持不动，rebuild 字段不代表失败。
+struct MidiOutputDeviceManagerRefreshResult {
+    bool success = false;
+    MidiOutputDeviceManagerFailureReason failureReason = MidiOutputDeviceManagerFailureReason::None;
+    MidiOutputDeviceBindingRefreshPlan bindingPlan;
+    bool safeRebuildAttempted = false;
+    MidiOutputDeviceManagerRebuildResult rebuild;
+    std::size_t openedDeviceCount = 0;
+};
+
 using MidiOutputDevicePortFactory =
     std::function<std::unique_ptr<MidiOutputDevicePort>(MidiOutputDeviceInfo info)>;
 
@@ -75,6 +86,13 @@ public:
         ProjectPlaybackSession& session,
         const Project& project,
         const std::vector<MidiOutputDeviceTrackBinding>& bindings,
+        int releaseSampleOffset);
+
+    MidiOutputDeviceManagerRefreshResult refreshProjectMidiOutputForVisibleDevicesSafely(
+        ProjectPlaybackSession& session,
+        const Project& project,
+        const std::vector<MidiOutputDeviceTrackBinding>& bindings,
+        const std::vector<MidiOutputDeviceInfo>& visibleDevices,
         int releaseSampleOffset);
 
     std::size_t openDeviceCount() const;

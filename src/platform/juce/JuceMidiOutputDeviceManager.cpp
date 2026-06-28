@@ -188,6 +188,36 @@ MidiOutputDeviceManagerRebuildResult JuceMidiOutputDeviceManager::rebuildProject
     return result;
 }
 
+MidiOutputDeviceManagerRefreshResult
+JuceMidiOutputDeviceManager::refreshProjectMidiOutputForVisibleDevicesSafely(
+    ProjectPlaybackSession& session,
+    const Project& project,
+    const std::vector<MidiOutputDeviceTrackBinding>& bindings,
+    const std::vector<MidiOutputDeviceInfo>& visibleDevices,
+    int releaseSampleOffset)
+{
+    MidiOutputDeviceManagerRefreshResult result;
+    result.openedDeviceCount = activeDevices_.size();
+    result.bindingPlan = planMidiOutputDeviceBindingRefresh(bindings, visibleDevices);
+
+    if (!result.bindingPlan.requiresSafeRebuild) {
+        // 所有已绑定设备仍可见时不打断现有路由；显示名变化只返回给 UI 后续刷新。
+        result.success = true;
+        return result;
+    }
+
+    result.safeRebuildAttempted = true;
+    result.rebuild = rebuildProjectMidiOutputSafely(
+        session,
+        project,
+        result.bindingPlan.availableBindings,
+        releaseSampleOffset);
+    result.success = result.rebuild.success;
+    result.failureReason = result.rebuild.failureReason;
+    result.openedDeviceCount = result.rebuild.openedDeviceCount;
+    return result;
+}
+
 std::size_t JuceMidiOutputDeviceManager::openDeviceCount() const
 {
     return activeDevices_.size();

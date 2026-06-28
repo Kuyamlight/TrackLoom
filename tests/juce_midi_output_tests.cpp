@@ -383,6 +383,157 @@ void juceMidiOutputBindingRefreshKeepsAllVisibleBindingsWithoutRebuild()
         "binding refresh should not request safe rebuild when all selected devices remain visible");
 }
 
+void juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild()
+{
+    trackloom::Project project("JUCE MIDI device manager refresh");
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto bassTrack = project.createTrack("Bass", trackloom::TrackType::Instrument);
+
+    trackloom::ProjectPlaybackSession session;
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputDeviceManager manager(
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+
+    const std::vector<trackloom::MidiOutputDeviceTrackBinding> bindings {
+        { leadTrack.id, deviceInfo("device-a", "Device A") },
+        { bassTrack.id, deviceInfo("device-b", "Device B") }
+    };
+
+    require(session.prepare(1920.0, 2, 480), "refresh removal test session should prepare");
+    require(manager.rebuildProjectMidiOutputSafely(session, project, bindings, 0).success,
+        "refresh removal test should establish two output devices");
+
+    const auto deviceB = factory.stateForDevice("device-b");
+    const auto refresh = manager.refreshProjectMidiOutputForVisibleDevicesSafely(
+        session,
+        project,
+        bindings,
+        { deviceInfo("device-a", "Device A Current") },
+        24);
+    const auto openDevices = manager.openDeviceInfos();
+
+    require(refresh.success, "device manager refresh should remove missing device through safe rebuild");
+    require(refresh.safeRebuildAttempted,
+        "device manager refresh should attempt safe rebuild when a bound device disappeared");
+    require(refresh.bindingPlan.availableBindings.size() == 1,
+        "device manager refresh should keep one available binding");
+    require(refresh.bindingPlan.unavailableBindings.size() == 1,
+        "device manager refresh should report one unavailable binding");
+    require(refresh.bindingPlan.unavailableBindings[0].trackId == bassTrack.id,
+        "device manager refresh should report the track whose device disappeared");
+    require(openDevices.size() == 1 && openDevices[0].id == "device-a",
+        "device manager refresh should retain only still-visible device routes");
+    require(openDevices[0].name == "Device A Current",
+        "device manager refresh should reopen retained routes with current device info");
+    require(session.midiReceiverCount() == 1,
+        "device manager refresh should remove missing device receiver from session");
+    require(deviceB != nullptr && deviceB->closeCallCount == 1,
+        "device manager refresh should close the disappeared device after successful rebuild");
+}
+
+void juceMidiOutputDeviceManagerRefreshKeepsOldRouteWhenSafeRebuildFails()
+{
+    trackloom::Project project("JUCE MIDI device manager refresh");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    addLongMidiNote(project, track);
+
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    SilentAudioSource source;
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputDeviceManager manager(
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+
+    const std::vector<trackloom::MidiOutputDeviceTrackBinding> bindings {
+        { track.id, deviceInfo("device-a", "Device A") }
+    };
+
+    require(session.prepare(1920.0, 2, 480), "refresh rollback test session should prepare");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }),
+        "refresh rollback test should rebuild audio graph");
+    require(manager.rebuildProjectMidiOutputSafely(session, project, bindings, 0).success,
+        "refresh rollback test should establish an initial output device");
+
+    transport.play();
+    const auto blockResult = renderPlaybackBlock(session, transport, project);
+    const auto deviceA = factory.stateForDevice("device-a");
+    require(blockResult.midiDispatch.success, "refresh rollback test should deliver initial note on");
+    require(deviceA != nullptr, "refresh rollback test should record fake device A");
+    require(session.activeMidiNoteCount() == 1,
+        "refresh rollback test should have one active note before safe rebuild");
+
+    deviceA->sendShouldSucceed = false;
+    const auto refresh = manager.refreshProjectMidiOutputForVisibleDevicesSafely(
+        session,
+        project,
+        bindings,
+        {},
+        32);
+    const auto openDevices = manager.openDeviceInfos();
+
+    require(!refresh.success, "device manager refresh should fail when old active notes cannot release");
+    require(refresh.failureReason == trackloom::MidiOutputDeviceManagerFailureReason::MidiReleaseFailed,
+        "device manager refresh should expose midi release failure");
+    require(refresh.safeRebuildAttempted,
+        "device manager refresh should attempt safe rebuild before reporting release failure");
+    require(refresh.bindingPlan.unavailableBindings.size() == 1,
+        "failed device manager refresh should still report unavailable binding for UI");
+    require(openDevices.size() == 1 && openDevices[0].id == "device-a",
+        "failed device manager refresh should keep old open device identity");
+    require(deviceA->open, "failed device manager refresh should keep old device open");
+    require(session.midiReceiverCount() == 1,
+        "failed device manager refresh should keep old session midi route");
+    require(session.activeMidiNoteCount() == 1,
+        "failed device manager refresh should keep active note state for another release attempt");
+}
+
+void juceMidiOutputDeviceManagerRefreshSkipsRebuildWhenAllBindingsVisible()
+{
+    trackloom::Project project("JUCE MIDI device manager refresh");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    trackloom::ProjectPlaybackSession session;
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputDeviceManager manager(
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+
+    const std::vector<trackloom::MidiOutputDeviceTrackBinding> bindings {
+        { track.id, deviceInfo("device-a", "Device A") }
+    };
+
+    require(session.prepare(1920.0, 2, 480), "refresh no-op test session should prepare");
+    require(manager.rebuildProjectMidiOutputSafely(session, project, bindings, 0).success,
+        "refresh no-op test should establish an initial output device");
+
+    const auto refresh = manager.refreshProjectMidiOutputForVisibleDevicesSafely(
+        session,
+        project,
+        bindings,
+        { deviceInfo("device-a", "Device A Current") },
+        16);
+    const auto openDevices = manager.openDeviceInfos();
+
+    require(refresh.success, "device manager refresh should succeed when all bindings remain visible");
+    require(!refresh.safeRebuildAttempted,
+        "device manager refresh should skip safe rebuild when no active device disappeared");
+    require(refresh.bindingPlan.availableBindings.size() == 1,
+        "device manager refresh should still return current available binding info");
+    require(refresh.bindingPlan.availableBindings[0].device.name == "Device A Current",
+        "device manager refresh should expose latest display name even without rebuilding");
+    require(factory.createdPortCount() == 1,
+        "device manager refresh should not open new ports when rebuild is unnecessary");
+    require(openDevices.size() == 1 && openDevices[0].name == "Device A",
+        "device manager refresh should not churn the existing open route for a display-name-only change");
+    require(session.midiReceiverCount() == 1,
+        "device manager refresh should keep existing session route when rebuild is unnecessary");
+}
+
 void juceMidiOutputPortRejectsUnknownDevice()
 {
     // 明确不存在的 id 应该打开失败，用它验证失败路径而不依赖真实硬件。
@@ -615,6 +766,9 @@ int main()
         juceMidiOutputDeviceListFindsCachedDevicesWithoutEnumerating();
         juceMidiOutputBindingRefreshPlansUnavailableDeviceRemoval();
         juceMidiOutputBindingRefreshKeepsAllVisibleBindingsWithoutRebuild();
+        juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild();
+        juceMidiOutputDeviceManagerRefreshKeepsOldRouteWhenSafeRebuildFails();
+        juceMidiOutputDeviceManagerRefreshSkipsRebuildWhenAllBindingsVisible();
         juceMidiOutputPortRejectsUnknownDevice();
         juceMidiOutputFactoryPreservesDeviceInfo();
         juceMidiOutputDeviceManagerConnectsDeviceToPlaybackSession();
