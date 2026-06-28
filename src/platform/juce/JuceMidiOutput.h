@@ -4,6 +4,7 @@
 
 #include <juce_audio_devices/juce_audio_devices.h>
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -40,6 +41,24 @@ struct MidiOutputDeviceListDiff {
 MidiOutputDeviceListDiff diffMidiOutputDeviceLists(
     const std::vector<MidiOutputDeviceInfo>& previous,
     const std::vector<MidiOutputDeviceInfo>& current);
+
+using MidiOutputDeviceListProvider = std::function<std::vector<MidiOutputDeviceInfo>()>;
+
+// 可刷新 MIDI 输出设备列表。
+// 它只维护设备快照和差异，不打开设备，不切换播放路由，也不启动后台轮询。
+class JuceMidiOutputDeviceList final {
+public:
+    explicit JuceMidiOutputDeviceList(
+        MidiOutputDeviceListProvider provider = availableJuceMidiOutputDevices);
+
+    MidiOutputDeviceListDiff refresh();
+    const std::vector<MidiOutputDeviceInfo>& devices() const;
+    std::optional<MidiOutputDeviceInfo> findById(const std::string& deviceId) const;
+
+private:
+    MidiOutputDeviceListProvider provider_;
+    std::vector<MidiOutputDeviceInfo> devices_;
+};
 
 // JUCE MIDI 输出端口是核心 MidiOutputDevicePort 的平台实现。
 // 它只管理真实设备句柄，不参与播放调度、活动音符追踪或工程数据修改。

@@ -259,6 +259,72 @@ void juceMidiOutputDiffKeepsPredictableOrder()
         "midi output device diff should keep removed devices in previous-list order");
 }
 
+void juceMidiOutputDeviceListRefreshesFromInjectedProvider()
+{
+    std::vector<std::vector<trackloom::MidiOutputDeviceInfo>> snapshots {
+        {
+            deviceInfo("device-a", "Device A"),
+            deviceInfo("device-b", "Device B")
+        },
+        {
+            deviceInfo("device-b", "Device B Current"),
+            deviceInfo("device-c", "Device C")
+        }
+    };
+    std::size_t nextSnapshot = 0;
+    trackloom::JuceMidiOutputDeviceList deviceList(
+        [&]() {
+            require(nextSnapshot < snapshots.size(), "device list test should not over-enumerate");
+            return snapshots[nextSnapshot++];
+        });
+
+    const auto initial = deviceList.refresh();
+
+    require(initial.added.size() == 2, "initial midi device refresh should report visible devices as added");
+    require(initial.removed.empty(), "initial midi device refresh should not report removed devices");
+    require(initial.retained.empty(), "initial midi device refresh should not report retained devices");
+    require(deviceList.devices().size() == 2, "device list should cache initial visible devices");
+    require(deviceList.findById("device-a").has_value(), "device list should find cached device by id");
+
+    const auto updated = deviceList.refresh();
+
+    require(updated.retained.size() == 1 && updated.retained[0].id == "device-b",
+        "second midi device refresh should retain matching device ids");
+    require(updated.retained[0].name == "Device B Current",
+        "second midi device refresh should use current display name for retained devices");
+    require(updated.added.size() == 1 && updated.added[0].id == "device-c",
+        "second midi device refresh should report newly visible device");
+    require(updated.removed.size() == 1 && updated.removed[0].id == "device-a",
+        "second midi device refresh should report disappeared device");
+    require(deviceList.devices().size() == 2 && deviceList.devices()[0].id == "device-b",
+        "device list should replace cache with latest snapshot");
+    require(!deviceList.findById("device-a").has_value(), "device list should not find removed cached device");
+    require(nextSnapshot == 2, "device list refresh should enumerate exactly once per refresh");
+}
+
+void juceMidiOutputDeviceListFindsCachedDevicesWithoutEnumerating()
+{
+    std::size_t enumerateCount = 0;
+    trackloom::JuceMidiOutputDeviceList deviceList(
+        [&]() {
+            ++enumerateCount;
+            return std::vector<trackloom::MidiOutputDeviceInfo> {
+                deviceInfo("device-a", "Device A")
+            };
+        });
+
+    require(!deviceList.findById("device-a").has_value(),
+        "fresh midi device list should not enumerate during cached lookup");
+    require(enumerateCount == 0, "cached lookup before refresh should not call provider");
+
+    deviceList.refresh();
+    const auto found = deviceList.findById("device-a");
+
+    require(found.has_value(), "cached lookup should find device after refresh");
+    require(found->name == "Device A", "cached lookup should return cached device info");
+    require(enumerateCount == 1, "cached lookup after refresh should not enumerate again");
+}
+
 void juceMidiOutputPortRejectsUnknownDevice()
 {
     // 明确不存在的 id 应该打开失败，用它验证失败路径而不依赖真实硬件。
@@ -487,6 +553,8 @@ int main()
         juceMidiOutputFindsNoMissingDeviceId();
         juceMidiOutputDiffsDeviceListSnapshots();
         juceMidiOutputDiffKeepsPredictableOrder();
+        juceMidiOutputDeviceListRefreshesFromInjectedProvider();
+        juceMidiOutputDeviceListFindsCachedDevicesWithoutEnumerating();
         juceMidiOutputPortRejectsUnknownDevice();
         juceMidiOutputFactoryPreservesDeviceInfo();
         juceMidiOutputDeviceManagerConnectsDeviceToPlaybackSession();

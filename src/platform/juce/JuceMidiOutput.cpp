@@ -92,6 +92,41 @@ MidiOutputDeviceListDiff diffMidiOutputDeviceLists(
     return diff;
 }
 
+JuceMidiOutputDeviceList::JuceMidiOutputDeviceList(MidiOutputDeviceListProvider provider)
+    : provider_(std::move(provider))
+{
+}
+
+MidiOutputDeviceListDiff JuceMidiOutputDeviceList::refresh()
+{
+    auto latestDevices = provider_ ? provider_() : std::vector<MidiOutputDeviceInfo> {};
+    auto diff = diffMidiOutputDeviceLists(devices_, latestDevices);
+
+    // 刷新后缓存必须代表最新可见设备，后续 UI 查找不能再读旧快照。
+    devices_ = std::move(latestDevices);
+    return diff;
+}
+
+const std::vector<MidiOutputDeviceInfo>& JuceMidiOutputDeviceList::devices() const
+{
+    return devices_;
+}
+
+std::optional<MidiOutputDeviceInfo> JuceMidiOutputDeviceList::findById(const std::string& deviceId) const
+{
+    if (deviceId.empty()) {
+        return std::nullopt;
+    }
+
+    for (const auto& device : devices_) {
+        if (device.id == deviceId) {
+            return device;
+        }
+    }
+
+    return std::nullopt;
+}
+
 JuceMidiOutputPort::JuceMidiOutputPort(MidiOutputDeviceInfo info)
     : info_(std::move(info))
 {
