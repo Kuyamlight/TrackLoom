@@ -68,6 +68,23 @@ MidiOutputDeviceManagerFailureReason failureReasonFromSessionRebuild(
     return MidiOutputDeviceManagerFailureReason::OutputBindingRejected;
 }
 
+bool openDeviceRoutesMatchBindings(
+    const std::vector<MidiOutputDeviceInfo>& openDevices,
+    const std::vector<MidiOutputDeviceTrackBinding>& bindings)
+{
+    if (openDevices.size() != bindings.size()) {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < bindings.size(); ++index) {
+        if (openDevices[index].id != bindings[index].device.id) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 }
 
 MidiOutputDeviceBindingRefreshPlan planMidiOutputDeviceBindingRefresh(
@@ -336,12 +353,30 @@ JuceMidiOutputRoutingController::refreshDevicesAndRebuildSelectedProjectMidiOutp
 {
     MidiOutputRoutingRefreshResult result;
     result.deviceDiff = refreshDevices();
-    result.outputRefresh = deviceManager_.refreshProjectMidiOutputForVisibleDevicesSafely(
+
+    result.outputRefresh.bindingPlan = planMidiOutputDeviceBindingRefresh(
+        selectedBindings_,
+        deviceList_.devices());
+    result.outputRefresh.openedDeviceCount = deviceManager_.openDeviceCount();
+
+    const auto routeAlreadyMatchesSelection = openDeviceRoutesMatchBindings(
+        deviceManager_.openDeviceInfos(),
+        result.outputRefresh.bindingPlan.availableBindings);
+    if (!result.outputRefresh.bindingPlan.requiresSafeRebuild && routeAlreadyMatchesSelection) {
+        // 设备仍可见且运行态路由已匹配时，刷新只更新选择信息，不打断当前输出。
+        result.outputRefresh.success = true;
+        return result;
+    }
+
+    result.outputRefresh.safeRebuildAttempted = true;
+    result.outputRefresh.rebuild = deviceManager_.rebuildProjectMidiOutputSafely(
         session,
         project,
-        selectedBindings_,
-        deviceList_.devices(),
+        result.outputRefresh.bindingPlan.availableBindings,
         releaseSampleOffset);
+    result.outputRefresh.success = result.outputRefresh.rebuild.success;
+    result.outputRefresh.failureReason = result.outputRefresh.rebuild.failureReason;
+    result.outputRefresh.openedDeviceCount = result.outputRefresh.rebuild.openedDeviceCount;
     return result;
 }
 
