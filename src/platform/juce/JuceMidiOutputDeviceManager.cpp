@@ -215,6 +215,21 @@ MidiOutputRoutingRefreshSummary summarizeMidiOutputRoutingRefreshResult(
     return summary;
 }
 
+MidiOutputRoutingApplySummary summarizeMidiOutputRoutingApplyResult(
+    const MidiOutputRoutingApplyResult& result)
+{
+    MidiOutputRoutingApplySummary summary;
+    summary.success = result.success;
+    summary.hasUnavailableSelections = !result.bindingPlan.unavailableBindings.empty();
+    summary.safeRebuildAttempted = result.safeRebuildAttempted;
+    summary.safeRebuildFailed = result.safeRebuildAttempted && !result.success;
+    summary.didApplyRuntimeChanges = result.safeRebuildAttempted && result.success;
+    summary.requiresUserAttention =
+        summary.hasUnavailableSelections ||
+        summary.safeRebuildFailed;
+    return summary;
+}
+
 JuceMidiOutputDeviceManager::JuceMidiOutputDeviceManager(MidiOutputDevicePortFactory portFactory)
     : portFactory_(std::move(portFactory))
 {

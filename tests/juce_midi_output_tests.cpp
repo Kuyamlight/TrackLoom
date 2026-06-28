@@ -564,6 +564,56 @@ void juceMidiOutputRoutingRefreshSummaryReportsUiAttention()
         "routing refresh summary should require attention for failed safe rebuild attempts");
 }
 
+void juceMidiOutputRoutingApplySummaryReportsOutcome()
+{
+    trackloom::MidiOutputRoutingApplyResult noOpApply;
+    noOpApply.success = true;
+    noOpApply.openedDeviceCount = 1;
+
+    const auto noOpSummary = trackloom::summarizeMidiOutputRoutingApplyResult(noOpApply);
+    require(noOpSummary.success,
+        "apply summary should preserve successful no-op apply results");
+    require(!noOpSummary.safeRebuildAttempted,
+        "apply summary should report no rebuild for no-op apply");
+    require(!noOpSummary.didApplyRuntimeChanges,
+        "apply summary should not report runtime changes for no-op apply");
+    require(!noOpSummary.requiresUserAttention,
+        "apply summary should not require attention for a successful no-op apply");
+
+    trackloom::MidiOutputRoutingApplyResult offlineApply;
+    offlineApply.success = true;
+    offlineApply.bindingPlan.unavailableBindings.push_back(
+        { "track-a", deviceInfo("device-a", "Device A") });
+
+    const auto offlineSummary = trackloom::summarizeMidiOutputRoutingApplyResult(offlineApply);
+    require(offlineSummary.hasUnavailableSelections,
+        "apply summary should report offline selected devices");
+    require(offlineSummary.requiresUserAttention,
+        "apply summary should require attention for offline selected devices");
+
+    trackloom::MidiOutputRoutingApplyResult changedApply;
+    changedApply.success = true;
+    changedApply.safeRebuildAttempted = true;
+    changedApply.openedDeviceCount = 1;
+
+    const auto changedSummary = trackloom::summarizeMidiOutputRoutingApplyResult(changedApply);
+    require(changedSummary.didApplyRuntimeChanges,
+        "apply summary should report runtime changes after successful safe rebuild");
+    require(!changedSummary.safeRebuildFailed,
+        "apply summary should not report failure for successful safe rebuild");
+
+    trackloom::MidiOutputRoutingApplyResult failedApply;
+    failedApply.success = false;
+    failedApply.safeRebuildAttempted = true;
+    failedApply.failureReason = trackloom::MidiOutputDeviceManagerFailureReason::MidiReleaseFailed;
+
+    const auto failedSummary = trackloom::summarizeMidiOutputRoutingApplyResult(failedApply);
+    require(failedSummary.safeRebuildFailed,
+        "apply summary should report failed safe rebuild attempts");
+    require(failedSummary.requiresUserAttention,
+        "apply summary should require attention for failed apply attempts");
+}
+
 void juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild()
 {
     trackloom::Project project("JUCE MIDI device manager refresh");
@@ -1480,6 +1530,7 @@ int main()
         juceMidiOutputRoutingStateReportsStaleAppliedRoutes();
         juceMidiOutputRoutingStateReportsWhetherApplyIsNeeded();
         juceMidiOutputRoutingRefreshSummaryReportsUiAttention();
+        juceMidiOutputRoutingApplySummaryReportsOutcome();
         juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild();
         juceMidiOutputDeviceManagerRefreshKeepsOldRouteWhenSafeRebuildFails();
         juceMidiOutputDeviceManagerRefreshSkipsRebuildWhenAllBindingsVisible();

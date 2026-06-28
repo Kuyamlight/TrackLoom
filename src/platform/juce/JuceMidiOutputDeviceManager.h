@@ -142,6 +142,20 @@ struct MidiOutputRoutingApplyResult {
     std::size_t openedDeviceCount = 0;
 };
 
+// MidiOutputRoutingApplySummary 是给 UI/诊断面板使用的“应用选择”摘要。
+// 它说明本次应用是否成功、是否真的触碰运行态路由，以及是否需要提示用户。
+struct MidiOutputRoutingApplySummary {
+    bool success = false;
+    bool hasUnavailableSelections = false;
+    bool safeRebuildAttempted = false;
+    bool safeRebuildFailed = false;
+    bool didApplyRuntimeChanges = false;
+    bool requiresUserAttention = false;
+};
+
+MidiOutputRoutingApplySummary summarizeMidiOutputRoutingApplyResult(
+    const MidiOutputRoutingApplyResult& result);
+
 // MidiOutputRoutingState 是控制层给 UI 或诊断工具读取的一次性状态快照。
 // 它只描述当前内存状态，不写工程文件，也不触发设备枚举、端口打开或路由重建。
 struct MidiOutputRoutingState {
