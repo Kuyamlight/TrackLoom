@@ -1,5 +1,6 @@
 add_library(trackloom_juce STATIC
     JuceMidiOutput.cpp
+    JuceMidiOutputDeviceManager.cpp
 )
 
 target_include_directories(trackloom_juce

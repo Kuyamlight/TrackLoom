@@ -1,11 +1,18 @@
 #include "JuceMidiOutput.h"
+#include "JuceMidiOutputDeviceManager.h"
 
+#include "ProjectPlaybackSession.h"
+
+#include <functional>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -14,6 +21,140 @@ void require(bool condition, const std::string& message)
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+class SilentAudioSource final : public trackloom::AudioSource {
+public:
+    bool render(trackloom::AudioBlock block, double sampleRate) override
+    {
+        if (!block.isValid() || sampleRate <= 0.0) {
+            return false;
+        }
+
+        block.clear();
+        return true;
+    }
+};
+
+struct FakeMidiOutputPortState {
+    trackloom::MidiOutputDeviceInfo info;
+    bool open = false;
+    bool openShouldSucceed = true;
+    bool sendShouldSucceed = true;
+    int openCallCount = 0;
+    int closeCallCount = 0;
+    std::vector<trackloom::MidiOutputMessage> sentMessages;
+};
+
+class FakeMidiOutputDevicePort final : public trackloom::MidiOutputDevicePort {
+public:
+    explicit FakeMidiOutputDevicePort(std::shared_ptr<FakeMidiOutputPortState> state)
+        : state_(std::move(state))
+    {
+    }
+
+    const trackloom::MidiOutputDeviceInfo& info() const override
+    {
+        return state_->info;
+    }
+
+    bool open() override
+    {
+        ++state_->openCallCount;
+        state_->open = state_->openShouldSucceed;
+        return state_->open;
+    }
+
+    void close() override
+    {
+        ++state_->closeCallCount;
+        state_->open = false;
+    }
+
+    bool isOpen() const override
+    {
+        return state_->open;
+    }
+
+    bool sendMidiMessage(const trackloom::MidiOutputMessage& message) override
+    {
+        if (!state_->open || !state_->sendShouldSucceed) {
+            return false;
+        }
+
+        state_->sentMessages.push_back(message);
+        return true;
+    }
+
+private:
+    std::shared_ptr<FakeMidiOutputPortState> state_;
+};
+
+class FakeMidiOutputPortFactory {
+public:
+    void rejectOpenForDevice(std::string deviceId)
+    {
+        openResults_[std::move(deviceId)] = false;
+    }
+
+    std::unique_ptr<trackloom::MidiOutputDevicePort> create(trackloom::MidiOutputDeviceInfo info)
+    {
+        auto state = std::make_shared<FakeMidiOutputPortState>();
+        state->info = std::move(info);
+
+        const auto openResult = openResults_.find(state->info.id);
+        if (openResult != openResults_.end()) {
+            state->openShouldSucceed = openResult->second;
+        }
+
+        states_.push_back(state);
+        return std::make_unique<FakeMidiOutputDevicePort>(state);
+    }
+
+    std::shared_ptr<FakeMidiOutputPortState> stateForDevice(const std::string& deviceId) const
+    {
+        for (const auto& state : states_) {
+            if (state->info.id == deviceId) {
+                return state;
+            }
+        }
+
+        return nullptr;
+    }
+
+    std::size_t createdPortCount() const
+    {
+        return states_.size();
+    }
+
+private:
+    std::map<std::string, bool> openResults_;
+    std::vector<std::shared_ptr<FakeMidiOutputPortState>> states_;
+};
+
+trackloom::MidiOutputDeviceInfo deviceInfo(std::string id, std::string name)
+{
+    return { std::move(id), std::move(name) };
+}
+
+void addLongMidiNote(trackloom::Project& project, const trackloom::Track& track)
+{
+    const auto clip = project.createClip(track.id, "Lead Clip", trackloom::ClipType::Midi, 0, 3840);
+    require(clip.has_value(), "test project should create midi clip");
+
+    const auto note = project.createMidiNote(clip->id, 0, 3840, 60, 100, 1);
+    require(note.has_value(), "test project should create midi note");
+}
+
+trackloom::ProjectPlaybackBlockResult renderPlaybackBlock(
+    trackloom::ProjectPlaybackSession& session,
+    trackloom::Transport& transport,
+    const trackloom::Project& project)
+{
+    std::vector<float> samples(2 * 480, 0.0f);
+    trackloom::AudioBlock block(samples.data(), 2, 480);
+
+    return session.renderNextBlock(transport, block, project);
 }
 
 void juceMidiOutputMapsDeviceInfo()
@@ -91,6 +232,190 @@ void juceMidiOutputFactoryPreservesDeviceInfo()
     require(!port->isOpen(), "factory-created juce midi output port should start closed");
 }
 
+void juceMidiOutputDeviceManagerConnectsDeviceToPlaybackSession()
+{
+    trackloom::Project project("JUCE MIDI device manager");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    addLongMidiNote(project, track);
+
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    SilentAudioSource source;
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputDeviceManager manager(
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+
+    require(session.prepare(1920.0, 2, 480), "device manager test session should prepare");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "device manager test should rebuild audio graph");
+
+    const auto rebuild = manager.rebuildProjectMidiOutputSafely(
+        session,
+        project,
+        { { track.id, deviceInfo("device-a", "Device A") } },
+        0);
+
+    require(rebuild.success, "device manager should rebuild playback midi output");
+    require(rebuild.failureReason == trackloom::MidiOutputDeviceManagerFailureReason::None,
+        "successful device manager rebuild should expose no failure reason");
+    require(session.midiReceiverCount() == 1, "device manager should bind one midi receiver to the session");
+    require(manager.openDeviceCount() == 1, "device manager should retain one open device");
+
+    transport.play();
+    const auto blockResult = renderPlaybackBlock(session, transport, project);
+    const auto deviceA = factory.stateForDevice("device-a");
+
+    require(blockResult.renderSucceeded, "device manager playback block should render");
+    require(blockResult.midiDispatch.success, "device manager playback block should dispatch midi");
+    require(deviceA != nullptr, "device manager test should record fake device A");
+    require(deviceA->sentMessages.size() == 1, "device manager should send note on to fake device");
+    require(deviceA->sentMessages[0].statusByte == 0x90, "device manager should send note on status byte");
+}
+
+void juceMidiOutputDeviceManagerKeepsOldDeviceWhenNewDeviceOpenFails()
+{
+    trackloom::Project project("JUCE MIDI device manager");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    trackloom::ProjectPlaybackSession session;
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputDeviceManager manager(
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+
+    require(session.prepare(1920.0, 2, 480), "open failure test session should prepare");
+    require(manager.rebuildProjectMidiOutputSafely(
+        session,
+        project,
+        { { track.id, deviceInfo("device-a", "Device A") } },
+        0).success,
+        "open failure test should establish initial device");
+
+    factory.rejectOpenForDevice("device-b");
+    const auto rebuild = manager.rebuildProjectMidiOutputSafely(
+        session,
+        project,
+        { { track.id, deviceInfo("device-b", "Device B") } },
+        0);
+    const auto deviceA = factory.stateForDevice("device-a");
+    const auto openDevices = manager.openDeviceInfos();
+
+    require(!rebuild.success, "device manager should reject a device that cannot open");
+    require(rebuild.failureReason == trackloom::MidiOutputDeviceManagerFailureReason::DeviceOpenRejected,
+        "device manager should expose device-open failure reason");
+    require(deviceA != nullptr && deviceA->open, "device manager should keep old device open after failed rebuild");
+    require(openDevices.size() == 1 && openDevices[0].id == "device-a",
+        "device manager should keep old open device identity after failed rebuild");
+    require(session.midiReceiverCount() == 1, "failed device rebuild should keep old session route");
+}
+
+void juceMidiOutputDeviceManagerReleasesOldDeviceBeforeSwitching()
+{
+    trackloom::Project project("JUCE MIDI device manager");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    addLongMidiNote(project, track);
+
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    SilentAudioSource source;
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputDeviceManager manager(
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+
+    require(session.prepare(1920.0, 2, 480), "safe switch test session should prepare");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "safe switch test should rebuild audio graph");
+    require(manager.rebuildProjectMidiOutputSafely(
+        session,
+        project,
+        { { track.id, deviceInfo("device-a", "Device A") } },
+        0).success,
+        "safe switch test should establish old device");
+
+    transport.play();
+    const auto blockResult = renderPlaybackBlock(session, transport, project);
+    require(blockResult.midiDispatch.success, "safe switch test should deliver initial note on");
+    require(session.activeMidiNoteCount() == 1, "safe switch test should have one active midi note");
+
+    const auto rebuild = manager.rebuildProjectMidiOutputSafely(
+        session,
+        project,
+        { { track.id, deviceInfo("device-b", "Device B") } },
+        32);
+    const auto deviceA = factory.stateForDevice("device-a");
+    const auto openDevices = manager.openDeviceInfos();
+
+    require(rebuild.success, "device manager should switch devices after releasing active notes");
+    require(rebuild.sessionRebuild.midiRelease.success, "device manager should expose successful midi release");
+    require(deviceA != nullptr, "safe switch test should record old fake device");
+    require(deviceA->sentMessages.size() == 2, "device manager should send note off before switching devices");
+    require(deviceA->sentMessages[1].statusByte == 0x80, "device manager should release old note with note off");
+    require(deviceA->sentMessages[1].sampleOffset == 32, "device manager should preserve release sample offset");
+    require(deviceA->closeCallCount == 1, "device manager should close old device after successful switch");
+    require(openDevices.size() == 1 && openDevices[0].id == "device-b",
+        "device manager should retain new device after successful switch");
+    require(session.activeMidiNoteCount() == 0, "device manager switch should clear released active notes");
+}
+
+void juceMidiOutputDeviceManagerClearsOutputsAndClosesDevices()
+{
+    trackloom::Project project("JUCE MIDI device manager");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    trackloom::ProjectPlaybackSession session;
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputDeviceManager manager(
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+
+    require(session.prepare(1920.0, 2, 480), "clear output test session should prepare");
+    require(manager.rebuildProjectMidiOutputSafely(
+        session,
+        project,
+        { { track.id, deviceInfo("device-a", "Device A") } },
+        0).success,
+        "clear output test should establish initial device");
+
+    const auto deviceA = factory.stateForDevice("device-a");
+    const auto clear = manager.rebuildProjectMidiOutputSafely(session, project, {}, 0);
+
+    require(clear.success, "device manager should clear midi output bindings");
+    require(manager.openDeviceCount() == 0, "device manager should retain no devices after clear");
+    require(session.midiReceiverCount() == 0, "clearing device manager should clear session midi routes");
+    require(deviceA != nullptr && deviceA->closeCallCount == 1, "clearing device manager should close old device");
+}
+
+void juceMidiOutputDeviceManagerRejectsInvalidTrackBeforeOpeningDevice()
+{
+    trackloom::Project project("JUCE MIDI device manager");
+    const auto audioTrack = project.createTrack("Audio", trackloom::TrackType::Audio);
+
+    trackloom::ProjectPlaybackSession session;
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputDeviceManager manager(
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+
+    require(session.prepare(1920.0, 2, 480), "invalid track test session should prepare");
+
+    const auto rebuild = manager.rebuildProjectMidiOutputSafely(
+        session,
+        project,
+        { { audioTrack.id, deviceInfo("device-a", "Device A") } },
+        0);
+
+    require(!rebuild.success, "device manager should reject non-instrument track binding");
+    require(rebuild.failureReason == trackloom::MidiOutputDeviceManagerFailureReason::InvalidBinding,
+        "device manager should expose invalid binding reason");
+    require(factory.createdPortCount() == 0, "device manager should not open devices for invalid bindings");
+    require(manager.openDeviceCount() == 0, "invalid binding should not change retained devices");
+}
+
 }
 
 int main()
@@ -101,6 +426,11 @@ int main()
         juceMidiOutputEnumeratesWithoutHardwareAssumptions();
         juceMidiOutputPortRejectsUnknownDevice();
         juceMidiOutputFactoryPreservesDeviceInfo();
+        juceMidiOutputDeviceManagerConnectsDeviceToPlaybackSession();
+        juceMidiOutputDeviceManagerKeepsOldDeviceWhenNewDeviceOpenFails();
+        juceMidiOutputDeviceManagerReleasesOldDeviceBeforeSwitching();
+        juceMidiOutputDeviceManagerClearsOutputsAndClosesDevices();
+        juceMidiOutputDeviceManagerRejectsInvalidTrackBeforeOpeningDevice();
     } catch (const std::exception& error) {
         std::cerr << "JUCE MIDI output test failed: " << error.what() << '\n';
         return 1;
