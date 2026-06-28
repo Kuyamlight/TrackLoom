@@ -433,6 +433,38 @@ void juceMidiOutputRoutingStateDescribesSelectedRouteStatuses()
         "routing state description should mark applied routes without open devices as inconsistent");
 }
 
+void juceMidiOutputRoutingStateReportsStaleAppliedRoutes()
+{
+    const trackloom::MidiOutputRoutingState state {
+        {
+            { "track-current", deviceInfo("device-b", "Device B") }
+        },
+        {
+            deviceInfo("device-a", "Device A"),
+            deviceInfo("device-b", "Device B")
+        },
+        {
+            { "track-old", deviceInfo("device-a", "Device A") }
+        },
+        {
+            deviceInfo("device-a", "Device A")
+        }
+    };
+
+    const auto statuses = trackloom::describeMidiOutputRoutingState(state);
+
+    require(statuses.size() == 2,
+        "routing state description should include selected routes and stale applied routes");
+    require(statuses[0].selectedBinding.trackId == "track-current",
+        "routing state description should keep selected routes before stale applied routes");
+    require(statuses[0].status == trackloom::MidiOutputRouteStatus::PendingApply,
+        "routing state description should mark newly selected route as pending");
+    require(statuses[1].selectedBinding.trackId == "track-old",
+        "routing state description should report old applied route after selected routes");
+    require(statuses[1].status == trackloom::MidiOutputRouteStatus::StaleAppliedRoute,
+        "routing state description should mark unselected applied route as stale");
+}
+
 void juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild()
 {
     trackloom::Project project("JUCE MIDI device manager refresh");
@@ -1217,6 +1249,7 @@ int main()
         juceMidiOutputBindingRefreshPlansUnavailableDeviceRemoval();
         juceMidiOutputBindingRefreshKeepsAllVisibleBindingsWithoutRebuild();
         juceMidiOutputRoutingStateDescribesSelectedRouteStatuses();
+        juceMidiOutputRoutingStateReportsStaleAppliedRoutes();
         juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild();
         juceMidiOutputDeviceManagerRefreshKeepsOldRouteWhenSafeRebuildFails();
         juceMidiOutputDeviceManagerRefreshSkipsRebuildWhenAllBindingsVisible();

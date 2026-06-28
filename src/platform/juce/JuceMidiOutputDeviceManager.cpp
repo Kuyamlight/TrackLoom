@@ -143,7 +143,7 @@ std::vector<MidiOutputRouteStatusDescription> describeMidiOutputRoutingState(
     const MidiOutputRoutingState& state)
 {
     std::vector<MidiOutputRouteStatusDescription> descriptions;
-    descriptions.reserve(state.selectedBindings.size());
+    descriptions.reserve(state.selectedBindings.size() + state.appliedBindings.size());
 
     for (const auto& selectedBinding : state.selectedBindings) {
         MidiOutputRouteStatus status = MidiOutputRouteStatus::PendingApply;
@@ -159,6 +159,13 @@ std::vector<MidiOutputRouteStatusDescription> describeMidiOutputRoutingState(
         }
 
         descriptions.push_back({ selectedBinding, status });
+    }
+
+    for (const auto& appliedBinding : state.appliedBindings) {
+        if (!hasTrackDeviceBinding(state.selectedBindings, appliedBinding)) {
+            // 用户已经清除或改选，但运行态路由还没安全重建完成；UI 应提示这条旧路由待移除。
+            descriptions.push_back({ appliedBinding, MidiOutputRouteStatus::StaleAppliedRoute });
+        }
     }
 
     return descriptions;

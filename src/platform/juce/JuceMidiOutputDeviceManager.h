@@ -133,7 +133,8 @@ enum class MidiOutputRouteStatus {
     Applied,
     PendingApply,
     DeviceUnavailable,
-    OpenDeviceMissing
+    OpenDeviceMissing,
+    StaleAppliedRoute
 };
 
 struct MidiOutputRouteStatusDescription {
