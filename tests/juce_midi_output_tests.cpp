@@ -1032,6 +1032,52 @@ void juceMidiOutputRoutingControllerRefreshUpdatesSelectionWithoutRouteChurn()
         "routing controller should keep existing runtime route when no rebuild is needed");
 }
 
+void juceMidiOutputRoutingControllerRefreshSkipsRebuildForUnappliedOfflineSelection()
+{
+    trackloom::Project project("JUCE MIDI routing controller");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    std::size_t nextSnapshot = 0;
+    const std::vector<std::vector<trackloom::MidiOutputDeviceInfo>> snapshots {
+        { deviceInfo("device-a", "Device A") },
+        {}
+    };
+
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputRoutingController controller(
+        [&]() {
+            require(nextSnapshot < snapshots.size(),
+                "routing controller unapplied offline test should not over-enumerate");
+            return snapshots[nextSnapshot++];
+        },
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+
+    controller.refreshDevices();
+    require(controller.setTrackOutputDeviceById(track.id, "device-a"),
+        "routing controller unapplied offline test should select cached device");
+
+    trackloom::ProjectPlaybackSession unpreparedSession;
+    const auto refresh = controller.refreshDevicesAndRebuildSelectedProjectMidiOutputSafely(
+        unpreparedSession,
+        project,
+        0);
+
+    require(refresh.outputRefresh.success,
+        "routing controller should refresh an unapplied offline selection without requiring a prepared session");
+    require(!refresh.outputRefresh.safeRebuildAttempted,
+        "routing controller should skip safe rebuild when no runtime route has been applied yet");
+    require(refresh.outputRefresh.bindingPlan.unavailableBindings.size() == 1,
+        "routing controller should still expose the offline selection for UI and reconnect");
+    require(controller.selectedBindings().size() == 1,
+        "routing controller should preserve the user's offline selection");
+    require(controller.routingState().appliedBindings.empty(),
+        "routing controller should keep unapplied offline selection out of applied routes");
+    require(factory.createdPortCount() == 0,
+        "routing controller should not open ports while only refreshing an unapplied offline selection");
+}
+
 void juceMidiOutputRoutingControllerClearsSelectionAndRoute()
 {
     trackloom::Project project("JUCE MIDI routing controller");
@@ -1399,6 +1445,7 @@ int main()
         juceMidiOutputRoutingControllerRejectsMissingDeviceIdWithoutChangingSelection();
         juceMidiOutputRoutingControllerReportsRoutingStateSnapshot();
         juceMidiOutputRoutingControllerRefreshUpdatesSelectionWithoutRouteChurn();
+        juceMidiOutputRoutingControllerRefreshSkipsRebuildForUnappliedOfflineSelection();
         juceMidiOutputRoutingControllerClearsSelectionAndRoute();
         juceMidiOutputRoutingControllerApplySkipsAlreadyAppliedRoutes();
         juceMidiOutputRoutingControllerApplyClearsStaleRoutes();

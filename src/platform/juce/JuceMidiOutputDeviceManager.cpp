@@ -516,8 +516,9 @@ JuceMidiOutputRoutingController::refreshDevicesAndRebuildSelectedProjectMidiOutp
     const auto routeAlreadyMatchesSelection = appliedBindingsMatchAvailableBindings(
         appliedBindings_,
         result.outputRefresh.bindingPlan.availableBindings);
-    if (!result.outputRefresh.bindingPlan.requiresSafeRebuild && routeAlreadyMatchesSelection) {
-        // 设备仍可见且运行态路由已匹配时，刷新只更新选择信息，不打断当前输出。
+    if (routeAlreadyMatchesSelection) {
+        // 当前可路由选择已经和运行态一致时，刷新只更新选择信息，不打断当前输出。
+        // 离线但尚未应用的选择也会走这里：UI 需要提示离线，但没有旧运行态路由需要释放。
         result.outputRefresh.success = true;
         return result;
     }
