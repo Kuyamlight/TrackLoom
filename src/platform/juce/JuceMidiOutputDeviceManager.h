@@ -127,6 +127,23 @@ struct MidiOutputRoutingState {
     std::vector<MidiOutputDeviceInfo> openDevices;
 };
 
+// 单条用户选择在当前路由快照中的可展示状态。
+// UI 应根据这个枚举显示提示，而不是自己比较多个底层列表。
+enum class MidiOutputRouteStatus {
+    Applied,
+    PendingApply,
+    DeviceUnavailable,
+    OpenDeviceMissing
+};
+
+struct MidiOutputRouteStatusDescription {
+    MidiOutputDeviceTrackBinding selectedBinding;
+    MidiOutputRouteStatus status = MidiOutputRouteStatus::PendingApply;
+};
+
+std::vector<MidiOutputRouteStatusDescription> describeMidiOutputRoutingState(
+    const MidiOutputRoutingState& state);
+
 // JuceMidiOutputRoutingController 保存用户当前选择，并把设备刷新应用到安全路由重建。
 // 它不写工程文件、不启动后台轮询，也不直接处理 UI；后续界面和 AI 工具可复用这个边界。
 class JuceMidiOutputRoutingController final {

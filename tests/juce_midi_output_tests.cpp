@@ -394,6 +394,45 @@ void juceMidiOutputBindingRefreshKeepsAllVisibleBindingsWithoutRebuild()
         "binding refresh should not request safe rebuild when all selected devices remain visible");
 }
 
+void juceMidiOutputRoutingStateDescribesSelectedRouteStatuses()
+{
+    const trackloom::MidiOutputRoutingState state {
+        {
+            { "track-applied", deviceInfo("device-a", "Device A") },
+            { "track-pending", deviceInfo("device-b", "Device B") },
+            { "track-offline", deviceInfo("device-c", "Device C") },
+            { "track-open-missing", deviceInfo("device-d", "Device D") }
+        },
+        {
+            deviceInfo("device-a", "Device A"),
+            deviceInfo("device-b", "Device B"),
+            deviceInfo("device-d", "Device D")
+        },
+        {
+            { "track-applied", deviceInfo("device-a", "Device A") },
+            { "track-open-missing", deviceInfo("device-d", "Device D") }
+        },
+        {
+            deviceInfo("device-a", "Device A")
+        }
+    };
+
+    const auto statuses = trackloom::describeMidiOutputRoutingState(state);
+
+    require(statuses.size() == 4,
+        "routing state description should report one status per selected route");
+    require(statuses[0].selectedBinding.trackId == "track-applied",
+        "routing state description should preserve selected binding order");
+    require(statuses[0].status == trackloom::MidiOutputRouteStatus::Applied,
+        "routing state description should mark visible, applied, open routes as applied");
+    require(statuses[1].status == trackloom::MidiOutputRouteStatus::PendingApply,
+        "routing state description should mark visible but unapplied routes as pending");
+    require(statuses[2].status == trackloom::MidiOutputRouteStatus::DeviceUnavailable,
+        "routing state description should mark invisible selected devices as unavailable");
+    require(statuses[3].status == trackloom::MidiOutputRouteStatus::OpenDeviceMissing,
+        "routing state description should mark applied routes without open devices as inconsistent");
+}
+
 void juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild()
 {
     trackloom::Project project("JUCE MIDI device manager refresh");
@@ -1177,6 +1216,7 @@ int main()
         juceMidiOutputDeviceListFindsCachedDevicesWithoutEnumerating();
         juceMidiOutputBindingRefreshPlansUnavailableDeviceRemoval();
         juceMidiOutputBindingRefreshKeepsAllVisibleBindingsWithoutRebuild();
+        juceMidiOutputRoutingStateDescribesSelectedRouteStatuses();
         juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild();
         juceMidiOutputDeviceManagerRefreshKeepsOldRouteWhenSafeRebuildFails();
         juceMidiOutputDeviceManagerRefreshSkipsRebuildWhenAllBindingsVisible();

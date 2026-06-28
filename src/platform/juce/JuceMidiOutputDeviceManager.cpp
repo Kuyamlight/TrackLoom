@@ -18,6 +18,32 @@ bool hasTrackBinding(
     return false;
 }
 
+bool hasDeviceId(
+    const std::vector<MidiOutputDeviceInfo>& devices,
+    const std::string& deviceId)
+{
+    for (const auto& device : devices) {
+        if (device.id == deviceId) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool hasTrackDeviceBinding(
+    const std::vector<MidiOutputDeviceTrackBinding>& bindings,
+    const MidiOutputDeviceTrackBinding& expected)
+{
+    for (const auto& binding : bindings) {
+        if (binding.trackId == expected.trackId && binding.device.id == expected.device.id) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 std::optional<MidiOutputDeviceInfo> findVisibleDeviceById(
     const std::vector<MidiOutputDeviceInfo>& devices,
     const std::string& deviceId)
@@ -111,6 +137,31 @@ MidiOutputDeviceBindingRefreshPlan planMidiOutputDeviceBindingRefresh(
 
     plan.requiresSafeRebuild = !plan.unavailableBindings.empty();
     return plan;
+}
+
+std::vector<MidiOutputRouteStatusDescription> describeMidiOutputRoutingState(
+    const MidiOutputRoutingState& state)
+{
+    std::vector<MidiOutputRouteStatusDescription> descriptions;
+    descriptions.reserve(state.selectedBindings.size());
+
+    for (const auto& selectedBinding : state.selectedBindings) {
+        MidiOutputRouteStatus status = MidiOutputRouteStatus::PendingApply;
+        if (!hasDeviceId(state.visibleDevices, selectedBinding.device.id)) {
+            status = MidiOutputRouteStatus::DeviceUnavailable;
+        } else if (!hasTrackDeviceBinding(state.appliedBindings, selectedBinding)) {
+            status = MidiOutputRouteStatus::PendingApply;
+        } else if (!hasDeviceId(state.openDevices, selectedBinding.device.id)) {
+            // 已应用绑定但设备不在打开列表中，表示控制层状态不一致，交给 UI 或诊断面板提示。
+            status = MidiOutputRouteStatus::OpenDeviceMissing;
+        } else {
+            status = MidiOutputRouteStatus::Applied;
+        }
+
+        descriptions.push_back({ selectedBinding, status });
+    }
+
+    return descriptions;
 }
 
 JuceMidiOutputDeviceManager::JuceMidiOutputDeviceManager(MidiOutputDevicePortFactory portFactory)
