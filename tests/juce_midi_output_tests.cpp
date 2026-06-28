@@ -734,6 +734,62 @@ void juceMidiOutputRoutingControllerRebuildsWhenSameDeviceMovesToAnotherTrack()
         "routing controller should send note on after reassigned device route");
 }
 
+void juceMidiOutputRoutingControllerSelectsVisibleDeviceByIdFromCache()
+{
+    std::size_t enumerateCount = 0;
+    trackloom::JuceMidiOutputRoutingController controller(
+        [&]() {
+            ++enumerateCount;
+            return std::vector<trackloom::MidiOutputDeviceInfo> {
+                deviceInfo("device-a", "Device A Current")
+            };
+        },
+        nullptr);
+
+    controller.refreshDevices();
+
+    require(controller.setTrackOutputDeviceById("track-a", "device-a"),
+        "routing controller should select a visible cached device by id");
+
+    const auto selected = controller.selectedBindings();
+    require(selected.size() == 1,
+        "routing controller should create one selected binding from cached device id");
+    require(selected[0].trackId == "track-a",
+        "routing controller should preserve track id when selecting by device id");
+    require(selected[0].device.id == "device-a" && selected[0].device.name == "Device A Current",
+        "routing controller should store current cached device info when selecting by id");
+    require(enumerateCount == 1,
+        "routing controller should not enumerate devices while selecting from cache");
+}
+
+void juceMidiOutputRoutingControllerRejectsMissingDeviceIdWithoutChangingSelection()
+{
+    std::size_t enumerateCount = 0;
+    trackloom::JuceMidiOutputRoutingController controller(
+        [&]() {
+            ++enumerateCount;
+            return std::vector<trackloom::MidiOutputDeviceInfo> {
+                deviceInfo("device-a", "Device A")
+            };
+        },
+        nullptr);
+
+    controller.refreshDevices();
+    require(controller.setTrackOutputDeviceById("track-a", "device-a"),
+        "routing controller missing-id test should establish initial cached selection");
+
+    require(!controller.setTrackOutputDeviceById("track-a", "missing-device"),
+        "routing controller should reject a device id that is not in the current cache");
+
+    const auto selected = controller.selectedBindings();
+    require(selected.size() == 1,
+        "routing controller should keep existing selection after missing device id rejection");
+    require(selected[0].device.id == "device-a",
+        "routing controller should not replace existing selection with missing device id");
+    require(enumerateCount == 1,
+        "routing controller should not enumerate devices while rejecting missing cached id");
+}
+
 void juceMidiOutputRoutingControllerRefreshUpdatesSelectionWithoutRouteChurn()
 {
     trackloom::Project project("JUCE MIDI routing controller");
@@ -1062,6 +1118,8 @@ int main()
         juceMidiOutputRoutingControllerRefreshKeepsSelectionWhenDeviceDisappears();
         juceMidiOutputRoutingControllerRestoresRouteWhenDeviceReappears();
         juceMidiOutputRoutingControllerRebuildsWhenSameDeviceMovesToAnotherTrack();
+        juceMidiOutputRoutingControllerSelectsVisibleDeviceByIdFromCache();
+        juceMidiOutputRoutingControllerRejectsMissingDeviceIdWithoutChangingSelection();
         juceMidiOutputRoutingControllerRefreshUpdatesSelectionWithoutRouteChurn();
         juceMidiOutputRoutingControllerClearsSelectionAndRoute();
         juceMidiOutputPortRejectsUnknownDevice();

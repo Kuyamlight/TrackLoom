@@ -301,6 +301,23 @@ bool JuceMidiOutputRoutingController::setTrackOutputDevice(
     return true;
 }
 
+bool JuceMidiOutputRoutingController::setTrackOutputDeviceById(
+    std::string trackId,
+    const std::string& deviceId)
+{
+    if (trackId.empty() || deviceId.empty()) {
+        return false;
+    }
+
+    // 设备选择只读取 refreshDevices() 建立的缓存；调用方决定何时刷新，避免选择时隐式访问系统设备。
+    const auto device = deviceList_.findById(deviceId);
+    if (!device.has_value()) {
+        return false;
+    }
+
+    return setTrackOutputDevice(std::move(trackId), *device);
+}
+
 bool JuceMidiOutputRoutingController::clearTrackOutputDevice(const std::string& trackId)
 {
     if (trackId.empty()) {

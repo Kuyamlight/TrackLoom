@@ -127,6 +127,10 @@ public:
         MidiOutputDevicePortFactory portFactory = createJuceMidiOutputPort);
 
     bool setTrackOutputDevice(std::string trackId, MidiOutputDeviceInfo device);
+
+    // 从当前设备缓存按 id 选择输出设备；不会隐式重新枚举系统设备，也不会直接打开端口。
+    bool setTrackOutputDeviceById(std::string trackId, const std::string& deviceId);
+
     bool clearTrackOutputDevice(const std::string& trackId);
 
     const std::vector<MidiOutputDeviceTrackBinding>& selectedBindings() const;
