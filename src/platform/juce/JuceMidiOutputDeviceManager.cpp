@@ -345,6 +345,16 @@ const std::vector<MidiOutputDeviceInfo>& JuceMidiOutputRoutingController::device
     return deviceList_.devices();
 }
 
+MidiOutputRoutingState JuceMidiOutputRoutingController::routingState() const
+{
+    return {
+        selectedBindings_,
+        deviceList_.devices(),
+        appliedBindings_,
+        deviceManager_.openDeviceInfos()
+    };
+}
+
 MidiOutputDeviceListDiff JuceMidiOutputRoutingController::refreshDevices()
 {
     auto diff = deviceList_.refresh();

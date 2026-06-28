@@ -118,6 +118,15 @@ struct MidiOutputRoutingRefreshResult {
     MidiOutputDeviceManagerRefreshResult outputRefresh;
 };
 
+// MidiOutputRoutingState 是控制层给 UI 或诊断工具读取的一次性状态快照。
+// 它只描述当前内存状态，不写工程文件，也不触发设备枚举、端口打开或路由重建。
+struct MidiOutputRoutingState {
+    std::vector<MidiOutputDeviceTrackBinding> selectedBindings;
+    std::vector<MidiOutputDeviceInfo> visibleDevices;
+    std::vector<MidiOutputDeviceTrackBinding> appliedBindings;
+    std::vector<MidiOutputDeviceInfo> openDevices;
+};
+
 // JuceMidiOutputRoutingController 保存用户当前选择，并把设备刷新应用到安全路由重建。
 // 它不写工程文件、不启动后台轮询，也不直接处理 UI；后续界面和 AI 工具可复用这个边界。
 class JuceMidiOutputRoutingController final {
@@ -135,6 +144,7 @@ public:
 
     const std::vector<MidiOutputDeviceTrackBinding>& selectedBindings() const;
     const std::vector<MidiOutputDeviceInfo>& devices() const;
+    MidiOutputRoutingState routingState() const;
 
     MidiOutputDeviceListDiff refreshDevices();
 

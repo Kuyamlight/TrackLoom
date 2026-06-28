@@ -790,6 +790,71 @@ void juceMidiOutputRoutingControllerRejectsMissingDeviceIdWithoutChangingSelecti
         "routing controller should not enumerate devices while rejecting missing cached id");
 }
 
+void juceMidiOutputRoutingControllerReportsRoutingStateSnapshot()
+{
+    trackloom::Project project("JUCE MIDI routing controller");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    std::vector<std::vector<trackloom::MidiOutputDeviceInfo>> snapshots {
+        {
+            deviceInfo("device-a", "Device A")
+        },
+        {}
+    };
+    std::size_t nextSnapshot = 0;
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputRoutingController controller(
+        [&]() {
+            require(nextSnapshot < snapshots.size(), "routing state snapshot test should not over-enumerate");
+            return snapshots[nextSnapshot++];
+        },
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+    trackloom::ProjectPlaybackSession session;
+
+    require(session.prepare(1920.0, 2, 480), "routing state snapshot test session should prepare");
+    controller.refreshDevices();
+    require(controller.setTrackOutputDeviceById(track.id, "device-a"),
+        "routing state snapshot test should select a cached visible device");
+
+    const auto selectedOnly = controller.routingState();
+    require(selectedOnly.selectedBindings.size() == 1,
+        "routing state should report selected binding before runtime rebuild");
+    require(selectedOnly.visibleDevices.size() == 1,
+        "routing state should report currently visible cached devices");
+    require(selectedOnly.appliedBindings.empty(),
+        "routing state should report no applied bindings before runtime rebuild");
+    require(selectedOnly.openDevices.empty(),
+        "routing state should report no open devices before runtime rebuild");
+
+    require(controller.rebuildSelectedProjectMidiOutputSafely(session, project, 0).success,
+        "routing state snapshot test should apply selected route");
+
+    const auto applied = controller.routingState();
+    require(applied.appliedBindings.size() == 1 && applied.appliedBindings[0].trackId == track.id,
+        "routing state should report the track binding applied to the playback session");
+    require(applied.openDevices.size() == 1 && applied.openDevices[0].id == "device-a",
+        "routing state should report the open runtime device after rebuild");
+
+    const auto refresh = controller.refreshDevicesAndRebuildSelectedProjectMidiOutputSafely(
+        session,
+        project,
+        12);
+    require(refresh.outputRefresh.success,
+        "routing state snapshot test should safely remove disappeared runtime route");
+
+    const auto removed = controller.routingState();
+    require(removed.selectedBindings.size() == 1 && removed.selectedBindings[0].device.id == "device-a",
+        "routing state should preserve user selection after selected device disappears");
+    require(removed.visibleDevices.empty(),
+        "routing state should report no visible devices after removal refresh");
+    require(removed.appliedBindings.empty(),
+        "routing state should report no applied routes after disappeared device is removed");
+    require(removed.openDevices.empty(),
+        "routing state should report no open devices after disappeared device is removed");
+}
+
 void juceMidiOutputRoutingControllerRefreshUpdatesSelectionWithoutRouteChurn()
 {
     trackloom::Project project("JUCE MIDI routing controller");
@@ -1120,6 +1185,7 @@ int main()
         juceMidiOutputRoutingControllerRebuildsWhenSameDeviceMovesToAnotherTrack();
         juceMidiOutputRoutingControllerSelectsVisibleDeviceByIdFromCache();
         juceMidiOutputRoutingControllerRejectsMissingDeviceIdWithoutChangingSelection();
+        juceMidiOutputRoutingControllerReportsRoutingStateSnapshot();
         juceMidiOutputRoutingControllerRefreshUpdatesSelectionWithoutRouteChurn();
         juceMidiOutputRoutingControllerClearsSelectionAndRoute();
         juceMidiOutputPortRejectsUnknownDevice();
