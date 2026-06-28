@@ -111,4 +111,48 @@ private:
     std::vector<ActiveDevice> activeDevices_;
 };
 
+// MidiOutputRoutingRefreshResult 是设备设置控制层的一次刷新结果。
+// deviceDiff 给 UI 提示设备变化；outputRefresh 给播放层提示路由应用结果。
+struct MidiOutputRoutingRefreshResult {
+    MidiOutputDeviceListDiff deviceDiff;
+    MidiOutputDeviceManagerRefreshResult outputRefresh;
+};
+
+// JuceMidiOutputRoutingController 保存用户当前选择，并把设备刷新应用到安全路由重建。
+// 它不写工程文件、不启动后台轮询，也不直接处理 UI；后续界面和 AI 工具可复用这个边界。
+class JuceMidiOutputRoutingController final {
+public:
+    explicit JuceMidiOutputRoutingController(
+        MidiOutputDeviceListProvider deviceListProvider = availableJuceMidiOutputDevices,
+        MidiOutputDevicePortFactory portFactory = createJuceMidiOutputPort);
+
+    bool setTrackOutputDevice(std::string trackId, MidiOutputDeviceInfo device);
+    bool clearTrackOutputDevice(const std::string& trackId);
+
+    const std::vector<MidiOutputDeviceTrackBinding>& selectedBindings() const;
+    const std::vector<MidiOutputDeviceInfo>& devices() const;
+
+    MidiOutputDeviceListDiff refreshDevices();
+
+    MidiOutputDeviceManagerRebuildResult rebuildSelectedProjectMidiOutputSafely(
+        ProjectPlaybackSession& session,
+        const Project& project,
+        int releaseSampleOffset);
+
+    MidiOutputRoutingRefreshResult refreshDevicesAndRebuildSelectedProjectMidiOutputSafely(
+        ProjectPlaybackSession& session,
+        const Project& project,
+        int releaseSampleOffset);
+
+    std::size_t openDeviceCount() const;
+    std::vector<MidiOutputDeviceInfo> openDeviceInfos() const;
+
+private:
+    void updateSelectedDeviceInfosFromVisibleDevices();
+
+    JuceMidiOutputDeviceList deviceList_;
+    JuceMidiOutputDeviceManager deviceManager_;
+    std::vector<MidiOutputDeviceTrackBinding> selectedBindings_;
+};
+
 }

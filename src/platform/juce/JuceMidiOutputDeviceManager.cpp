@@ -253,4 +253,117 @@ void JuceMidiOutputDeviceManager::closeDeviceSet(std::vector<ActiveDevice>& devi
     devices.clear();
 }
 
+JuceMidiOutputRoutingController::JuceMidiOutputRoutingController(
+    MidiOutputDeviceListProvider deviceListProvider,
+    MidiOutputDevicePortFactory portFactory)
+    : deviceList_(std::move(deviceListProvider))
+    , deviceManager_(std::move(portFactory))
+{
+}
+
+bool JuceMidiOutputRoutingController::setTrackOutputDevice(
+    std::string trackId,
+    MidiOutputDeviceInfo device)
+{
+    if (trackId.empty() || device.id.empty()) {
+        return false;
+    }
+
+    for (auto& binding : selectedBindings_) {
+        if (binding.trackId == trackId) {
+            // 同一轨道只能有一个当前选择；重新选择设备时保留原位置，避免 UI 顺序跳动。
+            binding.device = std::move(device);
+            return true;
+        }
+    }
+
+    selectedBindings_.push_back({ std::move(trackId), std::move(device) });
+    return true;
+}
+
+bool JuceMidiOutputRoutingController::clearTrackOutputDevice(const std::string& trackId)
+{
+    if (trackId.empty()) {
+        return false;
+    }
+
+    for (auto binding = selectedBindings_.begin(); binding != selectedBindings_.end(); ++binding) {
+        if (binding->trackId == trackId) {
+            selectedBindings_.erase(binding);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+const std::vector<MidiOutputDeviceTrackBinding>&
+JuceMidiOutputRoutingController::selectedBindings() const
+{
+    return selectedBindings_;
+}
+
+const std::vector<MidiOutputDeviceInfo>& JuceMidiOutputRoutingController::devices() const
+{
+    return deviceList_.devices();
+}
+
+MidiOutputDeviceListDiff JuceMidiOutputRoutingController::refreshDevices()
+{
+    auto diff = deviceList_.refresh();
+    updateSelectedDeviceInfosFromVisibleDevices();
+    return diff;
+}
+
+MidiOutputDeviceManagerRebuildResult
+JuceMidiOutputRoutingController::rebuildSelectedProjectMidiOutputSafely(
+    ProjectPlaybackSession& session,
+    const Project& project,
+    int releaseSampleOffset)
+{
+    return deviceManager_.rebuildProjectMidiOutputSafely(
+        session,
+        project,
+        selectedBindings_,
+        releaseSampleOffset);
+}
+
+MidiOutputRoutingRefreshResult
+JuceMidiOutputRoutingController::refreshDevicesAndRebuildSelectedProjectMidiOutputSafely(
+    ProjectPlaybackSession& session,
+    const Project& project,
+    int releaseSampleOffset)
+{
+    MidiOutputRoutingRefreshResult result;
+    result.deviceDiff = refreshDevices();
+    result.outputRefresh = deviceManager_.refreshProjectMidiOutputForVisibleDevicesSafely(
+        session,
+        project,
+        selectedBindings_,
+        deviceList_.devices(),
+        releaseSampleOffset);
+    return result;
+}
+
+std::size_t JuceMidiOutputRoutingController::openDeviceCount() const
+{
+    return deviceManager_.openDeviceCount();
+}
+
+std::vector<MidiOutputDeviceInfo> JuceMidiOutputRoutingController::openDeviceInfos() const
+{
+    return deviceManager_.openDeviceInfos();
+}
+
+void JuceMidiOutputRoutingController::updateSelectedDeviceInfosFromVisibleDevices()
+{
+    for (auto& binding : selectedBindings_) {
+        const auto visibleDevice = findVisibleDeviceById(deviceList_.devices(), binding.device.id);
+        if (visibleDevice.has_value()) {
+            // 用户选择的设备仍在线时，只刷新显示信息；设备消失时保留旧信息用于提示和重连。
+            binding.device = *visibleDevice;
+        }
+    }
+}
+
 }

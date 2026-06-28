@@ -534,6 +534,157 @@ void juceMidiOutputDeviceManagerRefreshSkipsRebuildWhenAllBindingsVisible()
         "device manager refresh should keep existing session route when rebuild is unnecessary");
 }
 
+void juceMidiOutputRoutingControllerRefreshKeepsSelectionWhenDeviceDisappears()
+{
+    trackloom::Project project("JUCE MIDI routing controller");
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto bassTrack = project.createTrack("Bass", trackloom::TrackType::Instrument);
+
+    std::vector<std::vector<trackloom::MidiOutputDeviceInfo>> snapshots {
+        {
+            deviceInfo("device-a", "Device A"),
+            deviceInfo("device-b", "Device B")
+        },
+        {
+            deviceInfo("device-a", "Device A Current")
+        }
+    };
+    std::size_t nextSnapshot = 0;
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputRoutingController controller(
+        [&]() {
+            require(nextSnapshot < snapshots.size(), "routing controller test should not over-enumerate");
+            return snapshots[nextSnapshot++];
+        },
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+    trackloom::ProjectPlaybackSession session;
+
+    require(session.prepare(1920.0, 2, 480), "routing controller removal test session should prepare");
+    controller.refreshDevices();
+    require(controller.setTrackOutputDevice(leadTrack.id, deviceInfo("device-a", "Device A")),
+        "routing controller should accept first selected device");
+    require(controller.setTrackOutputDevice(bassTrack.id, deviceInfo("device-b", "Device B")),
+        "routing controller should accept second selected device");
+    require(controller.rebuildSelectedProjectMidiOutputSafely(session, project, 0).success,
+        "routing controller should establish initial selected routes");
+
+    const auto deviceB = factory.stateForDevice("device-b");
+    const auto refresh = controller.refreshDevicesAndRebuildSelectedProjectMidiOutputSafely(
+        session,
+        project,
+        24);
+    const auto selected = controller.selectedBindings();
+    const auto openDevices = controller.openDeviceInfos();
+
+    require(refresh.outputRefresh.success,
+        "routing controller refresh should apply available bindings after a device disappears");
+    require(refresh.outputRefresh.safeRebuildAttempted,
+        "routing controller refresh should safely rebuild when selected device disappeared");
+    require(refresh.outputRefresh.bindingPlan.unavailableBindings.size() == 1,
+        "routing controller refresh should expose unavailable selected binding");
+    require(selected.size() == 2, "routing controller should keep user selections after device disappearance");
+    require(selected[0].trackId == leadTrack.id && selected[0].device.name == "Device A Current",
+        "routing controller should update still-visible selected device info");
+    require(selected[1].trackId == bassTrack.id && selected[1].device.name == "Device B",
+        "routing controller should preserve disappeared selected device info for reconnect");
+    require(openDevices.size() == 1 && openDevices[0].id == "device-a",
+        "routing controller should keep only visible device in runtime route");
+    require(deviceB != nullptr && deviceB->closeCallCount == 1,
+        "routing controller should close disappeared runtime device after safe rebuild");
+}
+
+void juceMidiOutputRoutingControllerRefreshUpdatesSelectionWithoutRouteChurn()
+{
+    trackloom::Project project("JUCE MIDI routing controller");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    std::vector<std::vector<trackloom::MidiOutputDeviceInfo>> snapshots {
+        {
+            deviceInfo("device-a", "Device A")
+        },
+        {
+            deviceInfo("device-a", "Device A Current")
+        }
+    };
+    std::size_t nextSnapshot = 0;
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputRoutingController controller(
+        [&]() {
+            require(nextSnapshot < snapshots.size(), "routing controller rename test should not over-enumerate");
+            return snapshots[nextSnapshot++];
+        },
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+    trackloom::ProjectPlaybackSession session;
+
+    require(session.prepare(1920.0, 2, 480), "routing controller rename test session should prepare");
+    controller.refreshDevices();
+    require(controller.setTrackOutputDevice(track.id, deviceInfo("device-a", "Device A")),
+        "routing controller should accept selected device");
+    require(controller.rebuildSelectedProjectMidiOutputSafely(session, project, 0).success,
+        "routing controller should establish initial route");
+
+    const auto refresh = controller.refreshDevicesAndRebuildSelectedProjectMidiOutputSafely(
+        session,
+        project,
+        16);
+    const auto selected = controller.selectedBindings();
+    const auto openDevices = controller.openDeviceInfos();
+
+    require(refresh.outputRefresh.success,
+        "routing controller refresh should succeed when selected device remains visible");
+    require(!refresh.outputRefresh.safeRebuildAttempted,
+        "routing controller refresh should not rebuild for a display-name-only change");
+    require(selected.size() == 1 && selected[0].device.name == "Device A Current",
+        "routing controller should update selected device display name from latest snapshot");
+    require(factory.createdPortCount() == 1,
+        "routing controller should not reopen ports for a display-name-only change");
+    require(openDevices.size() == 1 && openDevices[0].name == "Device A",
+        "routing controller should keep existing runtime route when no rebuild is needed");
+}
+
+void juceMidiOutputRoutingControllerClearsSelectionAndRoute()
+{
+    trackloom::Project project("JUCE MIDI routing controller");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputRoutingController controller(
+        []() {
+            return std::vector<trackloom::MidiOutputDeviceInfo> {
+                deviceInfo("device-a", "Device A")
+            };
+        },
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+    trackloom::ProjectPlaybackSession session;
+
+    require(session.prepare(1920.0, 2, 480), "routing controller clear test session should prepare");
+    require(controller.setTrackOutputDevice(track.id, deviceInfo("device-a", "Device A")),
+        "routing controller should accept selected device before clear");
+    require(controller.rebuildSelectedProjectMidiOutputSafely(session, project, 0).success,
+        "routing controller should establish route before clear");
+
+    const auto deviceA = factory.stateForDevice("device-a");
+    require(controller.clearTrackOutputDevice(track.id),
+        "routing controller should clear an existing track output selection");
+    const auto rebuild = controller.rebuildSelectedProjectMidiOutputSafely(session, project, 0);
+
+    require(rebuild.success, "routing controller should rebuild after clearing selected routes");
+    require(controller.selectedBindings().empty(),
+        "routing controller should remove cleared track from selected bindings");
+    require(controller.openDeviceCount() == 0,
+        "routing controller should keep no open devices after clearing selected route");
+    require(session.midiReceiverCount() == 0,
+        "routing controller should clear session midi route after selected route removal");
+    require(deviceA != nullptr && deviceA->closeCallCount == 1,
+        "routing controller should close old runtime device after selected route removal");
+}
+
 void juceMidiOutputPortRejectsUnknownDevice()
 {
     // 明确不存在的 id 应该打开失败，用它验证失败路径而不依赖真实硬件。
@@ -769,6 +920,9 @@ int main()
         juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild();
         juceMidiOutputDeviceManagerRefreshKeepsOldRouteWhenSafeRebuildFails();
         juceMidiOutputDeviceManagerRefreshSkipsRebuildWhenAllBindingsVisible();
+        juceMidiOutputRoutingControllerRefreshKeepsSelectionWhenDeviceDisappears();
+        juceMidiOutputRoutingControllerRefreshUpdatesSelectionWithoutRouteChurn();
+        juceMidiOutputRoutingControllerClearsSelectionAndRoute();
         juceMidiOutputPortRejectsUnknownDevice();
         juceMidiOutputFactoryPreservesDeviceInfo();
         juceMidiOutputDeviceManagerConnectsDeviceToPlaybackSession();
