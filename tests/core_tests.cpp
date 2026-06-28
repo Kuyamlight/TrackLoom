@@ -2688,6 +2688,159 @@ void projectPlaybackSessionRejectsInvalidSafeSeek()
     require(transport.currentSample() == 960, "negative safe seek should keep transport sample");
 }
 
+void projectPlaybackSessionSafelyRebuildsMidiOutputAfterRelease()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    RecordingMidiEventReceiver oldReceiver;
+    RecordingMidiEventReceiver newReceiver;
+    std::vector<float> firstSamples(2 * 480, 0.0f);
+    std::vector<float> secondSamples(2 * 480, 0.0f);
+    trackloom::AudioBlock firstBlock(firstSamples.data(), 2, 480);
+    trackloom::AudioBlock secondBlock(secondSamples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "safe midi rebuild clip should exist");
+    require(project.createMidiNote(clip->id, 0, 1920, 60, 100, 1).has_value(), "safe midi rebuild note should exist");
+    require(session.prepare(1920.0, 2, 480), "safe midi rebuild prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "safe midi rebuild should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &oldReceiver } }), "safe midi rebuild should bind old receiver");
+    require(transport.seekToSample(960), "safe midi rebuild transport should seek");
+    transport.play();
+
+    const auto firstResult = session.renderNextBlock(transport, firstBlock, project);
+    require(firstResult.renderSucceeded, "safe midi rebuild first render should succeed");
+    require(session.activeMidiNoteCount() == 1, "safe midi rebuild should start with active note");
+
+    const auto rebuildResult = session.rebuildMidiOutputSafely(project, { { track.id, &newReceiver } }, 40);
+
+    require(rebuildResult.success, "safe midi rebuild should succeed after releasing old output");
+    require(rebuildResult.midiOutputChanged, "safe midi rebuild should report output changed");
+    require(rebuildResult.midiRelease.success, "safe midi rebuild should report release success");
+    require(rebuildResult.midiRelease.deliveredEventCount == 1, "safe midi rebuild should release one active note");
+    require(session.activeMidiNoteCount() == 0, "safe midi rebuild should clear old active note before switching");
+    require(oldReceiver.events().size() == 2, "safe midi rebuild old receiver should get note on and release");
+    require(oldReceiver.events()[1].event.type == trackloom::MidiPlaybackEventType::NoteOff, "safe midi rebuild should release through old receiver");
+    require(oldReceiver.events()[1].sampleOffset == 40, "safe midi rebuild release should keep requested sample offset");
+    require(newReceiver.events().empty(), "safe midi rebuild new receiver should not receive old release");
+
+    const auto secondResult = session.renderNextBlock(transport, secondBlock, project);
+
+    require(secondResult.renderSucceeded, "safe midi rebuild chased render should succeed");
+    require(newReceiver.events().size() == 1, "safe midi rebuild new receiver should receive chased note");
+    require(newReceiver.events()[0].event.type == trackloom::MidiPlaybackEventType::NoteOn, "safe midi rebuild chased event should be note on");
+    require(newReceiver.events()[0].event.absoluteTick == 1440, "safe midi rebuild chased event should use current transport tick");
+    require(session.activeMidiNoteCount() == 1, "safe midi rebuild chased note should become active on new route");
+}
+
+void projectPlaybackSessionKeepsMidiOutputWhenSafeRebuildReleaseFails()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    FailingMidiEventReceiver oldReceiver(2);
+    RecordingMidiEventReceiver newReceiver;
+    std::vector<float> firstSamples(2 * 480, 0.0f);
+    std::vector<float> secondSamples(2 * 480, 0.0f);
+    trackloom::AudioBlock firstBlock(firstSamples.data(), 2, 480);
+    trackloom::AudioBlock secondBlock(secondSamples.data(), 2, 480);
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 960);
+
+    require(clip.has_value(), "failed safe midi rebuild clip should exist");
+    require(project.createMidiNote(clip->id, 0, 480, 60, 100, 1).has_value(), "failed safe midi rebuild note should exist");
+    require(session.prepare(1920.0, 2, 480), "failed safe midi rebuild prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { track.id, &source } }), "failed safe midi rebuild should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { track.id, &oldReceiver } }), "failed safe midi rebuild should bind old receiver");
+    require(transport.seekToSample(960), "failed safe midi rebuild transport should seek");
+    transport.play();
+
+    const auto firstResult = session.renderNextBlock(transport, firstBlock, project);
+    require(firstResult.renderSucceeded, "failed safe midi rebuild first render should succeed");
+    require(firstResult.midiDispatch.success, "failed safe midi rebuild first note on should be delivered");
+    require(session.activeMidiNoteCount() == 1, "failed safe midi rebuild should have active note before rebuild");
+
+    const auto rebuildResult = session.rebuildMidiOutputSafely(project, { { track.id, &newReceiver } }, 16);
+
+    require(!rebuildResult.success, "safe midi rebuild should fail when release fails");
+    require(!rebuildResult.midiOutputChanged, "safe midi rebuild should not change output when release fails");
+    require(!rebuildResult.midiRelease.success, "safe midi rebuild should expose release failure");
+    require(session.activeMidiNoteCount() == 1, "safe midi rebuild should keep active note after release failure");
+    require(newReceiver.events().empty(), "safe midi rebuild should not send events to new receiver after release failure");
+
+    const auto secondResult = session.renderNextBlock(transport, secondBlock, project);
+
+    require(secondResult.renderSucceeded, "safe midi rebuild old-route render should still succeed");
+    require(oldReceiver.events().size() == 3, "safe midi rebuild old receiver should keep receiving after release failure");
+    require(oldReceiver.events()[2].event.type == trackloom::MidiPlaybackEventType::NoteOff, "safe midi rebuild old receiver should get real note off");
+    require(newReceiver.events().empty(), "safe midi rebuild should keep new receiver unused after release failure");
+    require(session.activeMidiNoteCount() == 0, "safe midi rebuild should clear active note after real note off");
+}
+
+void projectPlaybackSessionKeepsMidiOutputWhenSafeRebuildBindingFails()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    ConstantAudioSource source(0.0f);
+    RecordingMidiEventReceiver oldReceiver;
+    RecordingMidiEventReceiver invalidReceiver;
+    std::vector<float> firstSamples(2 * 480, 0.0f);
+    std::vector<float> secondSamples(2 * 480, 0.0f);
+    trackloom::AudioBlock firstBlock(firstSamples.data(), 2, 480);
+    trackloom::AudioBlock secondBlock(secondSamples.data(), 2, 480);
+    const auto instrumentTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audioTrack = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = project.createClip(instrumentTrack.id, "Lead Phrase", trackloom::ClipType::Midi, 960, 1920);
+
+    require(clip.has_value(), "invalid safe midi rebuild clip should exist");
+    require(project.createMidiNote(clip->id, 0, 1920, 60, 100, 1).has_value(), "invalid safe midi rebuild note should exist");
+    require(session.prepare(1920.0, 2, 480), "invalid safe midi rebuild prepare should succeed");
+    require(session.rebuildAudioGraph(project, { { instrumentTrack.id, &source } }), "invalid safe midi rebuild should rebuild audio graph");
+    require(session.rebuildMidiOutput(project, { { instrumentTrack.id, &oldReceiver } }), "invalid safe midi rebuild should bind old receiver");
+    require(transport.seekToSample(960), "invalid safe midi rebuild transport should seek");
+    transport.play();
+
+    const auto firstResult = session.renderNextBlock(transport, firstBlock, project);
+    require(firstResult.renderSucceeded, "invalid safe midi rebuild first render should succeed");
+    require(session.activeMidiNoteCount() == 1, "invalid safe midi rebuild should have active note before rebuild");
+
+    const auto rebuildResult = session.rebuildMidiOutputSafely(project, { { audioTrack.id, &invalidReceiver } }, 8);
+
+    require(!rebuildResult.success, "safe midi rebuild should fail for non-instrument binding");
+    require(!rebuildResult.midiOutputChanged, "safe midi rebuild should not report output changed for invalid binding");
+    require(rebuildResult.midiRelease.success, "safe midi rebuild should release before invalid binding is rejected");
+    require(session.activeMidiNoteCount() == 0, "safe midi rebuild should clear note before invalid binding result");
+    require(invalidReceiver.events().empty(), "invalid safe midi rebuild receiver should not receive events");
+
+    const auto secondResult = session.renderNextBlock(transport, secondBlock, project);
+
+    require(secondResult.renderSucceeded, "invalid safe midi rebuild old route render should succeed");
+    require(oldReceiver.events().size() == 3, "invalid safe midi rebuild should keep old output route");
+    require(oldReceiver.events()[2].event.type == trackloom::MidiPlaybackEventType::NoteOn, "invalid safe midi rebuild should chase through old route");
+    require(invalidReceiver.events().empty(), "invalid safe midi rebuild should keep invalid receiver unused");
+    require(session.activeMidiNoteCount() == 1, "invalid safe midi rebuild chased note should be active on old route");
+}
+
+void projectPlaybackSessionRejectsSafeMidiOutputRebuildBeforePrepare()
+{
+    trackloom::Project project("Project Playback Session");
+    trackloom::ProjectPlaybackSession session;
+    RecordingMidiEventReceiver receiver;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto rebuildResult = session.rebuildMidiOutputSafely(project, { { track.id, &receiver } }, 0);
+
+    require(!rebuildResult.success, "unprepared safe midi rebuild should fail");
+    require(!rebuildResult.midiOutputChanged, "unprepared safe midi rebuild should not change midi output");
+    require(session.midiReceiverCount() == 0, "unprepared safe midi rebuild should keep receiver count at zero");
+    require(receiver.events().empty(), "unprepared safe midi rebuild should not send midi events");
+}
+
 void projectPlaybackSessionRejectsPrepareWhileMidiNotesAreActive()
 {
     trackloom::Project project("Project Playback Session");
@@ -6332,6 +6485,10 @@ int main()
         projectPlaybackSessionDoesNotStopWhenMidiReleaseFails();
         projectPlaybackSessionSeeksAfterReleasingActiveMidiNotes();
         projectPlaybackSessionRejectsInvalidSafeSeek();
+        projectPlaybackSessionSafelyRebuildsMidiOutputAfterRelease();
+        projectPlaybackSessionKeepsMidiOutputWhenSafeRebuildReleaseFails();
+        projectPlaybackSessionKeepsMidiOutputWhenSafeRebuildBindingFails();
+        projectPlaybackSessionRejectsSafeMidiOutputRebuildBeforePrepare();
         projectPlaybackSessionRejectsPrepareWhileMidiNotesAreActive();
         projectPlaybackSessionRejectsUseBeforePrepare();
         renameClipCommandSupportsUndoAndRedo();

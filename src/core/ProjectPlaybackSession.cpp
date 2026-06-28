@@ -75,6 +75,26 @@ bool ProjectPlaybackSession::rebuildMidiOutput(
     return rebuilt;
 }
 
+ProjectPlaybackMidiOutputRebuildResult ProjectPlaybackSession::rebuildMidiOutputSafely(
+    const Project& project,
+    const std::vector<MidiTrackReceiverBinding>& bindings,
+    int releaseSampleOffset)
+{
+    ProjectPlaybackMidiOutputRebuildResult result;
+    if (!prepared_) {
+        return result;
+    }
+
+    result.midiRelease = releaseActiveMidiNotes(releaseSampleOffset);
+    if (!result.midiRelease.success) {
+        return result;
+    }
+
+    result.midiOutputChanged = rebuildMidiOutput(project, bindings);
+    result.success = result.midiOutputChanged;
+    return result;
+}
+
 std::size_t ProjectPlaybackSession::audioSourceCount() const
 {
     return audioGraph_.sourceCount();

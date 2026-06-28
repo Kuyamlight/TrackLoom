@@ -26,6 +26,14 @@ struct ProjectPlaybackControlResult {
     bool transportChanged = false;
 };
 
+// ProjectPlaybackMidiOutputRebuildResult 记录安全切换 MIDI 输出的结果。
+// midiRelease 表示旧输出释放是否成功；midiOutputChanged 表示新绑定是否真正生效。
+struct ProjectPlaybackMidiOutputRebuildResult {
+    bool success = false;
+    MidiDispatchResult midiRelease;
+    bool midiOutputChanged = false;
+};
+
 // ProjectPlaybackSession 是项目播放的核心协调层。
 // 它拥有音频引擎、项目音频图和 MIDI 输出会话，但仍不打开真实声卡、MIDI 端口或插件。
 class ProjectPlaybackSession final {
@@ -41,6 +49,13 @@ public:
     // 音频图和 MIDI 输出分开重建，因为二者属于不同失败域，不伪装成同一个事务。
     bool rebuildAudioGraph(const Project& project, const std::vector<TrackAudioSourceBinding>& bindings);
     bool rebuildMidiOutput(const Project& project, const std::vector<MidiTrackReceiverBinding>& bindings);
+
+    // rebuildMidiOutputSafely 先通过旧输出释放活动音符，再应用新的 MIDI 输出绑定。
+    // 释放失败时不会换路由；新绑定无效时继续保留旧路由。
+    ProjectPlaybackMidiOutputRebuildResult rebuildMidiOutputSafely(
+        const Project& project,
+        const std::vector<MidiTrackReceiverBinding>& bindings,
+        int releaseSampleOffset);
 
     std::size_t audioSourceCount() const;
     std::size_t midiReceiverCount() const;
