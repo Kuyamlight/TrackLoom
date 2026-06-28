@@ -153,6 +153,7 @@ private:
     JuceMidiOutputDeviceList deviceList_;
     JuceMidiOutputDeviceManager deviceManager_;
     std::vector<MidiOutputDeviceTrackBinding> selectedBindings_;
+    std::vector<MidiOutputDeviceTrackBinding> appliedBindings_;
 };
 
 }

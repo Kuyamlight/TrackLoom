@@ -68,16 +68,19 @@ MidiOutputDeviceManagerFailureReason failureReasonFromSessionRebuild(
     return MidiOutputDeviceManagerFailureReason::OutputBindingRejected;
 }
 
-bool openDeviceRoutesMatchBindings(
-    const std::vector<MidiOutputDeviceInfo>& openDevices,
+bool appliedBindingsMatchAvailableBindings(
+    const std::vector<MidiOutputDeviceTrackBinding>& appliedBindings,
     const std::vector<MidiOutputDeviceTrackBinding>& bindings)
 {
-    if (openDevices.size() != bindings.size()) {
+    if (appliedBindings.size() != bindings.size()) {
         return false;
     }
 
     for (std::size_t index = 0; index < bindings.size(); ++index) {
-        if (openDevices[index].id != bindings[index].device.id) {
+        if (appliedBindings[index].trackId != bindings[index].trackId) {
+            return false;
+        }
+        if (appliedBindings[index].device.id != bindings[index].device.id) {
             return false;
         }
     }
@@ -338,11 +341,16 @@ JuceMidiOutputRoutingController::rebuildSelectedProjectMidiOutputSafely(
     const Project& project,
     int releaseSampleOffset)
 {
-    return deviceManager_.rebuildProjectMidiOutputSafely(
+    auto result = deviceManager_.rebuildProjectMidiOutputSafely(
         session,
         project,
         selectedBindings_,
         releaseSampleOffset);
+    if (result.success) {
+        appliedBindings_ = selectedBindings_;
+    }
+
+    return result;
 }
 
 MidiOutputRoutingRefreshResult
@@ -359,8 +367,8 @@ JuceMidiOutputRoutingController::refreshDevicesAndRebuildSelectedProjectMidiOutp
         deviceList_.devices());
     result.outputRefresh.openedDeviceCount = deviceManager_.openDeviceCount();
 
-    const auto routeAlreadyMatchesSelection = openDeviceRoutesMatchBindings(
-        deviceManager_.openDeviceInfos(),
+    const auto routeAlreadyMatchesSelection = appliedBindingsMatchAvailableBindings(
+        appliedBindings_,
         result.outputRefresh.bindingPlan.availableBindings);
     if (!result.outputRefresh.bindingPlan.requiresSafeRebuild && routeAlreadyMatchesSelection) {
         // 设备仍可见且运行态路由已匹配时，刷新只更新选择信息，不打断当前输出。
@@ -377,6 +385,9 @@ JuceMidiOutputRoutingController::refreshDevicesAndRebuildSelectedProjectMidiOutp
     result.outputRefresh.success = result.outputRefresh.rebuild.success;
     result.outputRefresh.failureReason = result.outputRefresh.rebuild.failureReason;
     result.outputRefresh.openedDeviceCount = result.outputRefresh.rebuild.openedDeviceCount;
+    if (result.outputRefresh.success) {
+        appliedBindings_ = result.outputRefresh.bindingPlan.availableBindings;
+    }
     return result;
 }
 

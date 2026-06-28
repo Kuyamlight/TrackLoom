@@ -122,6 +122,17 @@ public:
         return nullptr;
     }
 
+    std::shared_ptr<FakeMidiOutputPortState> latestStateForDevice(const std::string& deviceId) const
+    {
+        for (auto state = states_.rbegin(); state != states_.rend(); ++state) {
+            if ((*state)->info.id == deviceId) {
+                return *state;
+            }
+        }
+
+        return nullptr;
+    }
+
     std::size_t createdPortCount() const
     {
         return states_.size();
@@ -665,6 +676,64 @@ void juceMidiOutputRoutingControllerRestoresRouteWhenDeviceReappears()
         "routing controller should restore both selected device routes after reconnect");
 }
 
+void juceMidiOutputRoutingControllerRebuildsWhenSameDeviceMovesToAnotherTrack()
+{
+    trackloom::Project project("JUCE MIDI routing controller");
+    const auto leadTrack = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto bassTrack = project.createTrack("Bass", trackloom::TrackType::Instrument);
+    addLongMidiNote(project, bassTrack);
+
+    FakeMidiOutputPortFactory factory;
+    trackloom::JuceMidiOutputRoutingController controller(
+        []() {
+            return std::vector<trackloom::MidiOutputDeviceInfo> {
+                deviceInfo("device-a", "Device A")
+            };
+        },
+        [&](trackloom::MidiOutputDeviceInfo info) {
+            return factory.create(std::move(info));
+        });
+    trackloom::ProjectPlaybackSession session;
+    trackloom::Transport transport;
+    SilentAudioSource source;
+
+    require(session.prepare(1920.0, 2, 480), "routing controller reassignment test session should prepare");
+    require(session.rebuildAudioGraph(project, { { bassTrack.id, &source } }),
+        "routing controller reassignment test should rebuild audio graph");
+    controller.refreshDevices();
+    require(controller.setTrackOutputDevice(leadTrack.id, deviceInfo("device-a", "Device A")),
+        "routing controller reassignment test should first select lead route");
+    require(controller.rebuildSelectedProjectMidiOutputSafely(session, project, 0).success,
+        "routing controller reassignment test should establish lead route");
+
+    require(controller.clearTrackOutputDevice(leadTrack.id),
+        "routing controller reassignment test should clear old lead route selection");
+    require(controller.setTrackOutputDevice(bassTrack.id, deviceInfo("device-a", "Device A")),
+        "routing controller reassignment test should select same device for bass route");
+    const auto refresh = controller.refreshDevicesAndRebuildSelectedProjectMidiOutputSafely(
+        session,
+        project,
+        12);
+
+    require(refresh.outputRefresh.success,
+        "routing controller should rebuild when same device is reassigned to another track");
+    require(refresh.outputRefresh.safeRebuildAttempted,
+        "routing controller should mark same-device track reassignment as a safe rebuild");
+
+    transport.play();
+    const auto blockResult = renderPlaybackBlock(session, transport, project);
+    const auto deviceA = factory.latestStateForDevice("device-a");
+
+    require(blockResult.renderSucceeded,
+        "routing controller reassignment test should render midi block");
+    require(blockResult.midiDispatch.success,
+        "routing controller should dispatch midi after same-device track reassignment");
+    require(deviceA != nullptr && deviceA->sentMessages.size() == 1,
+        "routing controller should send bass note through reassigned device route");
+    require(deviceA->sentMessages[0].statusByte == 0x90,
+        "routing controller should send note on after reassigned device route");
+}
+
 void juceMidiOutputRoutingControllerRefreshUpdatesSelectionWithoutRouteChurn()
 {
     trackloom::Project project("JUCE MIDI routing controller");
@@ -992,6 +1061,7 @@ int main()
         juceMidiOutputDeviceManagerRefreshSkipsRebuildWhenAllBindingsVisible();
         juceMidiOutputRoutingControllerRefreshKeepsSelectionWhenDeviceDisappears();
         juceMidiOutputRoutingControllerRestoresRouteWhenDeviceReappears();
+        juceMidiOutputRoutingControllerRebuildsWhenSameDeviceMovesToAnotherTrack();
         juceMidiOutputRoutingControllerRefreshUpdatesSelectionWithoutRouteChurn();
         juceMidiOutputRoutingControllerClearsSelectionAndRoute();
         juceMidiOutputPortRejectsUnknownDevice();
