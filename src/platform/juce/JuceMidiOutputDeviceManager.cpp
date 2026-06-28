@@ -171,6 +171,32 @@ std::vector<MidiOutputRouteStatusDescription> describeMidiOutputRoutingState(
     return descriptions;
 }
 
+bool midiOutputRouteStatusRequiresApply(MidiOutputRouteStatus status)
+{
+    switch (status) {
+    case MidiOutputRouteStatus::Applied:
+    case MidiOutputRouteStatus::DeviceUnavailable:
+        return false;
+    case MidiOutputRouteStatus::PendingApply:
+    case MidiOutputRouteStatus::OpenDeviceMissing:
+    case MidiOutputRouteStatus::StaleAppliedRoute:
+        return true;
+    }
+
+    return true;
+}
+
+bool midiOutputRoutingStateRequiresApply(const MidiOutputRoutingState& state)
+{
+    for (const auto& description : describeMidiOutputRoutingState(state)) {
+        if (midiOutputRouteStatusRequiresApply(description.status)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 JuceMidiOutputDeviceManager::JuceMidiOutputDeviceManager(MidiOutputDevicePortFactory portFactory)
     : portFactory_(std::move(portFactory))
 {

@@ -145,6 +145,12 @@ struct MidiOutputRouteStatusDescription {
 std::vector<MidiOutputRouteStatusDescription> describeMidiOutputRoutingState(
     const MidiOutputRoutingState& state);
 
+// 将单条展示状态转换为“是否需要应用更改”，避免 UI 重复编写状态比较规则。
+bool midiOutputRouteStatusRequiresApply(MidiOutputRouteStatus status);
+
+// 检查整份路由快照是否还有未应用到运行态播放会话的差异。
+bool midiOutputRoutingStateRequiresApply(const MidiOutputRoutingState& state);
+
 // JuceMidiOutputRoutingController 保存用户当前选择，并把设备刷新应用到安全路由重建。
 // 它不写工程文件、不启动后台轮询，也不直接处理 UI；后续界面和 AI 工具可复用这个边界。
 class JuceMidiOutputRoutingController final {

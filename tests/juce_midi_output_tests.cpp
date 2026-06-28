@@ -465,6 +465,61 @@ void juceMidiOutputRoutingStateReportsStaleAppliedRoutes()
         "routing state description should mark unselected applied route as stale");
 }
 
+void juceMidiOutputRoutingStateReportsWhetherApplyIsNeeded()
+{
+    require(!trackloom::midiOutputRouteStatusRequiresApply(trackloom::MidiOutputRouteStatus::Applied),
+        "applied midi output route status should not require applying changes");
+    require(!trackloom::midiOutputRouteStatusRequiresApply(trackloom::MidiOutputRouteStatus::DeviceUnavailable),
+        "unavailable-only midi output route status should wait for reconnect instead of applying changes");
+    require(trackloom::midiOutputRouteStatusRequiresApply(trackloom::MidiOutputRouteStatus::PendingApply),
+        "pending midi output route status should require applying changes");
+    require(trackloom::midiOutputRouteStatusRequiresApply(trackloom::MidiOutputRouteStatus::OpenDeviceMissing),
+        "missing-open-device midi output route status should require applying changes");
+    require(trackloom::midiOutputRouteStatusRequiresApply(trackloom::MidiOutputRouteStatus::StaleAppliedRoute),
+        "stale applied midi output route status should require applying changes");
+
+    const trackloom::MidiOutputRoutingState appliedState {
+        {
+            { "track-a", deviceInfo("device-a", "Device A") }
+        },
+        {
+            deviceInfo("device-a", "Device A")
+        },
+        {
+            { "track-a", deviceInfo("device-a", "Device A") }
+        },
+        {
+            deviceInfo("device-a", "Device A")
+        }
+    };
+    require(!trackloom::midiOutputRoutingStateRequiresApply(appliedState),
+        "fully applied midi output routing state should not require applying changes");
+
+    const trackloom::MidiOutputRoutingState pendingState {
+        {
+            { "track-a", deviceInfo("device-a", "Device A") }
+        },
+        {
+            deviceInfo("device-a", "Device A")
+        },
+        {},
+        {}
+    };
+    require(trackloom::midiOutputRoutingStateRequiresApply(pendingState),
+        "pending midi output routing state should require applying changes");
+
+    const trackloom::MidiOutputRoutingState unavailableOnlyState {
+        {
+            { "track-a", deviceInfo("device-a", "Device A") }
+        },
+        {},
+        {},
+        {}
+    };
+    require(!trackloom::midiOutputRoutingStateRequiresApply(unavailableOnlyState),
+        "offline-only midi output routing state should not require applying changes until the device returns");
+}
+
 void juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild()
 {
     trackloom::Project project("JUCE MIDI device manager refresh");
@@ -1250,6 +1305,7 @@ int main()
         juceMidiOutputBindingRefreshKeepsAllVisibleBindingsWithoutRebuild();
         juceMidiOutputRoutingStateDescribesSelectedRouteStatuses();
         juceMidiOutputRoutingStateReportsStaleAppliedRoutes();
+        juceMidiOutputRoutingStateReportsWhetherApplyIsNeeded();
         juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild();
         juceMidiOutputDeviceManagerRefreshKeepsOldRouteWhenSafeRebuildFails();
         juceMidiOutputDeviceManagerRefreshSkipsRebuildWhenAllBindingsVisible();
