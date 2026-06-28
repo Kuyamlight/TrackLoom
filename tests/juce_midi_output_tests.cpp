@@ -208,6 +208,57 @@ void juceMidiOutputFindsNoMissingDeviceId()
     require(!missingDevice.has_value(), "juce midi output lookup should return empty for missing device id");
 }
 
+void juceMidiOutputDiffsDeviceListSnapshots()
+{
+    const std::vector<trackloom::MidiOutputDeviceInfo> previous {
+        deviceInfo("device-a", "Old Device A"),
+        deviceInfo("device-b", "Old Device B")
+    };
+    const std::vector<trackloom::MidiOutputDeviceInfo> current {
+        deviceInfo("device-b", "Renamed Device B"),
+        deviceInfo("device-c", "New Device C")
+    };
+
+    const auto diff = trackloom::diffMidiOutputDeviceLists(previous, current);
+
+    require(diff.retained.size() == 1, "midi output device diff should retain devices with matching ids");
+    require(diff.retained[0].id == "device-b", "midi output device diff should retain by stable id");
+    require(diff.retained[0].name == "Renamed Device B",
+        "midi output device diff should keep current display name for retained devices");
+    require(diff.added.size() == 1 && diff.added[0].id == "device-c",
+        "midi output device diff should report newly visible devices");
+    require(diff.removed.size() == 1 && diff.removed[0].id == "device-a",
+        "midi output device diff should report disappeared devices");
+}
+
+void juceMidiOutputDiffKeepsPredictableOrder()
+{
+    const std::vector<trackloom::MidiOutputDeviceInfo> previous {
+        deviceInfo("old-1", "Old 1"),
+        deviceInfo("kept-2", "Kept 2"),
+        deviceInfo("old-3", "Old 3"),
+        deviceInfo("kept-4", "Kept 4")
+    };
+    const std::vector<trackloom::MidiOutputDeviceInfo> current {
+        deviceInfo("new-5", "New 5"),
+        deviceInfo("kept-4", "Kept 4 Current"),
+        deviceInfo("new-6", "New 6"),
+        deviceInfo("kept-2", "Kept 2 Current")
+    };
+
+    const auto diff = trackloom::diffMidiOutputDeviceLists(previous, current);
+
+    require(diff.added.size() == 2, "midi output device diff should report two added devices");
+    require(diff.added[0].id == "new-5" && diff.added[1].id == "new-6",
+        "midi output device diff should keep added devices in current-list order");
+    require(diff.retained.size() == 2, "midi output device diff should report two retained devices");
+    require(diff.retained[0].id == "kept-4" && diff.retained[1].id == "kept-2",
+        "midi output device diff should keep retained devices in current-list order");
+    require(diff.removed.size() == 2, "midi output device diff should report two removed devices");
+    require(diff.removed[0].id == "old-1" && diff.removed[1].id == "old-3",
+        "midi output device diff should keep removed devices in previous-list order");
+}
+
 void juceMidiOutputPortRejectsUnknownDevice()
 {
     // 明确不存在的 id 应该打开失败，用它验证失败路径而不依赖真实硬件。
@@ -434,6 +485,8 @@ int main()
         juceMidiOutputConvertsCoreMessageBytes();
         juceMidiOutputEnumeratesWithoutHardwareAssumptions();
         juceMidiOutputFindsNoMissingDeviceId();
+        juceMidiOutputDiffsDeviceListSnapshots();
+        juceMidiOutputDiffKeepsPredictableOrder();
         juceMidiOutputPortRejectsUnknownDevice();
         juceMidiOutputFactoryPreservesDeviceInfo();
         juceMidiOutputDeviceManagerConnectsDeviceToPlaybackSession();

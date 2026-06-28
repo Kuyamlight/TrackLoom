@@ -8,6 +8,20 @@
 #include <vector>
 
 namespace trackloom {
+namespace {
+
+bool containsDeviceId(const std::vector<MidiOutputDeviceInfo>& devices, const std::string& deviceId)
+{
+    for (const auto& device : devices) {
+        if (device.id == deviceId) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+}
 
 MidiOutputDeviceInfo midiOutputDeviceInfoFromJuce(const juce::MidiDeviceInfo& info)
 {
@@ -52,6 +66,30 @@ std::optional<MidiOutputDeviceInfo> findJuceMidiOutputDeviceById(const std::stri
     }
 
     return std::nullopt;
+}
+
+MidiOutputDeviceListDiff diffMidiOutputDeviceLists(
+    const std::vector<MidiOutputDeviceInfo>& previous,
+    const std::vector<MidiOutputDeviceInfo>& current)
+{
+    MidiOutputDeviceListDiff diff;
+
+    for (const auto& device : current) {
+        if (containsDeviceId(previous, device.id)) {
+            // 保留设备使用当前快照，确保 UI 能显示更新后的设备名称。
+            diff.retained.push_back(device);
+        } else {
+            diff.added.push_back(device);
+        }
+    }
+
+    for (const auto& device : previous) {
+        if (!containsDeviceId(current, device.id)) {
+            diff.removed.push_back(device);
+        }
+    }
+
+    return diff;
 }
 
 JuceMidiOutputPort::JuceMidiOutputPort(MidiOutputDeviceInfo info)
