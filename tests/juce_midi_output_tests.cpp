@@ -520,6 +520,50 @@ void juceMidiOutputRoutingStateReportsWhetherApplyIsNeeded()
         "offline-only midi output routing state should not require applying changes until the device returns");
 }
 
+void juceMidiOutputRoutingRefreshSummaryReportsUiAttention()
+{
+    const auto quietSummary = trackloom::summarizeMidiOutputRoutingRefreshResult({});
+    require(!quietSummary.deviceListChanged,
+        "quiet routing refresh summary should not report device-list changes");
+    require(!quietSummary.hasUnavailableSelections,
+        "quiet routing refresh summary should not report unavailable selections");
+    require(!quietSummary.safeRebuildFailed,
+        "quiet routing refresh summary should not report safe rebuild failure");
+    require(!quietSummary.requiresUserAttention,
+        "quiet routing refresh summary should not require user attention");
+
+    trackloom::MidiOutputRoutingRefreshResult unavailableSelection;
+    unavailableSelection.deviceDiff.removed.push_back(deviceInfo("device-a", "Device A"));
+    unavailableSelection.outputRefresh.success = true;
+    unavailableSelection.outputRefresh.bindingPlan.unavailableBindings.push_back(
+        { "track-a", deviceInfo("device-a", "Device A") });
+
+    const auto unavailableSummary =
+        trackloom::summarizeMidiOutputRoutingRefreshResult(unavailableSelection);
+    require(unavailableSummary.deviceListChanged,
+        "routing refresh summary should report added or removed devices as a device-list change");
+    require(unavailableSummary.hasUnavailableSelections,
+        "routing refresh summary should report offline selected devices");
+    require(!unavailableSummary.safeRebuildFailed,
+        "routing refresh summary should not treat successful offline-selection reporting as a rebuild failure");
+    require(unavailableSummary.requiresUserAttention,
+        "routing refresh summary should require attention for offline selected devices");
+
+    trackloom::MidiOutputRoutingRefreshResult failedRebuild;
+    failedRebuild.outputRefresh.safeRebuildAttempted = true;
+    failedRebuild.outputRefresh.success = false;
+    failedRebuild.outputRefresh.failureReason =
+        trackloom::MidiOutputDeviceManagerFailureReason::MidiReleaseFailed;
+
+    const auto failedSummary = trackloom::summarizeMidiOutputRoutingRefreshResult(failedRebuild);
+    require(failedSummary.safeRebuildAttempted,
+        "routing refresh summary should preserve whether safe rebuild was attempted");
+    require(failedSummary.safeRebuildFailed,
+        "routing refresh summary should report failed safe rebuild attempts");
+    require(failedSummary.requiresUserAttention,
+        "routing refresh summary should require attention for failed safe rebuild attempts");
+}
+
 void juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild()
 {
     trackloom::Project project("JUCE MIDI device manager refresh");
@@ -1435,6 +1479,7 @@ int main()
         juceMidiOutputRoutingStateDescribesSelectedRouteStatuses();
         juceMidiOutputRoutingStateReportsStaleAppliedRoutes();
         juceMidiOutputRoutingStateReportsWhetherApplyIsNeeded();
+        juceMidiOutputRoutingRefreshSummaryReportsUiAttention();
         juceMidiOutputDeviceManagerRefreshRemovesMissingDeviceViaSafeRebuild();
         juceMidiOutputDeviceManagerRefreshKeepsOldRouteWhenSafeRebuildFails();
         juceMidiOutputDeviceManagerRefreshSkipsRebuildWhenAllBindingsVisible();

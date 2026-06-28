@@ -118,6 +118,19 @@ struct MidiOutputRoutingRefreshResult {
     MidiOutputDeviceManagerRefreshResult outputRefresh;
 };
 
+// MidiOutputRoutingRefreshSummary 是给 UI/诊断面板使用的刷新摘要。
+// 它把设备变化、离线选择和安全重建失败折叠成几个布尔值，避免界面层重复拆结果结构。
+struct MidiOutputRoutingRefreshSummary {
+    bool deviceListChanged = false;
+    bool hasUnavailableSelections = false;
+    bool safeRebuildAttempted = false;
+    bool safeRebuildFailed = false;
+    bool requiresUserAttention = false;
+};
+
+MidiOutputRoutingRefreshSummary summarizeMidiOutputRoutingRefreshResult(
+    const MidiOutputRoutingRefreshResult& result);
+
 // MidiOutputRoutingApplyResult 表示一次“应用当前选择”的结果。
 // safeRebuildAttempted 为 false 时表示当前选择已经生效，调用方不需要提示设备被重开。
 struct MidiOutputRoutingApplyResult {

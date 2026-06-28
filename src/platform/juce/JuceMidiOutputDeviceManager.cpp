@@ -197,6 +197,24 @@ bool midiOutputRoutingStateRequiresApply(const MidiOutputRoutingState& state)
     return false;
 }
 
+MidiOutputRoutingRefreshSummary summarizeMidiOutputRoutingRefreshResult(
+    const MidiOutputRoutingRefreshResult& result)
+{
+    MidiOutputRoutingRefreshSummary summary;
+    summary.deviceListChanged =
+        !result.deviceDiff.added.empty() || !result.deviceDiff.removed.empty();
+    summary.hasUnavailableSelections =
+        !result.outputRefresh.bindingPlan.unavailableBindings.empty();
+    summary.safeRebuildAttempted = result.outputRefresh.safeRebuildAttempted;
+    summary.safeRebuildFailed =
+        result.outputRefresh.safeRebuildAttempted && !result.outputRefresh.success;
+    summary.requiresUserAttention =
+        summary.deviceListChanged ||
+        summary.hasUnavailableSelections ||
+        summary.safeRebuildFailed;
+    return summary;
+}
+
 JuceMidiOutputDeviceManager::JuceMidiOutputDeviceManager(MidiOutputDevicePortFactory portFactory)
     : portFactory_(std::move(portFactory))
 {
