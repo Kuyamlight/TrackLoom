@@ -1,6 +1,7 @@
 #include "AppProjectFileActions.h"
 #include "AppProjectSession.h"
 #include "AppProjectStatus.h"
+#include "AppTrackListStatus.h"
 #include "TrackLoomAppInfo.h"
 
 #include <filesystem>
@@ -251,6 +252,86 @@ void projectFileActionFeedbackDescribesSuccessfulSaveAs()
         "save-as feedback should describe the completed save-as action");
 }
 
+void trackListStatusDescribesEmptyProject()
+{
+    const trackloom::Project project("Empty");
+
+    const auto status = trackloom::describeAppTrackList(project);
+
+    require(status.rows.empty(),
+        "empty track list status should not expose phantom rows");
+    require(status.emptyMessage.find("暂无轨道") != std::string::npos,
+        "empty track list status should guide the user to create a track");
+}
+
+void trackListStatusDescribesTrackRowsInProjectOrder()
+{
+    trackloom::Project project("Tracks");
+    const auto instrument = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audio = project.createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto folder = project.createTrack("Group", trackloom::TrackType::Folder);
+    const auto clip = project.createClip(
+        instrument.id,
+        "Lead clip",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::Project::ticksPerQuarterNote);
+
+    require(clip.has_value(), "track list test should create a MIDI clip on the instrument track");
+
+    const auto status = trackloom::describeAppTrackList(project);
+
+    require(status.rows.size() == 3,
+        "track list status should expose one row per project track");
+    require(status.rows[0].number == 1 && status.rows[0].trackId == instrument.id,
+        "track list status should keep project track order for the first row");
+    require(status.rows[0].name == "Lead",
+        "track list status should expose the track name");
+    require(status.rows[0].typeLabel == "乐器轨",
+        "track list status should label instrument tracks in user-facing Chinese");
+    require(status.rows[0].clipCount == 1,
+        "track list status should count clips that belong to a track");
+    require(status.rows[0].summary.find("1 个片段") != std::string::npos,
+        "track list row summary should include the clip count");
+    require(status.rows[1].trackId == audio.id && status.rows[1].typeLabel == "音频轨",
+        "track list status should label audio tracks");
+    require(status.rows[2].trackId == folder.id && status.rows[2].typeLabel == "文件夹",
+        "track list status should label folder tracks");
+}
+
+void trackListStatusDescribesTrackPlaybackAndViewFlags()
+{
+    trackloom::Project project("Track flags");
+    const auto track = project.createTrack("Muted Lead", trackloom::TrackType::Instrument);
+
+    trackloom::TrackPlaybackState playback;
+    playback.muted = true;
+    playback.soloed = true;
+    playback.disabled = true;
+    require(project.setTrackPlaybackState(track.id, playback),
+        "track list flag test should set playback state");
+
+    trackloom::TrackViewState view;
+    view.hidden = true;
+    require(project.setTrackViewState(track.id, view),
+        "track list flag test should set view state");
+
+    const auto status = trackloom::describeAppTrackList(project);
+
+    require(status.rows.size() == 1,
+        "track list flag status should expose the flagged track");
+    require(status.rows[0].stateLabels.size() == 4,
+        "track list status should expose muted, soloed, disabled and hidden labels");
+    require(status.rows[0].summary.find("静音") != std::string::npos,
+        "track list summary should include muted state");
+    require(status.rows[0].summary.find("独奏") != std::string::npos,
+        "track list summary should include solo state");
+    require(status.rows[0].summary.find("禁用") != std::string::npos,
+        "track list summary should include disabled state");
+    require(status.rows[0].summary.find("隐藏") != std::string::npos,
+        "track list summary should include hidden state");
+}
+
 }
 
 int main()
@@ -266,5 +347,8 @@ int main()
     projectFileActionFeedbackExplainsSaveWithoutPath();
     projectFileActionFeedbackDescribesCanceledOpen();
     projectFileActionFeedbackDescribesSuccessfulSaveAs();
+    trackListStatusDescribesEmptyProject();
+    trackListStatusDescribesTrackRowsInProjectOrder();
+    trackListStatusDescribesTrackPlaybackAndViewFlags();
     return 0;
 }

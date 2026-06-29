@@ -1,6 +1,7 @@
 #include "AppProjectFileActions.h"
 #include "AppProjectSession.h"
 #include "AppProjectStatus.h"
+#include "AppTrackListStatus.h"
 #include "TrackLoomAppInfo.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -55,6 +56,20 @@ public:
         actionLabel_.setFont(juce::FontOptions(15.0f));
         actionLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffcfc7b1));
 
+        trackListTitleLabel_.setText(toJuceString("轨道列表"), juce::dontSendNotification);
+        trackListTitleLabel_.setFont(juce::FontOptions(18.0f, juce::Font::bold));
+        trackListTitleLabel_.setColour(juce::Label::textColourId, juce::Colour(0xfff2f0e8));
+
+        trackListText_.setReadOnly(true);
+        trackListText_.setMultiLine(true);
+        trackListText_.setScrollbarsShown(true);
+        trackListText_.setPopupMenuEnabled(false);
+        trackListText_.setFont(juce::FontOptions(15.0f));
+        trackListText_.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff20231f));
+        trackListText_.setColour(juce::TextEditor::textColourId, juce::Colour(0xffe4dfd0));
+        trackListText_.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff3a463c));
+        trackListText_.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour(0xff6ccf8d));
+
         newProjectButton_.setButtonText(toJuceString("新建工程"));
         openProjectButton_.setButtonText(toJuceString("打开工程"));
         saveProjectButton_.setButtonText(toJuceString("保存"));
@@ -79,6 +94,8 @@ public:
         addAndMakeVisible(statusLabel_);
         addAndMakeVisible(trackSummaryLabel_);
         addAndMakeVisible(actionLabel_);
+        addAndMakeVisible(trackListTitleLabel_);
+        addAndMakeVisible(trackListText_);
         addAndMakeVisible(newProjectButton_);
         addAndMakeVisible(openProjectButton_);
         addAndMakeVisible(saveProjectButton_);
@@ -117,6 +134,9 @@ public:
         bounds.removeFromTop(24);
         trackSummaryLabel_.setBounds(bounds.removeFromTop(32));
         actionLabel_.setBounds(bounds.removeFromTop(32));
+        bounds.removeFromTop(12);
+        trackListTitleLabel_.setBounds(bounds.removeFromTop(30));
+        trackListText_.setBounds(bounds.removeFromTop(220));
     }
 
 private:
@@ -247,6 +267,9 @@ private:
         statusLabel_.setText(toJuceString(status.statusLine), juce::dontSendNotification);
         trackSummaryLabel_.setText(toJuceString(trackSummaryText(status)), juce::dontSendNotification);
         actionLabel_.setText(toJuceString(lastActionMessage_), juce::dontSendNotification);
+        trackListText_.setText(
+            toJuceString(trackListText(trackloom::describeAppTrackList(session_.project()))),
+            false);
 
         if (titleChanged_) {
             titleChanged_(status.windowTitle);
@@ -263,6 +286,35 @@ private:
             + " 条轨道；下一步会接入轨道列表和时间线编辑。";
     }
 
+    static std::string trackListText(const trackloom::AppTrackListStatus& status)
+    {
+        if (status.rows.empty()) {
+            return status.emptyMessage;
+        }
+
+        std::string text;
+        for (const auto& row : status.rows) {
+            if (!text.empty()) {
+                text += "\n";
+            }
+
+            text += trackNumberText(row.number)
+                + "  " + row.name
+                + "  [" + row.typeLabel + "]  "
+                + row.summary;
+        }
+        return text;
+    }
+
+    static std::string trackNumberText(std::size_t number)
+    {
+        if (number < 10) {
+            return "0" + std::to_string(number);
+        }
+
+        return std::to_string(number);
+    }
+
     trackloom::AppProjectSession session_;
     std::function<void(std::string)> titleChanged_;
     std::unique_ptr<juce::FileChooser> fileChooser_;
@@ -271,6 +323,8 @@ private:
     juce::Label statusLabel_;
     juce::Label trackSummaryLabel_;
     juce::Label actionLabel_;
+    juce::Label trackListTitleLabel_;
+    juce::TextEditor trackListText_;
     juce::TextButton newProjectButton_;
     juce::TextButton openProjectButton_;
     juce::TextButton saveProjectButton_;
