@@ -395,6 +395,137 @@ void recentProjectsRecordAndSaveKeepsMemoryWhenSettingsCannotSave()
         "failed settings persistence should not roll back the in-memory recent project");
 }
 
+void recentProjectsOpenByNumberLoadsProjectAndPromotesSelection()
+{
+    removeTestWorkspace();
+    const auto settingsPath = testWorkspace() / "settings" / "recent-projects.txt";
+    const auto firstPath = testWorkspace() / "first-recent.trackloom";
+    const auto secondPath = testWorkspace() / "second-recent.trackloom";
+
+    trackloom::AppProjectSession firstProject;
+    firstProject.createNewProject("First Recent");
+    require(firstProject.saveAs(firstPath).success,
+        "recent open test should save the first project");
+
+    trackloom::AppProjectSession secondProject;
+    secondProject.createNewProject("Second Recent");
+    require(secondProject.saveAs(secondPath).success,
+        "recent open test should save the second project");
+
+    trackloom::AppRecentProjects recent;
+    recent.record(firstPath);
+    recent.record(secondPath);
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Current");
+
+    // 编号 2 打开当前列表里的第二个工程；打开后它应移动到最近列表最前。
+    const auto feedback = trackloom::openAppRecentProjectByNumber(
+        session,
+        recent,
+        2,
+        settingsPath);
+
+    require(feedback.success,
+        "opening a selected recent project should succeed");
+    require(feedback.kind == trackloom::AppRecentProjectOpenFeedbackKind::Success,
+        "successful recent open should expose a stable success kind");
+    require(session.project().name() == "First Recent",
+        "recent open should load the selected project into the app session");
+    require(session.currentProjectPath().has_value() && session.currentProjectPath().value() == firstPath,
+        "recent open should set the current project path");
+    require(!session.isDirty(),
+        "recent open should leave the loaded project clean");
+    require(recent.paths().size() == 2 && recent.paths()[0] == firstPath,
+        "recent open should promote the opened project to the front");
+
+    const auto persisted = trackloom::loadAppRecentProjects(settingsPath);
+    require(persisted.paths().size() == 2 && persisted.paths()[0] == firstPath,
+        "recent open should persist the promoted recent-project order");
+}
+
+void recentProjectsOpenByNumberRejectsDirtySessionWithoutMutation()
+{
+    removeTestWorkspace();
+    const auto recentPath = testWorkspace() / "dirty-reject.trackloom";
+
+    trackloom::AppProjectSession savedProject;
+    savedProject.createNewProject("Recent Clean");
+    require(savedProject.saveAs(recentPath).success,
+        "dirty recent open test should save the recent project");
+
+    trackloom::AppRecentProjects recent;
+    recent.record(recentPath);
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Dirty Current");
+    session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto feedback = trackloom::openAppRecentProjectByNumber(
+        session,
+        recent,
+        1,
+        testWorkspace() / "settings" / "recent-projects.txt");
+
+    require(!feedback.success,
+        "recent open should reject a dirty current session");
+    require(feedback.kind == trackloom::AppRecentProjectOpenFeedbackKind::DirtyProject,
+        "dirty recent open should expose a stable dirty-project kind");
+    require(session.project().name() == "Dirty Current",
+        "dirty recent open should keep the current project");
+    require(session.isDirty(),
+        "dirty recent open should keep dirty state");
+    require(recent.paths().size() == 1 && recent.paths()[0] == recentPath,
+        "dirty recent open should not mutate the recent-project list");
+}
+
+void recentProjectsOpenByNumberRejectsMissingSelection()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("No Selection");
+    trackloom::AppRecentProjects recent;
+
+    const auto feedback = trackloom::openAppRecentProjectByNumber(
+        session,
+        recent,
+        1,
+        testWorkspace() / "settings" / "recent-projects.txt");
+
+    require(!feedback.success,
+        "recent open should reject a missing recent-project number");
+    require(feedback.kind == trackloom::AppRecentProjectOpenFeedbackKind::MissingRecentProject,
+        "missing recent open should expose a stable missing-selection kind");
+    require(session.project().name() == "No Selection",
+        "missing recent open should keep the current project");
+}
+
+void recentProjectsOpenByNumberRejectsMissingFileWithoutMutation()
+{
+    removeTestWorkspace();
+    const auto missingPath = testWorkspace() / "missing-recent.trackloom";
+
+    trackloom::AppRecentProjects recent;
+    recent.record(missingPath);
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Keep Current");
+
+    const auto feedback = trackloom::openAppRecentProjectByNumber(
+        session,
+        recent,
+        1,
+        testWorkspace() / "settings" / "recent-projects.txt");
+
+    require(!feedback.success,
+        "recent open should fail when the remembered project file is missing");
+    require(feedback.kind == trackloom::AppRecentProjectOpenFeedbackKind::OpenFailed,
+        "missing file recent open should expose an open-failed kind");
+    require(session.project().name() == "Keep Current",
+        "missing file recent open should keep the current project");
+    require(recent.paths().size() == 1 && recent.paths()[0] == missingPath,
+        "missing file recent open should not reorder the recent-project list");
+}
+
 void trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty()
 {
     removeTestWorkspace();
@@ -1447,6 +1578,10 @@ int main()
     recentProjectsStatusDescribesEmptyAndStoredProjects();
     recentProjectsRecordAndSaveUpdatesMemoryAndSettingsFile();
     recentProjectsRecordAndSaveKeepsMemoryWhenSettingsCannotSave();
+    recentProjectsOpenByNumberLoadsProjectAndPromotesSelection();
+    recentProjectsOpenByNumberRejectsDirtySessionWithoutMutation();
+    recentProjectsOpenByNumberRejectsMissingSelection();
+    recentProjectsOpenByNumberRejectsMissingFileWithoutMutation();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
     trackActionDeletesInstrumentTrackAndOwnedClips();

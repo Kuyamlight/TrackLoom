@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <fstream>
 #include <string>
+#include <utility>
 
 namespace trackloom {
 namespace {
@@ -24,6 +25,22 @@ std::filesystem::path pathFromUtf8Line(const std::string& line)
     }
 
     return std::filesystem::path(utf8);
+}
+
+AppRecentProjectOpenFeedback recentOpenFeedback(
+    bool success,
+    AppRecentProjectOpenFeedbackKind kind,
+    std::filesystem::path path,
+    bool savedRecentProjects,
+    std::string message)
+{
+    return {
+        success,
+        kind,
+        std::move(path),
+        savedRecentProjects,
+        std::move(message)
+    };
 }
 
 }
@@ -99,6 +116,58 @@ AppRecentProjectRecordResult recordAndSaveAppRecentProject(
         true,
         saveAppRecentProjects(recentProjects, settingsPath)
     };
+}
+
+AppRecentProjectOpenFeedback openAppRecentProjectByNumber(
+    AppProjectSession& session,
+    AppRecentProjects& recentProjects,
+    std::size_t number,
+    const std::filesystem::path& settingsPath)
+{
+    if (number == 0 || number > recentProjects.paths().size()) {
+        return recentOpenFeedback(
+            false,
+            AppRecentProjectOpenFeedbackKind::MissingRecentProject,
+            {},
+            false,
+            "请选择一个最近工程。");
+    }
+
+    const auto projectPath = recentProjects.paths()[number - 1];
+    if (session.isDirty()) {
+        return recentOpenFeedback(
+            false,
+            AppRecentProjectOpenFeedbackKind::DirtyProject,
+            projectPath,
+            false,
+            "当前工程有未保存修改，请先保存或另存为，再打开最近工程。");
+    }
+
+    const auto openResult = session.openFrom(projectPath);
+    if (!openResult.success) {
+        return recentOpenFeedback(
+            false,
+            AppRecentProjectOpenFeedbackKind::OpenFailed,
+            projectPath,
+            false,
+            "打开最近工程失败：" + openResult.error);
+    }
+
+    const auto recordResult = recordAndSaveAppRecentProject(
+        recentProjects,
+        projectPath,
+        settingsPath);
+    auto message = "已打开最近工程：" + projectPath.string();
+    if (!recordResult.saved) {
+        message += " 最近工程列表暂未写入本地设置。";
+    }
+
+    return recentOpenFeedback(
+        true,
+        AppRecentProjectOpenFeedbackKind::Success,
+        projectPath,
+        recordResult.saved,
+        std::move(message));
 }
 
 bool saveAppRecentProjects(

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "AppProjectSession.h"
+
 #include <cstddef>
 #include <filesystem>
 #include <string>
@@ -45,6 +47,21 @@ struct AppRecentProjectRecordResult {
     bool saved = false;
 };
 
+enum class AppRecentProjectOpenFeedbackKind {
+    Success,
+    MissingRecentProject,
+    DirtyProject,
+    OpenFailed
+};
+
+struct AppRecentProjectOpenFeedback {
+    bool success = false;
+    AppRecentProjectOpenFeedbackKind kind = AppRecentProjectOpenFeedbackKind::OpenFailed;
+    std::filesystem::path path;
+    bool savedRecentProjects = false;
+    std::string message;
+};
+
 // describeAppRecentProjects 把本地最近工程列表转换成 UI 可直接展示的只读快照。
 // UI、菜单和诊断面板不需要重复解释路径排序、编号和空列表提示。
 AppRecentProjectsStatus describeAppRecentProjects(const AppRecentProjects& recentProjects);
@@ -54,6 +71,14 @@ AppRecentProjectsStatus describeAppRecentProjects(const AppRecentProjects& recen
 AppRecentProjectRecordResult recordAndSaveAppRecentProject(
     AppRecentProjects& recentProjects,
     const std::filesystem::path& projectPath,
+    const std::filesystem::path& settingsPath);
+
+// openAppRecentProjectByNumber 是最近工程菜单、按钮和快捷键共用的打开入口。
+// 编号使用用户可见的 1-based 行号；打开成功后才会提升最近工程顺序。
+AppRecentProjectOpenFeedback openAppRecentProjectByNumber(
+    AppProjectSession& session,
+    AppRecentProjects& recentProjects,
+    std::size_t number,
     const std::filesystem::path& settingsPath);
 
 // 最近工程使用 UTF-8 文本逐行保存，便于人工检查，也方便后续迁移到正式设置格式。

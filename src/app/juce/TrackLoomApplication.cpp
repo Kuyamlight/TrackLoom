@@ -123,6 +123,16 @@ public:
         recentProjectsTitleLabel_.setFont(juce::FontOptions(18.0f, juce::Font::bold));
         recentProjectsTitleLabel_.setColour(juce::Label::textColourId, juce::Colour(0xfff2f0e8));
 
+        recentProjectLabel_.setText(toJuceString("最近工程"), juce::dontSendNotification);
+        recentProjectLabel_.setFont(juce::FontOptions(15.0f));
+        recentProjectLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffd9d4c5));
+
+        recentProjectBox_.setTextWhenNothingSelected(toJuceString("暂无最近工程"));
+        recentProjectBox_.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff20231f));
+        recentProjectBox_.setColour(juce::ComboBox::textColourId, juce::Colour(0xfff2f0e8));
+        recentProjectBox_.setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff3a463c));
+        recentProjectBox_.setColour(juce::ComboBox::arrowColourId, juce::Colour(0xff6ccf8d));
+
         styleReadOnlyTextEditor(trackListText_);
         styleReadOnlyTextEditor(timelineText_);
         styleReadOnlyTextEditor(recentProjectsText_);
@@ -140,6 +150,7 @@ public:
         addMidiNoteButton_.setButtonText(toJuceString("添加默认音符"));
         deleteMidiNoteButton_.setButtonText(toJuceString("删除末尾音符"));
         deleteMidiClipButton_.setButtonText(toJuceString("删除片段"));
+        openRecentProjectButton_.setButtonText(toJuceString("打开最近工程"));
 
         newProjectButton_.onClick = [this] { requestNewProject(); };
         openProjectButton_.onClick = [this] { chooseProjectToOpen(); };
@@ -150,12 +161,14 @@ public:
         rewindProjectButton_.onClick = [this] { rewindProjectPlayback(); };
         targetTrackBox_.onChange = [this] { updateSelectedTrackFromComboBox(); };
         targetMidiClipBox_.onChange = [this] { updateSelectedMidiClipFromComboBox(); };
+        recentProjectBox_.onChange = [this] { updateSelectedRecentProjectFromComboBox(); };
         addInstrumentTrackButton_.onClick = [this] { addDefaultInstrumentTrack(); };
         createMidiClipButton_.onClick = [this] { createMidiClipOnSelectedTrack(); };
         deleteInstrumentTrackButton_.onClick = [this] { deleteSelectedInstrumentTrack(); };
         addMidiNoteButton_.onClick = [this] { addMidiNoteToSelectedClip(); };
         deleteMidiNoteButton_.onClick = [this] { deleteMidiNoteFromSelectedClip(); };
         deleteMidiClipButton_.onClick = [this] { deleteSelectedMidiClip(); };
+        openRecentProjectButton_.onClick = [this] { openSelectedRecentProject(); };
 
         addAndMakeVisible(titleLabel_);
         addAndMakeVisible(statusLabel_);
@@ -171,6 +184,9 @@ public:
         addAndMakeVisible(timelineTitleLabel_);
         addAndMakeVisible(timelineText_);
         addAndMakeVisible(recentProjectsTitleLabel_);
+        addAndMakeVisible(recentProjectLabel_);
+        addAndMakeVisible(recentProjectBox_);
+        addAndMakeVisible(openRecentProjectButton_);
         addAndMakeVisible(recentProjectsText_);
         addAndMakeVisible(newProjectButton_);
         addAndMakeVisible(openProjectButton_);
@@ -264,6 +280,13 @@ public:
         timelineText_.setBounds(rightColumn.removeFromTop(timelineHeight));
         rightColumn.removeFromTop(10);
         recentProjectsTitleLabel_.setBounds(rightColumn.removeFromTop(30));
+        auto recentProjectRow = rightColumn.removeFromTop(34);
+        recentProjectLabel_.setBounds(recentProjectRow.removeFromLeft(76));
+        recentProjectRow.removeFromLeft(8);
+        recentProjectBox_.setBounds(recentProjectRow.removeFromLeft(220));
+        recentProjectRow.removeFromLeft(10);
+        openRecentProjectButton_.setBounds(recentProjectRow.removeFromLeft(124));
+        rightColumn.removeFromTop(8);
         recentProjectsText_.setBounds(rightColumn);
     }
 
@@ -454,6 +477,19 @@ private:
         selectedMidiClipId_ = selectableMidiClipIds_[static_cast<std::size_t>(selectedId - 1)];
     }
 
+    void updateSelectedRecentProjectFromComboBox()
+    {
+        const auto selectedId = recentProjectBox_.getSelectedId();
+        if (selectedId <= 0
+            || static_cast<std::size_t>(selectedId) > selectableRecentProjectNumbers_.size()) {
+            selectedRecentProjectNumber_ = 0;
+            return;
+        }
+
+        selectedRecentProjectNumber_ =
+            selectableRecentProjectNumbers_[static_cast<std::size_t>(selectedId - 1)];
+    }
+
     void startProjectPlayback()
     {
         const auto feedback = trackloom::startAppPlayback(playback_, session_.project());
@@ -602,6 +638,28 @@ private:
         refreshFromSession();
     }
 
+    void openSelectedRecentProject()
+    {
+        if (selectedRecentProjectNumber_ == 0) {
+            lastActionMessage_ = "请先选择一个最近工程。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::openAppRecentProjectByNumber(
+            session_,
+            recentProjects_,
+            selectedRecentProjectNumber_,
+            recentProjectsSettingsPath_);
+        lastActionMessage_ = feedback.message;
+        if (feedback.success) {
+            selectedTrackId_.clear();
+            selectedMidiClipId_.clear();
+        }
+
+        refreshFromSession();
+    }
+
     void refreshTrackTargetSelector()
     {
         const auto previousSelection = selectedTrackId_;
@@ -681,13 +739,48 @@ private:
         deleteMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
     }
 
+    void refreshRecentProjectSelector(const trackloom::AppRecentProjectsStatus& recentStatus)
+    {
+        const auto previousSelection = selectedRecentProjectNumber_;
+        selectableRecentProjectNumbers_.clear();
+        recentProjectBox_.clear(juce::dontSendNotification);
+
+        int itemId = 1;
+        int selectedItemId = 0;
+        for (const auto& row : recentStatus.rows) {
+            selectableRecentProjectNumbers_.push_back(row.number);
+            recentProjectBox_.addItem(toJuceString(row.displayName), itemId);
+
+            if (row.number == previousSelection) {
+                selectedItemId = itemId;
+            }
+
+            ++itemId;
+        }
+
+        if (selectedItemId == 0 && !selectableRecentProjectNumbers_.empty()) {
+            selectedItemId = 1;
+            selectedRecentProjectNumber_ = selectableRecentProjectNumbers_.front();
+        } else if (selectedItemId > 0) {
+            selectedRecentProjectNumber_ = previousSelection;
+        } else {
+            selectedRecentProjectNumber_ = 0;
+        }
+
+        recentProjectBox_.setSelectedId(selectedItemId, juce::dontSendNotification);
+        recentProjectBox_.setEnabled(!selectableRecentProjectNumbers_.empty());
+        openRecentProjectButton_.setEnabled(!selectableRecentProjectNumbers_.empty());
+    }
+
     void refreshFromSession()
     {
         const auto status = trackloom::describeAppProjectSession(session_);
         const auto playbackStatus = trackloom::describeAppPlayback(playback_);
         const auto timelineStatus = trackloom::describeAppTimeline(session_.project());
+        const auto recentStatus = trackloom::describeAppRecentProjects(recentProjects_);
         refreshTrackTargetSelector();
         refreshMidiClipTargetSelector(timelineStatus);
+        refreshRecentProjectSelector(recentStatus);
 
         titleLabel_.setText(toJuceString(status.windowTitle), juce::dontSendNotification);
         statusLabel_.setText(toJuceString(status.statusLine), juce::dontSendNotification);
@@ -704,7 +797,7 @@ private:
             toJuceString(timelineText(timelineStatus)),
             false);
         recentProjectsText_.setText(
-            toJuceString(recentProjectsText(trackloom::describeAppRecentProjects(recentProjects_))),
+            toJuceString(recentProjectsText(recentStatus)),
             false);
 
         if (titleChanged_) {
@@ -798,9 +891,11 @@ private:
     trackloom::AppRecentProjects recentProjects_;
     std::vector<std::string> selectableTrackIds_;
     std::vector<std::string> selectableMidiClipIds_;
+    std::vector<std::size_t> selectableRecentProjectNumbers_;
     std::string lastActionMessage_ = "文件动作：尚未打开或保存工程。";
     std::string selectedTrackId_;
     std::string selectedMidiClipId_;
+    std::size_t selectedRecentProjectNumber_ = 0;
     juce::Label titleLabel_;
     juce::Label statusLabel_;
     juce::Label playbackStatusLabel_;
@@ -815,6 +910,9 @@ private:
     juce::Label timelineTitleLabel_;
     juce::TextEditor timelineText_;
     juce::Label recentProjectsTitleLabel_;
+    juce::Label recentProjectLabel_;
+    juce::ComboBox recentProjectBox_;
+    juce::TextButton openRecentProjectButton_;
     juce::TextEditor recentProjectsText_;
     juce::TextButton newProjectButton_;
     juce::TextButton openProjectButton_;
