@@ -1,5 +1,6 @@
 #include "AppMidiClipActions.h"
 #include "AppMidiNoteActions.h"
+#include "AppPlaybackActions.h"
 #include "AppProjectFileActions.h"
 #include "AppProjectSession.h"
 #include "AppProjectStatus.h"
@@ -110,6 +111,8 @@ public:
         saveProjectButton_.setButtonText(toJuceString("保存"));
         saveAsProjectButton_.setButtonText(toJuceString("另存为"));
         addInstrumentTrackButton_.setButtonText(toJuceString("添加乐器轨"));
+        playProjectButton_.setButtonText(toJuceString("播放"));
+        stopProjectButton_.setButtonText(toJuceString("停止"));
         createMidiClipButton_.setButtonText(toJuceString("创建 MIDI 片段"));
         deleteInstrumentTrackButton_.setButtonText(toJuceString("删除乐器轨"));
         addMidiNoteButton_.setButtonText(toJuceString("添加默认音符"));
@@ -120,6 +123,8 @@ public:
         openProjectButton_.onClick = [this] { chooseProjectToOpen(); };
         saveProjectButton_.onClick = [this] { saveCurrentProject(); };
         saveAsProjectButton_.onClick = [this] { chooseProjectToSaveAs(); };
+        playProjectButton_.onClick = [this] { startProjectPlayback(); };
+        stopProjectButton_.onClick = [this] { stopProjectPlayback(); };
         targetTrackBox_.onChange = [this] { updateSelectedTrackFromComboBox(); };
         targetMidiClipBox_.onChange = [this] { updateSelectedMidiClipFromComboBox(); };
         addInstrumentTrackButton_.onClick = [this] { addDefaultInstrumentTrack(); };
@@ -146,6 +151,8 @@ public:
         addAndMakeVisible(saveProjectButton_);
         addAndMakeVisible(saveAsProjectButton_);
         addAndMakeVisible(addInstrumentTrackButton_);
+        addAndMakeVisible(playProjectButton_);
+        addAndMakeVisible(stopProjectButton_);
         addAndMakeVisible(createMidiClipButton_);
         addAndMakeVisible(deleteInstrumentTrackButton_);
         addAndMakeVisible(addMidiNoteButton_);
@@ -180,6 +187,10 @@ public:
         saveAsProjectButton_.setBounds(buttonRow.removeFromLeft(104));
         buttonRow.removeFromLeft(12);
         addInstrumentTrackButton_.setBounds(buttonRow.removeFromLeft(140));
+        buttonRow.removeFromLeft(12);
+        playProjectButton_.setBounds(buttonRow.removeFromLeft(88));
+        buttonRow.removeFromLeft(12);
+        stopProjectButton_.setBounds(buttonRow.removeFromLeft(88));
 
         bounds.removeFromTop(24);
         trackSummaryLabel_.setBounds(bounds.removeFromTop(32));
@@ -361,6 +372,20 @@ private:
         }
 
         selectedMidiClipId_ = selectableMidiClipIds_[static_cast<std::size_t>(selectedId - 1)];
+    }
+
+    void startProjectPlayback()
+    {
+        const auto feedback = trackloom::startAppPlayback(playback_, session_.project());
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void stopProjectPlayback()
+    {
+        const auto feedback = trackloom::stopAppPlayback(playback_, session_.project());
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
     }
 
     void addDefaultInstrumentTrack()
@@ -556,6 +581,8 @@ private:
         statusLabel_.setText(toJuceString(status.statusLine), juce::dontSendNotification);
         trackSummaryLabel_.setText(toJuceString(trackSummaryText(status)), juce::dontSendNotification);
         actionLabel_.setText(toJuceString(lastActionMessage_), juce::dontSendNotification);
+        playProjectButton_.setEnabled(!playback_.isPlaying());
+        stopProjectButton_.setEnabled(playback_.isPlaying());
         trackListText_.setText(
             toJuceString(trackListText(trackloom::describeAppTrackList(session_.project()))),
             false);
@@ -628,6 +655,7 @@ private:
     }
 
     trackloom::AppProjectSession session_;
+    trackloom::AppPlaybackController playback_;
     std::function<void(std::string)> titleChanged_;
     std::unique_ptr<juce::FileChooser> fileChooser_;
     std::vector<std::string> selectableTrackIds_;
@@ -652,6 +680,8 @@ private:
     juce::TextButton saveProjectButton_;
     juce::TextButton saveAsProjectButton_;
     juce::TextButton addInstrumentTrackButton_;
+    juce::TextButton playProjectButton_;
+    juce::TextButton stopProjectButton_;
     juce::TextButton createMidiClipButton_;
     juce::TextButton deleteInstrumentTrackButton_;
     juce::TextButton addMidiNoteButton_;

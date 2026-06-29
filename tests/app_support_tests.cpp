@@ -1,6 +1,7 @@
 #include "AppProjectFileActions.h"
 #include "AppMidiClipActions.h"
 #include "AppMidiNoteActions.h"
+#include "AppPlaybackActions.h"
 #include "AppProjectSession.h"
 #include "AppProjectStatus.h"
 #include "AppTimelineStatus.h"
@@ -379,6 +380,110 @@ void trackActionRejectsNonInstrumentTrackDeleteWithoutDirtyingSession()
         "non-instrument track delete action should keep the audio track unchanged");
     require(!session.isDirty(),
         "non-instrument track delete action should not dirty an unchanged session");
+}
+
+void playbackActionStartsTransportWithoutDirtyingProject()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "playback-start-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Playback Start");
+    require(session.saveAs(path).success,
+        "playback start action test should save setup edits before runtime control");
+
+    const auto feedback = trackloom::startAppPlayback(playback, session.project());
+
+    require(feedback.success,
+        "playback action should start the app transport");
+    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::Success,
+        "successful playback start action should expose a stable success kind");
+    require(playback.isPrepared(),
+        "playback start action should prepare the runtime playback session");
+    require(playback.isPlaying(),
+        "playback start action should put the app transport into playing state");
+    require(playback.currentSample() == 0,
+        "playback start action should not move the playback position by itself");
+    require(!session.isDirty(),
+        "playback start action should not dirty the project session");
+    require(feedback.message.find("播放") != std::string::npos,
+        "successful playback start feedback should describe playback");
+}
+
+void playbackActionStopsTransportWithoutDirtyingProject()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "playback-stop-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Playback Stop");
+    require(session.saveAs(path).success,
+        "playback stop action test should save setup edits before runtime control");
+    require(trackloom::startAppPlayback(playback, session.project()).success,
+        "playback stop action test should start playback before stopping");
+
+    const auto feedback = trackloom::stopAppPlayback(playback, session.project());
+
+    require(feedback.success,
+        "playback action should stop the app transport");
+    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::Success,
+        "successful playback stop action should expose a stable success kind");
+    require(playback.isPrepared(),
+        "playback stop action should keep the runtime playback session prepared");
+    require(!playback.isPlaying(),
+        "playback stop action should put the app transport into stopped state");
+    require(!session.isDirty(),
+        "playback stop action should not dirty the project session");
+    require(feedback.message.find("停止") != std::string::npos,
+        "successful playback stop feedback should describe the stop action");
+}
+
+void playbackActionStopsCleanlyBeforeStart()
+{
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Stop Before Start");
+
+    const auto feedback = trackloom::stopAppPlayback(playback, session.project());
+
+    require(feedback.success,
+        "playback stop action should accept an already stopped runtime");
+    require(playback.isPrepared(),
+        "playback stop action should prepare runtime state before using the core safe stop command");
+    require(!playback.isPlaying(),
+        "playback stop action should leave the app transport stopped");
+    require(!session.isDirty(),
+        "playback stop action before start should not dirty the project session");
+}
+
+void playbackStatusDescribesStoppedAndPlayingStates()
+{
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Playback Status");
+
+    const auto stopped = trackloom::describeAppPlayback(playback);
+    require(!stopped.playing,
+        "fresh playback status should start stopped");
+    require(stopped.stateLabel == "已停止",
+        "fresh playback status should expose a stopped label");
+
+    require(trackloom::startAppPlayback(playback, session.project()).success,
+        "playback status test should start playback");
+    const auto playing = trackloom::describeAppPlayback(playback);
+
+    require(playing.prepared,
+        "playing status should report prepared runtime state");
+    require(playing.playing,
+        "playing status should report playing runtime state");
+    require(playing.currentSample == 0,
+        "playing status should expose the current sample");
+    require(playing.stateLabel == "播放中",
+        "playing status should expose a playing label");
+    require(playing.summary.find("播放中") != std::string::npos,
+        "playing status summary should include the visible playback state");
 }
 
 void midiClipActionCreatesDefaultClipOnInstrumentTrack()
@@ -972,6 +1077,10 @@ int main()
     trackActionDeletesInstrumentTrackAndOwnedClips();
     trackActionRejectsMissingTrackDeleteWithoutDirtyingSession();
     trackActionRejectsNonInstrumentTrackDeleteWithoutDirtyingSession();
+    playbackActionStartsTransportWithoutDirtyingProject();
+    playbackActionStopsTransportWithoutDirtyingProject();
+    playbackActionStopsCleanlyBeforeStart();
+    playbackStatusDescribesStoppedAndPlayingStates();
     midiClipActionCreatesDefaultClipOnInstrumentTrack();
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionRejectsMissingTrackWithoutDirtyingSession();
