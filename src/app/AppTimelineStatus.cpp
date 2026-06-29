@@ -61,6 +61,7 @@ AppTimelineStatus describeAppTimeline(const Project& project)
         row.trackId = clip.trackId;
         row.trackName = trackNameForClip(project, clip);
         row.name = clip.name;
+        row.type = clip.type;
         row.typeLabel = clipTypeLabel(clip.type);
         row.startTick = clip.startTick;
         row.lengthTick = clip.lengthTick;

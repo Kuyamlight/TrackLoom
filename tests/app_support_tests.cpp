@@ -1,5 +1,6 @@
 #include "AppProjectFileActions.h"
 #include "AppMidiClipActions.h"
+#include "AppMidiNoteActions.h"
 #include "AppProjectSession.h"
 #include "AppProjectStatus.h"
 #include "AppTimelineStatus.h"
@@ -351,6 +352,156 @@ void midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession()
         "incompatible track MIDI clip action should not dirty an unchanged session");
 }
 
+void midiNoteActionCreatesDefaultNoteInMidiClip()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Note Action");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    require(clipFeedback.success,
+        "MIDI note action test should create a target MIDI clip");
+    require(session.saveAs(path).success,
+        "MIDI note action test should save the setup project before editing");
+
+    const auto feedback = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+
+    require(feedback.success,
+        "MIDI note action should create a note in a MIDI clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::Success,
+        "successful MIDI note action should expose a stable success kind");
+    require(!feedback.noteId.empty(),
+        "successful MIDI note action should expose the created note id");
+    require(session.isDirty(),
+        "MIDI note action should mark the app session dirty");
+
+    const auto clip = session.project().clips()[0];
+    require(clip.midiNotes.size() == 1,
+        "MIDI note action should add exactly one note");
+    require(clip.midiNotes[0].id == feedback.noteId,
+        "MIDI note action feedback should point to the created note");
+    require(clip.midiNotes[0].startTick == 0,
+        "first default MIDI note should start at the beginning of the clip");
+    require(clip.midiNotes[0].lengthTick == trackloom::defaultAppMidiNoteLengthTick,
+        "default MIDI note should use the app-level starter note length");
+    require(clip.midiNotes[0].noteNumber == trackloom::defaultAppMidiNoteNumber,
+        "default MIDI note should use the app-level starter pitch");
+    require(clip.midiNotes[0].velocity == trackloom::defaultAppMidiNoteVelocity,
+        "default MIDI note should use the app-level starter velocity");
+    require(clip.midiNotes[0].channel == trackloom::defaultAppMidiNoteChannel,
+        "default MIDI note should use the app-level starter channel");
+    require(feedback.message.find("音符") != std::string::npos,
+        "successful MIDI note feedback should describe the created note");
+}
+
+void midiNoteActionAppendsAfterExistingNotes()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Append Notes");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+
+    const auto first = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    const auto second = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+
+    require(first.success && second.success,
+        "MIDI note action should create repeated starter notes in the same clip");
+    require(session.project().clips()[0].midiNotes.size() == 2,
+        "repeated MIDI note action should create two notes");
+    require(session.project().clips()[0].midiNotes[1].startTick
+            == session.project().clips()[0].midiNotes[0].startTick
+                + session.project().clips()[0].midiNotes[0].lengthTick,
+        "second starter MIDI note should append after the first note in that clip");
+}
+
+void midiNoteActionRejectsMissingClipWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Clip");
+
+    const auto feedback = trackloom::createDefaultMidiNoteInClip(session, "missing-clip");
+
+    require(!feedback.success,
+        "MIDI note action should reject a missing target clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::MissingClip,
+        "missing clip MIDI note action should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing clip MIDI note action should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsAudioClipWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "audio-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Vocal clip",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::Project::ticksPerQuarterNote);
+    require(clip.has_value(),
+        "audio MIDI note action test should create an audio clip");
+    require(session.saveAs(path).success,
+        "audio MIDI note action test should save setup edits before validation");
+
+    const auto feedback = trackloom::createDefaultMidiNoteInClip(session, clip->id);
+
+    require(!feedback.success,
+        "MIDI note action should reject audio clips");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::IncompatibleClipType,
+        "audio clip MIDI note action should expose a stable failure kind");
+    require(session.project().clips()[0].midiNotes.empty(),
+        "audio clip MIDI note action should not create notes");
+    require(!session.isDirty(),
+        "audio clip MIDI note action should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsFullClipWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "full-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Full Clip");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Short MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick);
+    require(clip.has_value(),
+        "full MIDI note action test should create a short MIDI clip");
+    require(session.editProject().createMidiNote(
+                clip->id,
+                0,
+                trackloom::defaultAppMidiNoteLengthTick,
+                trackloom::defaultAppMidiNoteNumber,
+                trackloom::defaultAppMidiNoteVelocity,
+                trackloom::defaultAppMidiNoteChannel)
+            .has_value(),
+        "full MIDI note action test should fill the short MIDI clip");
+    require(session.saveAs(path).success,
+        "full MIDI note action test should save setup edits before validation");
+
+    const auto feedback = trackloom::createDefaultMidiNoteInClip(session, clip->id);
+
+    require(!feedback.success,
+        "MIDI note action should reject a clip with no room for another starter note");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::ClipFull,
+        "full clip MIDI note action should expose a stable failure kind");
+    require(session.project().clips()[0].midiNotes.size() == 1,
+        "full clip MIDI note action should keep existing notes unchanged");
+    require(!session.isDirty(),
+        "full clip MIDI note action should not dirty an unchanged session");
+}
+
 void timelineStatusDescribesEmptyProject()
 {
     const trackloom::Project project("Empty Timeline");
@@ -507,6 +658,11 @@ int main()
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionRejectsMissingTrackWithoutDirtyingSession();
     midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
+    midiNoteActionCreatesDefaultNoteInMidiClip();
+    midiNoteActionAppendsAfterExistingNotes();
+    midiNoteActionRejectsMissingClipWithoutDirtyingSession();
+    midiNoteActionRejectsAudioClipWithoutDirtyingSession();
+    midiNoteActionRejectsFullClipWithoutDirtyingSession();
     timelineStatusDescribesEmptyProject();
     timelineStatusDescribesClipRowsWithTrackNames();
     trackListStatusDescribesEmptyProject();

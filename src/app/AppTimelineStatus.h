@@ -17,6 +17,7 @@ struct AppTimelineClipRow {
     std::string trackId;
     std::string trackName;
     std::string name;
+    ClipType type = ClipType::Midi;
     std::string typeLabel;
     std::int64_t startTick = 0;
     std::int64_t lengthTick = 0;
