@@ -65,6 +65,42 @@ void AppRecentProjects::clear()
     paths_.clear();
 }
 
+AppRecentProjectsStatus describeAppRecentProjects(const AppRecentProjects& recentProjects)
+{
+    AppRecentProjectsStatus status;
+    status.emptyMessage = "暂无最近工程。打开或保存工程后，这里会显示最近使用的工程文件。";
+
+    std::size_t number = 1;
+    for (const auto& path : recentProjects.paths()) {
+        AppRecentProjectRow row;
+        row.number = number;
+        row.path = path;
+        row.displayName = path.filename().string();
+        row.fullPath = path.string();
+        row.summary = std::to_string(number) + ". " + row.displayName + " - " + row.fullPath;
+        status.rows.push_back(std::move(row));
+        ++number;
+    }
+
+    return status;
+}
+
+AppRecentProjectRecordResult recordAndSaveAppRecentProject(
+    AppRecentProjects& recentProjects,
+    const std::filesystem::path& projectPath,
+    const std::filesystem::path& settingsPath)
+{
+    if (projectPath.empty()) {
+        return {};
+    }
+
+    recentProjects.record(projectPath);
+    return {
+        true,
+        saveAppRecentProjects(recentProjects, settingsPath)
+    };
+}
+
 bool saveAppRecentProjects(
     const AppRecentProjects& recentProjects,
     const std::filesystem::path& settingsPath)

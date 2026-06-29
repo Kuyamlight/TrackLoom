@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 namespace trackloom {
@@ -25,6 +26,35 @@ private:
     std::size_t maxEntries_;
     std::vector<std::filesystem::path> paths_;
 };
+
+struct AppRecentProjectRow {
+    std::size_t number = 0;
+    std::filesystem::path path;
+    std::string displayName;
+    std::string fullPath;
+    std::string summary;
+};
+
+struct AppRecentProjectsStatus {
+    std::vector<AppRecentProjectRow> rows;
+    std::string emptyMessage;
+};
+
+struct AppRecentProjectRecordResult {
+    bool recorded = false;
+    bool saved = false;
+};
+
+// describeAppRecentProjects 把本地最近工程列表转换成 UI 可直接展示的只读快照。
+// UI、菜单和诊断面板不需要重复解释路径排序、编号和空列表提示。
+AppRecentProjectsStatus describeAppRecentProjects(const AppRecentProjects& recentProjects);
+
+// recordAndSaveAppRecentProject 先更新内存列表，再尝试写入本地设置文件。
+// 设置保存失败不回滚内存状态，避免本地偏好问题影响当前工程操作。
+AppRecentProjectRecordResult recordAndSaveAppRecentProject(
+    AppRecentProjects& recentProjects,
+    const std::filesystem::path& projectPath,
+    const std::filesystem::path& settingsPath);
 
 // 最近工程使用 UTF-8 文本逐行保存，便于人工检查，也方便后续迁移到正式设置格式。
 bool saveAppRecentProjects(

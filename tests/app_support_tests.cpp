@@ -321,6 +321,80 @@ void recentProjectsLoadMissingFileAsEmptyList()
         "missing recent-project settings should load as an empty list");
 }
 
+void recentProjectsStatusDescribesEmptyAndStoredProjects()
+{
+    trackloom::AppRecentProjects empty;
+
+    const auto emptyStatus = trackloom::describeAppRecentProjects(empty);
+
+    require(emptyStatus.rows.empty(),
+        "empty recent projects status should not expose phantom rows");
+    require(emptyStatus.emptyMessage.find("暂无最近工程") != std::string::npos,
+        "empty recent projects status should explain that no recent projects exist");
+
+    trackloom::AppRecentProjects recent;
+    const auto first = testWorkspace() / "first.trackloom";
+    const auto second = testWorkspace() / "second.trackloom";
+    recent.record(first);
+    recent.record(second);
+
+    const auto status = trackloom::describeAppRecentProjects(recent);
+
+    require(status.rows.size() == 2,
+        "recent projects status should expose one row per stored project");
+    require(status.rows[0].number == 1 && status.rows[0].path == second,
+        "recent projects status should keep newest-first ordering");
+    require(status.rows[0].displayName == "second.trackloom",
+        "recent projects status should expose the file name for compact UI display");
+    require(status.rows[0].fullPath == second.string(),
+        "recent projects status should expose the full path for tooltips or details");
+    require(status.rows[0].summary.find("second.trackloom") != std::string::npos,
+        "recent projects status row should include the display file name");
+}
+
+void recentProjectsRecordAndSaveUpdatesMemoryAndSettingsFile()
+{
+    removeTestWorkspace();
+    const auto settingsPath = testWorkspace() / "settings" / "recent-projects.txt";
+    const auto projectPath = testWorkspace() / "saved-project.trackloom";
+
+    trackloom::AppRecentProjects recent;
+    const auto result = trackloom::recordAndSaveAppRecentProject(
+        recent,
+        projectPath,
+        settingsPath);
+
+    require(result.recorded,
+        "record-and-save should update the in-memory recent project list");
+    require(result.saved,
+        "record-and-save should persist the recent project list when settings path is writable");
+    require(recent.paths().size() == 1 && recent.paths()[0] == projectPath,
+        "record-and-save should store the project path in memory");
+
+    const auto loaded = trackloom::loadAppRecentProjects(settingsPath);
+
+    require(loaded.paths().size() == 1 && loaded.paths()[0] == projectPath,
+        "record-and-save should persist a reloadable recent project path");
+}
+
+void recentProjectsRecordAndSaveKeepsMemoryWhenSettingsCannotSave()
+{
+    const auto projectPath = testWorkspace() / "unsaved-settings.trackloom";
+
+    trackloom::AppRecentProjects recent;
+    const auto result = trackloom::recordAndSaveAppRecentProject(
+        recent,
+        projectPath,
+        {});
+
+    require(result.recorded,
+        "record-and-save should still update memory when settings persistence fails");
+    require(!result.saved,
+        "record-and-save should report failed persistence separately from memory update");
+    require(recent.paths().size() == 1 && recent.paths()[0] == projectPath,
+        "failed settings persistence should not roll back the in-memory recent project");
+}
+
 void trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty()
 {
     removeTestWorkspace();
@@ -1370,6 +1444,9 @@ int main()
     recentProjectsKeepNewestUniquePathsWithinLimit();
     recentProjectsSaveAndLoadUtf8TextFile();
     recentProjectsLoadMissingFileAsEmptyList();
+    recentProjectsStatusDescribesEmptyAndStoredProjects();
+    recentProjectsRecordAndSaveUpdatesMemoryAndSettingsFile();
+    recentProjectsRecordAndSaveKeepsMemoryWhenSettingsCannotSave();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
     trackActionDeletesInstrumentTrackAndOwnedClips();

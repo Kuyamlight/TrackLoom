@@ -2,6 +2,7 @@
 #include "AppMidiNoteActions.h"
 #include "AppPlaybackActions.h"
 #include "AppProjectFileActions.h"
+#include "AppRecentProjects.h"
 #include "AppProjectSession.h"
 #include "AppProjectStatus.h"
 #include "AppTimelineStatus.h"
@@ -44,6 +45,14 @@ juce::String pathToJuceString(const std::filesystem::path& path)
         static_cast<int>(utf8Path.size()));
 }
 
+std::filesystem::path appRecentProjectsSettingsPath()
+{
+    const auto settingsFile = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+        .getChildFile(toJuceString("TrackLoom"))
+        .getChildFile(toJuceString("recent-projects.txt"));
+    return juceFileToPath(settingsFile);
+}
+
 void styleReadOnlyTextEditor(juce::TextEditor& editor)
 {
     editor.setReadOnly(true);
@@ -63,6 +72,8 @@ class MainComponent final
 public:
     explicit MainComponent(std::function<void(std::string)> titleChanged)
         : titleChanged_(std::move(titleChanged))
+        , recentProjectsSettingsPath_(appRecentProjectsSettingsPath())
+        , recentProjects_(trackloom::loadAppRecentProjects(recentProjectsSettingsPath_))
     {
         // 首屏现在绑定真实 AppProjectSession；后续文件选择器和时间线 UI 继续沿着这个会话入口扩展。
         titleLabel_.setFont(juce::FontOptions(30.0f, juce::Font::bold));
@@ -108,8 +119,13 @@ public:
         timelineTitleLabel_.setFont(juce::FontOptions(18.0f, juce::Font::bold));
         timelineTitleLabel_.setColour(juce::Label::textColourId, juce::Colour(0xfff2f0e8));
 
+        recentProjectsTitleLabel_.setText(toJuceString("最近工程"), juce::dontSendNotification);
+        recentProjectsTitleLabel_.setFont(juce::FontOptions(18.0f, juce::Font::bold));
+        recentProjectsTitleLabel_.setColour(juce::Label::textColourId, juce::Colour(0xfff2f0e8));
+
         styleReadOnlyTextEditor(trackListText_);
         styleReadOnlyTextEditor(timelineText_);
+        styleReadOnlyTextEditor(recentProjectsText_);
 
         newProjectButton_.setButtonText(toJuceString("新建工程"));
         openProjectButton_.setButtonText(toJuceString("打开工程"));
@@ -154,6 +170,8 @@ public:
         addAndMakeVisible(trackListText_);
         addAndMakeVisible(timelineTitleLabel_);
         addAndMakeVisible(timelineText_);
+        addAndMakeVisible(recentProjectsTitleLabel_);
+        addAndMakeVisible(recentProjectsText_);
         addAndMakeVisible(newProjectButton_);
         addAndMakeVisible(openProjectButton_);
         addAndMakeVisible(saveProjectButton_);
@@ -242,7 +260,11 @@ public:
         trackListTitleLabel_.setBounds(leftColumn.removeFromTop(30));
         trackListText_.setBounds(leftColumn);
         timelineTitleLabel_.setBounds(rightColumn.removeFromTop(30));
-        timelineText_.setBounds(rightColumn);
+        const auto timelineHeight = (rightColumn.getHeight() * 2) / 3;
+        timelineText_.setBounds(rightColumn.removeFromTop(timelineHeight));
+        rightColumn.removeFromTop(10);
+        recentProjectsTitleLabel_.setBounds(rightColumn.removeFromTop(30));
+        recentProjectsText_.setBounds(rightColumn);
     }
 
     bool keyPressed(const juce::KeyPress& key) override
@@ -386,7 +408,26 @@ private:
     void setFileActionFeedback(const trackloom::AppProjectFileActionFeedback& feedback)
     {
         lastActionMessage_ = feedback.message;
+        if (feedback.success) {
+            recordCurrentProjectAsRecent();
+        }
         refreshFromSession();
+    }
+
+    void recordCurrentProjectAsRecent()
+    {
+        if (!session_.currentProjectPath().has_value()) {
+            return;
+        }
+
+        // 最近工程是本机偏好；写入失败只提示，不影响当前打开或保存动作。
+        const auto result = trackloom::recordAndSaveAppRecentProject(
+            recentProjects_,
+            *session_.currentProjectPath(),
+            recentProjectsSettingsPath_);
+        if (result.recorded && !result.saved) {
+            lastActionMessage_ += " 最近工程列表暂未写入本地设置。";
+        }
     }
 
     void updateSelectedTrackFromComboBox()
@@ -662,6 +703,9 @@ private:
         timelineText_.setText(
             toJuceString(timelineText(timelineStatus)),
             false);
+        recentProjectsText_.setText(
+            toJuceString(recentProjectsText(trackloom::describeAppRecentProjects(recentProjects_))),
+            false);
 
         if (titleChanged_) {
             titleChanged_(status.windowTitle);
@@ -718,6 +762,25 @@ private:
         return text;
     }
 
+    static std::string recentProjectsText(const trackloom::AppRecentProjectsStatus& status)
+    {
+        if (status.rows.empty()) {
+            return status.emptyMessage;
+        }
+
+        std::string text;
+        for (const auto& row : status.rows) {
+            if (!text.empty()) {
+                text += "\n";
+            }
+
+            text += trackNumberText(row.number)
+                + "  " + row.displayName
+                + "\n    " + row.fullPath;
+        }
+        return text;
+    }
+
     static std::string trackNumberText(std::size_t number)
     {
         if (number < 10) {
@@ -731,6 +794,8 @@ private:
     trackloom::AppPlaybackController playback_;
     std::function<void(std::string)> titleChanged_;
     std::unique_ptr<juce::FileChooser> fileChooser_;
+    std::filesystem::path recentProjectsSettingsPath_;
+    trackloom::AppRecentProjects recentProjects_;
     std::vector<std::string> selectableTrackIds_;
     std::vector<std::string> selectableMidiClipIds_;
     std::string lastActionMessage_ = "文件动作：尚未打开或保存工程。";
@@ -749,6 +814,8 @@ private:
     juce::TextEditor trackListText_;
     juce::Label timelineTitleLabel_;
     juce::TextEditor timelineText_;
+    juce::Label recentProjectsTitleLabel_;
+    juce::TextEditor recentProjectsText_;
     juce::TextButton newProjectButton_;
     juce::TextButton openProjectButton_;
     juce::TextButton saveProjectButton_;
