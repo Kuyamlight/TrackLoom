@@ -1,0 +1,38 @@
+#pragma once
+
+#include "AppProjectSession.h"
+
+#include <cstdint>
+#include <string>
+
+namespace trackloom {
+
+// 首屏“创建 MIDI 片段”使用一个固定的一小节 starter 长度。
+// 这里以 4/4、每拍 Project::ticksPerQuarterNote 为基础；后续节拍号 UI 稳定后再让默认长度跟随工程拍号。
+inline constexpr std::int64_t defaultAppMidiClipLengthTick = Project::ticksPerQuarterNote * 4;
+
+// AppMidiClipActionFeedbackKind 给 UI 和测试提供稳定分支。
+// message 只负责显示，不应被当作业务判断依据。
+enum class AppMidiClipActionFeedbackKind {
+    Success,
+    MissingTrack,
+    IncompatibleTrackType,
+    CreateFailed
+};
+
+// AppMidiClipActionFeedback 是创建 MIDI 片段动作的展示结果。
+// clipId 只在 success 为 true 时有效，便于后续 UI 自动选中新片段。
+struct AppMidiClipActionFeedback {
+    bool success = false;
+    AppMidiClipActionFeedbackKind kind = AppMidiClipActionFeedbackKind::CreateFailed;
+    std::string message;
+    std::string clipId;
+};
+
+// createDefaultMidiClipOnTrack 只处理桌面入口的默认片段创建。
+// 它先验证目标轨道，只有确认能创建时才请求 editable project，从而避免失败校验污染 dirty 状态。
+AppMidiClipActionFeedback createDefaultMidiClipOnTrack(
+    AppProjectSession& session,
+    const std::string& trackId);
+
+}

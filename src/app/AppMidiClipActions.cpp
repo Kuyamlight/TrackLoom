@@ -1,0 +1,98 @@
+#include "AppMidiClipActions.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <string>
+#include <utility>
+
+namespace trackloom {
+namespace {
+
+AppMidiClipActionFeedback successFeedback(const TimelineClip& clip)
+{
+    AppMidiClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已创建 MIDI 片段：" + clip.name + "。";
+    return feedback;
+}
+
+AppMidiClipActionFeedback failureFeedback(
+    AppMidiClipActionFeedbackKind kind,
+    std::string message)
+{
+    AppMidiClipActionFeedback feedback;
+    feedback.success = false;
+    feedback.kind = kind;
+    feedback.message = std::move(message);
+    return feedback;
+}
+
+std::int64_t nextClipStartTickForTrack(const Project& project, const std::string& trackId)
+{
+    std::int64_t nextStartTick = 0;
+
+    for (const auto& clip : project.clips()) {
+        if (clip.trackId == trackId) {
+            nextStartTick = std::max(nextStartTick, clip.startTick + clip.lengthTick);
+        }
+    }
+
+    return nextStartTick;
+}
+
+std::size_t clipCountForTrack(const Project& project, const std::string& trackId)
+{
+    std::size_t count = 0;
+
+    for (const auto& clip : project.clips()) {
+        if (clip.trackId == trackId) {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+}
+
+AppMidiClipActionFeedback createDefaultMidiClipOnTrack(
+    AppProjectSession& session,
+    const std::string& trackId)
+{
+    const auto targetTrack = session.project().findTrackById(trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingTrack,
+            "无法创建 MIDI 片段：目标轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Instrument) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleTrackType,
+            "无法创建 MIDI 片段：只能在乐器轨上创建 MIDI 片段。");
+    }
+
+    const auto startTick = nextClipStartTickForTrack(session.project(), trackId);
+    const auto clipNumber = clipCountForTrack(session.project(), trackId) + 1;
+    const auto clipName = targetTrack->name + " MIDI " + std::to_string(clipNumber);
+
+    // editProject 会立刻标记 dirty；因此上面的校验必须先完成，失败路径不得触碰可编辑工程。
+    auto createdClip = session.editProject().createClip(
+        trackId,
+        clipName,
+        ClipType::Midi,
+        startTick,
+        defaultAppMidiClipLengthTick);
+
+    if (!createdClip.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::CreateFailed,
+            "无法创建 MIDI 片段：工程模型拒绝了这次片段创建。");
+    }
+
+    return successFeedback(*createdClip);
+}
+
+}

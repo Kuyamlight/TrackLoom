@@ -1,6 +1,8 @@
 #include "AppProjectFileActions.h"
+#include "AppMidiClipActions.h"
 #include "AppProjectSession.h"
 #include "AppProjectStatus.h"
+#include "AppTimelineStatus.h"
 #include "AppTrackListStatus.h"
 #include "TrackLoomAppInfo.h"
 
@@ -252,6 +254,160 @@ void projectFileActionFeedbackDescribesSuccessfulSaveAs()
         "save-as feedback should describe the completed save-as action");
 }
 
+void midiClipActionCreatesDefaultClipOnInstrumentTrack()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Clip Action");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    require(session.saveAs(path).success,
+        "MIDI clip action test should save the setup project before editing");
+
+    const auto feedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+
+    require(feedback.success,
+        "MIDI clip action should create a clip on an instrument track");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::Success,
+        "successful MIDI clip action should expose a stable success kind");
+    require(!feedback.clipId.empty(),
+        "successful MIDI clip action should expose the created clip id");
+    require(session.project().clips().size() == 1,
+        "MIDI clip action should add exactly one clip");
+    require(session.isDirty(),
+        "MIDI clip action should mark the app session dirty");
+
+    const auto clip = session.project().clips()[0];
+    require(clip.id == feedback.clipId,
+        "MIDI clip action feedback should point to the created clip");
+    require(clip.trackId == instrument.id,
+        "MIDI clip action should keep the clip on the requested track");
+    require(clip.type == trackloom::ClipType::Midi,
+        "MIDI clip action should create MIDI clips only");
+    require(clip.startTick == 0,
+        "first default MIDI clip should start at the beginning of the track");
+    require(clip.lengthTick == trackloom::defaultAppMidiClipLengthTick,
+        "default MIDI clip should use the app-level starter length");
+    require(feedback.message.find("MIDI 片段") != std::string::npos,
+        "successful MIDI clip feedback should describe the created MIDI clip");
+}
+
+void midiClipActionAppendsAfterExistingTrackClips()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Append Clips");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto first = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto second = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+
+    require(first.success && second.success,
+        "MIDI clip action should create repeated starter clips on the same track");
+    require(session.project().clips().size() == 2,
+        "repeated MIDI clip action should create two clips");
+    require(session.project().clips()[1].startTick
+            == session.project().clips()[0].startTick + session.project().clips()[0].lengthTick,
+        "second starter MIDI clip should append after the first clip on that track");
+}
+
+void midiClipActionRejectsMissingTrackWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Track");
+
+    const auto feedback = trackloom::createDefaultMidiClipOnTrack(session, "missing-track");
+
+    require(!feedback.success,
+        "MIDI clip action should reject a missing target track");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::MissingTrack,
+        "missing track MIDI clip action should expose a stable failure kind");
+    require(session.project().clips().empty(),
+        "missing track MIDI clip action should not create clips");
+    require(!session.isDirty(),
+        "missing track MIDI clip action should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "incompatible-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Incompatible Track");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    require(session.saveAs(path).success,
+        "incompatible MIDI clip action test should save setup edits before validation");
+
+    const auto feedback = trackloom::createDefaultMidiClipOnTrack(session, audio.id);
+
+    require(!feedback.success,
+        "MIDI clip action should reject non-instrument tracks");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::IncompatibleTrackType,
+        "incompatible track MIDI clip action should expose a stable failure kind");
+    require(session.project().clips().empty(),
+        "incompatible track MIDI clip action should not create clips");
+    require(!session.isDirty(),
+        "incompatible track MIDI clip action should not dirty an unchanged session");
+}
+
+void timelineStatusDescribesEmptyProject()
+{
+    const trackloom::Project project("Empty Timeline");
+
+    const auto status = trackloom::describeAppTimeline(project);
+
+    require(status.rows.empty(),
+        "empty timeline status should not expose phantom clip rows");
+    require(status.emptyMessage.find("暂无 MIDI 片段") != std::string::npos,
+        "empty timeline status should guide the user to create MIDI clips");
+}
+
+void timelineStatusDescribesClipRowsWithTrackNames()
+{
+    trackloom::Project project("Timeline");
+    const auto instrument = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(
+        instrument.id,
+        "Lead MIDI 1",
+        trackloom::ClipType::Midi,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::Project::ticksPerQuarterNote * 2);
+
+    require(clip.has_value(),
+        "timeline status test should create a MIDI clip");
+    require(project.createMidiNote(
+                clip->id,
+                0,
+                trackloom::Project::ticksPerQuarterNote,
+                64,
+                100,
+                1)
+            .has_value(),
+        "timeline status test should create a MIDI note inside the clip");
+
+    const auto status = trackloom::describeAppTimeline(project);
+
+    require(status.rows.size() == 1,
+        "timeline status should expose one row per project clip");
+    require(status.rows[0].number == 1 && status.rows[0].clipId == clip->id,
+        "timeline status should keep project clip order and clip id");
+    require(status.rows[0].trackId == instrument.id && status.rows[0].trackName == "Lead",
+        "timeline status should resolve the owning track name");
+    require(status.rows[0].typeLabel == "MIDI",
+        "timeline status should label MIDI clips clearly");
+    require(status.rows[0].startTick == trackloom::Project::ticksPerQuarterNote,
+        "timeline status should expose the clip start tick");
+    require(status.rows[0].lengthTick == trackloom::Project::ticksPerQuarterNote * 2,
+        "timeline status should expose the clip length tick");
+    require(status.rows[0].noteCount == 1,
+        "timeline status should count MIDI notes inside a MIDI clip");
+    require(status.rows[0].summary.find("Lead") != std::string::npos,
+        "timeline row summary should include the owning track name");
+    require(status.rows[0].summary.find("长度") != std::string::npos,
+        "timeline row summary should include the clip length");
+}
+
 void trackListStatusDescribesEmptyProject()
 {
     const trackloom::Project project("Empty");
@@ -347,6 +503,12 @@ int main()
     projectFileActionFeedbackExplainsSaveWithoutPath();
     projectFileActionFeedbackDescribesCanceledOpen();
     projectFileActionFeedbackDescribesSuccessfulSaveAs();
+    midiClipActionCreatesDefaultClipOnInstrumentTrack();
+    midiClipActionAppendsAfterExistingTrackClips();
+    midiClipActionRejectsMissingTrackWithoutDirtyingSession();
+    midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
+    timelineStatusDescribesEmptyProject();
+    timelineStatusDescribesClipRowsWithTrackNames();
     trackListStatusDescribesEmptyProject();
     trackListStatusDescribesTrackRowsInProjectOrder();
     trackListStatusDescribesTrackPlaybackAndViewFlags();

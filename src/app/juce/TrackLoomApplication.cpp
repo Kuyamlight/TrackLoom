@@ -1,6 +1,8 @@
+#include "AppMidiClipActions.h"
 #include "AppProjectFileActions.h"
 #include "AppProjectSession.h"
 #include "AppProjectStatus.h"
+#include "AppTimelineStatus.h"
 #include "AppTrackListStatus.h"
 #include "TrackLoomAppInfo.h"
 
@@ -13,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -38,6 +41,19 @@ juce::String pathToJuceString(const std::filesystem::path& path)
         static_cast<int>(utf8Path.size()));
 }
 
+void styleReadOnlyTextEditor(juce::TextEditor& editor)
+{
+    editor.setReadOnly(true);
+    editor.setMultiLine(true);
+    editor.setScrollbarsShown(true);
+    editor.setPopupMenuEnabled(false);
+    editor.setFont(juce::FontOptions(15.0f));
+    editor.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff20231f));
+    editor.setColour(juce::TextEditor::textColourId, juce::Colour(0xffe4dfd0));
+    editor.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff3a463c));
+    editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour(0xff6ccf8d));
+}
+
 class MainComponent final : public juce::Component {
 public:
     explicit MainComponent(std::function<void(std::string)> titleChanged)
@@ -56,36 +72,47 @@ public:
         actionLabel_.setFont(juce::FontOptions(15.0f));
         actionLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffcfc7b1));
 
+        targetTrackLabel_.setText(toJuceString("目标乐器轨"), juce::dontSendNotification);
+        targetTrackLabel_.setFont(juce::FontOptions(15.0f));
+        targetTrackLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffd9d4c5));
+
+        targetTrackBox_.setTextWhenNothingSelected(toJuceString("暂无可用乐器轨"));
+        targetTrackBox_.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff20231f));
+        targetTrackBox_.setColour(juce::ComboBox::textColourId, juce::Colour(0xfff2f0e8));
+        targetTrackBox_.setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff3a463c));
+        targetTrackBox_.setColour(juce::ComboBox::arrowColourId, juce::Colour(0xff6ccf8d));
+
         trackListTitleLabel_.setText(toJuceString("轨道列表"), juce::dontSendNotification);
         trackListTitleLabel_.setFont(juce::FontOptions(18.0f, juce::Font::bold));
         trackListTitleLabel_.setColour(juce::Label::textColourId, juce::Colour(0xfff2f0e8));
 
-        trackListText_.setReadOnly(true);
-        trackListText_.setMultiLine(true);
-        trackListText_.setScrollbarsShown(true);
-        trackListText_.setPopupMenuEnabled(false);
-        trackListText_.setFont(juce::FontOptions(15.0f));
-        trackListText_.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff20231f));
-        trackListText_.setColour(juce::TextEditor::textColourId, juce::Colour(0xffe4dfd0));
-        trackListText_.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff3a463c));
-        trackListText_.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour(0xff6ccf8d));
+        timelineTitleLabel_.setText(toJuceString("时间线片段"), juce::dontSendNotification);
+        timelineTitleLabel_.setFont(juce::FontOptions(18.0f, juce::Font::bold));
+        timelineTitleLabel_.setColour(juce::Label::textColourId, juce::Colour(0xfff2f0e8));
+
+        styleReadOnlyTextEditor(trackListText_);
+        styleReadOnlyTextEditor(timelineText_);
 
         newProjectButton_.setButtonText(toJuceString("新建工程"));
         openProjectButton_.setButtonText(toJuceString("打开工程"));
         saveProjectButton_.setButtonText(toJuceString("保存"));
         saveAsProjectButton_.setButtonText(toJuceString("另存为"));
         addInstrumentTrackButton_.setButtonText(toJuceString("添加乐器轨"));
+        createMidiClipButton_.setButtonText(toJuceString("创建 MIDI 片段"));
 
         newProjectButton_.onClick = [this] { requestNewProject(); };
         openProjectButton_.onClick = [this] { chooseProjectToOpen(); };
         saveProjectButton_.onClick = [this] { saveCurrentProject(); };
         saveAsProjectButton_.onClick = [this] { chooseProjectToSaveAs(); };
+        targetTrackBox_.onChange = [this] { updateSelectedTrackFromComboBox(); };
+        createMidiClipButton_.onClick = [this] { createMidiClipOnSelectedTrack(); };
 
         addInstrumentTrackButton_.onClick = [this] {
             const auto trackNumber = session_.project().tracks().size() + 1;
-            session_.editProject().createTrack(
+            const auto track = session_.editProject().createTrack(
                 "Instrument " + std::to_string(trackNumber),
                 trackloom::TrackType::Instrument);
+            selectedTrackId_ = track.id;
             lastActionMessage_ = "已添加乐器轨。";
             refreshFromSession();
         };
@@ -94,13 +121,18 @@ public:
         addAndMakeVisible(statusLabel_);
         addAndMakeVisible(trackSummaryLabel_);
         addAndMakeVisible(actionLabel_);
+        addAndMakeVisible(targetTrackLabel_);
+        addAndMakeVisible(targetTrackBox_);
         addAndMakeVisible(trackListTitleLabel_);
         addAndMakeVisible(trackListText_);
+        addAndMakeVisible(timelineTitleLabel_);
+        addAndMakeVisible(timelineText_);
         addAndMakeVisible(newProjectButton_);
         addAndMakeVisible(openProjectButton_);
         addAndMakeVisible(saveProjectButton_);
         addAndMakeVisible(saveAsProjectButton_);
         addAndMakeVisible(addInstrumentTrackButton_);
+        addAndMakeVisible(createMidiClipButton_);
 
         refreshFromSession();
         setSize(1040, 680);
@@ -134,9 +166,25 @@ public:
         bounds.removeFromTop(24);
         trackSummaryLabel_.setBounds(bounds.removeFromTop(32));
         actionLabel_.setBounds(bounds.removeFromTop(32));
-        bounds.removeFromTop(12);
-        trackListTitleLabel_.setBounds(bounds.removeFromTop(30));
-        trackListText_.setBounds(bounds.removeFromTop(220));
+        bounds.removeFromTop(10);
+
+        auto targetRow = bounds.removeFromTop(36);
+        targetTrackLabel_.setBounds(targetRow.removeFromLeft(96));
+        targetRow.removeFromLeft(10);
+        targetTrackBox_.setBounds(targetRow.removeFromLeft(260));
+        targetRow.removeFromLeft(12);
+        createMidiClipButton_.setBounds(targetRow.removeFromLeft(160));
+
+        bounds.removeFromTop(16);
+        auto columns = bounds;
+        auto leftColumn = columns.removeFromLeft((columns.getWidth() - 16) / 2);
+        columns.removeFromLeft(16);
+        auto rightColumn = columns;
+
+        trackListTitleLabel_.setBounds(leftColumn.removeFromTop(30));
+        trackListText_.setBounds(leftColumn);
+        timelineTitleLabel_.setBounds(rightColumn.removeFromTop(30));
+        timelineText_.setBounds(rightColumn);
     }
 
 private:
@@ -259,9 +307,77 @@ private:
         refreshFromSession();
     }
 
+    void updateSelectedTrackFromComboBox()
+    {
+        const auto selectedId = targetTrackBox_.getSelectedId();
+        if (selectedId <= 0
+            || static_cast<std::size_t>(selectedId) > selectableTrackIds_.size()) {
+            selectedTrackId_.clear();
+            return;
+        }
+
+        selectedTrackId_ = selectableTrackIds_[static_cast<std::size_t>(selectedId - 1)];
+    }
+
+    void createMidiClipOnSelectedTrack()
+    {
+        if (selectedTrackId_.empty()) {
+            lastActionMessage_ = "请先添加并选择一条乐器轨，再创建 MIDI 片段。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto targetTrackId = selectedTrackId_;
+        const auto feedback = trackloom::createDefaultMidiClipOnTrack(session_, targetTrackId);
+        if (feedback.success) {
+            selectedTrackId_ = targetTrackId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void refreshTrackTargetSelector()
+    {
+        const auto previousSelection = selectedTrackId_;
+        selectableTrackIds_.clear();
+        targetTrackBox_.clear(juce::dontSendNotification);
+
+        int itemId = 1;
+        int selectedItemId = 0;
+        for (const auto& track : session_.project().tracks()) {
+            if (track.type != trackloom::TrackType::Instrument) {
+                continue;
+            }
+
+            selectableTrackIds_.push_back(track.id);
+            targetTrackBox_.addItem(toJuceString(track.name), itemId);
+
+            if (track.id == previousSelection) {
+                selectedItemId = itemId;
+            }
+
+            ++itemId;
+        }
+
+        if (selectedItemId == 0 && !selectableTrackIds_.empty()) {
+            selectedItemId = 1;
+            selectedTrackId_ = selectableTrackIds_.front();
+        } else if (selectedItemId > 0) {
+            selectedTrackId_ = previousSelection;
+        } else {
+            selectedTrackId_.clear();
+        }
+
+        targetTrackBox_.setSelectedId(selectedItemId, juce::dontSendNotification);
+        targetTrackBox_.setEnabled(!selectableTrackIds_.empty());
+        createMidiClipButton_.setEnabled(!selectedTrackId_.empty());
+    }
+
     void refreshFromSession()
     {
         const auto status = trackloom::describeAppProjectSession(session_);
+        refreshTrackTargetSelector();
 
         titleLabel_.setText(toJuceString(status.windowTitle), juce::dontSendNotification);
         statusLabel_.setText(toJuceString(status.statusLine), juce::dontSendNotification);
@@ -269,6 +385,9 @@ private:
         actionLabel_.setText(toJuceString(lastActionMessage_), juce::dontSendNotification);
         trackListText_.setText(
             toJuceString(trackListText(trackloom::describeAppTrackList(session_.project()))),
+            false);
+        timelineText_.setText(
+            toJuceString(timelineText(trackloom::describeAppTimeline(session_.project()))),
             false);
 
         if (titleChanged_) {
@@ -283,10 +402,30 @@ private:
         }
 
         return "轨道区：当前工程已有 " + std::to_string(status.trackCount)
-            + " 条轨道；下一步会接入轨道列表和时间线编辑。";
+            + " 条轨道；可选择乐器轨并创建默认 MIDI 片段。";
     }
 
     static std::string trackListText(const trackloom::AppTrackListStatus& status)
+    {
+        if (status.rows.empty()) {
+            return status.emptyMessage;
+        }
+
+        std::string text;
+        for (const auto& row : status.rows) {
+            if (!text.empty()) {
+                text += "\n";
+            }
+
+            text += trackNumberText(row.number)
+                + "  " + row.name
+                + "  [" + row.typeLabel + "]  "
+                + row.summary;
+        }
+        return text;
+    }
+
+    static std::string timelineText(const trackloom::AppTimelineStatus& status)
     {
         if (status.rows.empty()) {
             return status.emptyMessage;
@@ -318,18 +457,25 @@ private:
     trackloom::AppProjectSession session_;
     std::function<void(std::string)> titleChanged_;
     std::unique_ptr<juce::FileChooser> fileChooser_;
+    std::vector<std::string> selectableTrackIds_;
     std::string lastActionMessage_ = "文件动作：尚未打开或保存工程。";
+    std::string selectedTrackId_;
     juce::Label titleLabel_;
     juce::Label statusLabel_;
     juce::Label trackSummaryLabel_;
     juce::Label actionLabel_;
+    juce::Label targetTrackLabel_;
+    juce::ComboBox targetTrackBox_;
     juce::Label trackListTitleLabel_;
     juce::TextEditor trackListText_;
+    juce::Label timelineTitleLabel_;
+    juce::TextEditor timelineText_;
     juce::TextButton newProjectButton_;
     juce::TextButton openProjectButton_;
     juce::TextButton saveProjectButton_;
     juce::TextButton saveAsProjectButton_;
     juce::TextButton addInstrumentTrackButton_;
+    juce::TextButton createMidiClipButton_;
 };
 
 class MainWindow final : public juce::DocumentWindow {
