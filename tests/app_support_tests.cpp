@@ -652,6 +652,73 @@ void trackActionRejectsNonInstrumentTrackDeleteWithoutDirtyingSession()
         "non-instrument track delete action should not dirty an unchanged session");
 }
 
+void trackActionRenamesTrackAndMarksSessionDirty()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-action-rename.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Rename Track");
+    const auto track = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    require(session.saveAs(path).success,
+        "track rename action test should save setup edits before renaming");
+
+    const auto feedback = trackloom::renameTrackById(session, track.id, "  Main Lead  ");
+
+    require(feedback.success,
+        "track rename action should rename an existing track");
+    require(feedback.kind == trackloom::AppTrackActionFeedbackKind::Success,
+        "successful track rename action should expose a stable success kind");
+    require(feedback.trackId == track.id,
+        "track rename action should report the renamed track id");
+    require(session.project().findTrackById(track.id)->name == "Main Lead",
+        "track rename action should trim outer whitespace before saving the name");
+    require(session.isDirty(),
+        "successful track rename should mark the app session dirty");
+
+    const auto status = trackloom::describeAppTrackList(session.project());
+    require(status.rows.size() == 1 && status.rows[0].name == "Main Lead",
+        "track list status should expose the renamed track name");
+}
+
+void trackActionRejectsEmptyTrackNameWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-action-rename-empty.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Empty Rename");
+    const auto track = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    require(session.saveAs(path).success,
+        "empty track rename test should save setup edits before validation");
+
+    const auto feedback = trackloom::renameTrackById(session, track.id, "   ");
+
+    require(!feedback.success,
+        "track rename action should reject a whitespace-only name");
+    require(feedback.kind == trackloom::AppTrackActionFeedbackKind::EmptyName,
+        "empty track rename action should expose a stable failure kind");
+    require(session.project().findTrackById(track.id)->name == "Lead",
+        "empty track rename action should keep the existing track name");
+    require(!session.isDirty(),
+        "empty track rename action should not dirty an unchanged session");
+}
+
+void trackActionRejectsMissingTrackRenameWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Rename");
+
+    const auto feedback = trackloom::renameTrackById(session, "missing-track", "Lead");
+
+    require(!feedback.success,
+        "track rename action should reject a missing track");
+    require(feedback.kind == trackloom::AppTrackActionFeedbackKind::MissingTrack,
+        "missing track rename action should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing track rename action should not dirty an unchanged session");
+}
+
 void trackStateActionTogglesMuteAndMarksSessionDirty()
 {
     removeTestWorkspace();
@@ -1707,6 +1774,9 @@ int main()
     trackActionDeletesInstrumentTrackAndOwnedClips();
     trackActionRejectsMissingTrackDeleteWithoutDirtyingSession();
     trackActionRejectsNonInstrumentTrackDeleteWithoutDirtyingSession();
+    trackActionRenamesTrackAndMarksSessionDirty();
+    trackActionRejectsEmptyTrackNameWithoutDirtyingSession();
+    trackActionRejectsMissingTrackRenameWithoutDirtyingSession();
     trackStateActionTogglesMuteAndMarksSessionDirty();
     trackStateActionTogglesPlaybackFlagsIndependently();
     trackStateActionTogglesHiddenWithoutAffectingPlayback();

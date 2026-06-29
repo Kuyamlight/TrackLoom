@@ -29,6 +29,11 @@ juce::String toJuceString(std::string_view text)
     return juce::String::fromUTF8(text.data(), static_cast<int>(text.size()));
 }
 
+std::string juceStringToUtf8(const juce::String& text)
+{
+    return std::string(text.toRawUTF8());
+}
+
 std::filesystem::path juceFileToPath(const juce::File& file)
 {
     const auto fullPath = file.getFullPathName();
@@ -67,6 +72,18 @@ void styleReadOnlyTextEditor(juce::TextEditor& editor)
     editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour(0xff6ccf8d));
 }
 
+void styleSingleLineTextEditor(juce::TextEditor& editor)
+{
+    editor.setMultiLine(false);
+    editor.setScrollbarsShown(false);
+    editor.setPopupMenuEnabled(true);
+    editor.setFont(juce::FontOptions(15.0f));
+    editor.setColour(juce::TextEditor::backgroundColourId, juce::Colour(0xff20231f));
+    editor.setColour(juce::TextEditor::textColourId, juce::Colour(0xfff2f0e8));
+    editor.setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff3a463c));
+    editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour(0xff6ccf8d));
+}
+
 class MainComponent final
     : public juce::Component
     , private juce::Timer {
@@ -101,6 +118,11 @@ public:
         targetTrackBox_.setColour(juce::ComboBox::textColourId, juce::Colour(0xfff2f0e8));
         targetTrackBox_.setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff3a463c));
         targetTrackBox_.setColour(juce::ComboBox::arrowColourId, juce::Colour(0xff6ccf8d));
+
+        trackNameLabel_.setText(toJuceString("轨道名称"), juce::dontSendNotification);
+        trackNameLabel_.setFont(juce::FontOptions(15.0f));
+        trackNameLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffd9d4c5));
+        styleSingleLineTextEditor(trackNameEditor_);
 
         targetMidiClipLabel_.setText(toJuceString("目标 MIDI 片段"), juce::dontSendNotification);
         targetMidiClipLabel_.setFont(juce::FontOptions(15.0f));
@@ -148,6 +170,7 @@ public:
         rewindProjectButton_.setButtonText(toJuceString("回到开头"));
         createMidiClipButton_.setButtonText(toJuceString("创建 MIDI 片段"));
         deleteInstrumentTrackButton_.setButtonText(toJuceString("删除乐器轨"));
+        renameTrackButton_.setButtonText(toJuceString("重命名"));
         muteTrackButton_.setButtonText(toJuceString("静音"));
         soloTrackButton_.setButtonText(toJuceString("独奏"));
         disableTrackButton_.setButtonText(toJuceString("禁用"));
@@ -170,6 +193,8 @@ public:
         addInstrumentTrackButton_.onClick = [this] { addDefaultInstrumentTrack(); };
         createMidiClipButton_.onClick = [this] { createMidiClipOnSelectedTrack(); };
         deleteInstrumentTrackButton_.onClick = [this] { deleteSelectedInstrumentTrack(); };
+        renameTrackButton_.onClick = [this] { renameSelectedTrack(); };
+        trackNameEditor_.onReturnKey = [this] { renameSelectedTrack(); };
         muteTrackButton_.onClick = [this] { toggleSelectedTrackMute(); };
         soloTrackButton_.onClick = [this] { toggleSelectedTrackSolo(); };
         disableTrackButton_.onClick = [this] { toggleSelectedTrackDisabled(); };
@@ -186,6 +211,8 @@ public:
         addAndMakeVisible(actionLabel_);
         addAndMakeVisible(targetTrackLabel_);
         addAndMakeVisible(targetTrackBox_);
+        addAndMakeVisible(trackNameLabel_);
+        addAndMakeVisible(trackNameEditor_);
         addAndMakeVisible(targetMidiClipLabel_);
         addAndMakeVisible(targetMidiClipBox_);
         addAndMakeVisible(trackListTitleLabel_);
@@ -207,6 +234,7 @@ public:
         addAndMakeVisible(rewindProjectButton_);
         addAndMakeVisible(createMidiClipButton_);
         addAndMakeVisible(deleteInstrumentTrackButton_);
+        addAndMakeVisible(renameTrackButton_);
         addAndMakeVisible(muteTrackButton_);
         addAndMakeVisible(soloTrackButton_);
         addAndMakeVisible(disableTrackButton_);
@@ -267,14 +295,22 @@ public:
         createMidiClipButton_.setBounds(targetRow.removeFromLeft(144));
         targetRow.removeFromLeft(8);
         deleteInstrumentTrackButton_.setBounds(targetRow.removeFromLeft(112));
-        targetRow.removeFromLeft(8);
-        muteTrackButton_.setBounds(targetRow.removeFromLeft(64));
-        targetRow.removeFromLeft(8);
-        soloTrackButton_.setBounds(targetRow.removeFromLeft(64));
-        targetRow.removeFromLeft(8);
-        disableTrackButton_.setBounds(targetRow.removeFromLeft(64));
-        targetRow.removeFromLeft(8);
-        hideTrackButton_.setBounds(targetRow.removeFromLeft(64));
+
+        bounds.removeFromTop(8);
+        auto trackNameRow = bounds.removeFromTop(36);
+        trackNameLabel_.setBounds(trackNameRow.removeFromLeft(96));
+        trackNameRow.removeFromLeft(8);
+        trackNameEditor_.setBounds(trackNameRow.removeFromLeft(220));
+        trackNameRow.removeFromLeft(10);
+        renameTrackButton_.setBounds(trackNameRow.removeFromLeft(88));
+        trackNameRow.removeFromLeft(10);
+        muteTrackButton_.setBounds(trackNameRow.removeFromLeft(64));
+        trackNameRow.removeFromLeft(8);
+        soloTrackButton_.setBounds(trackNameRow.removeFromLeft(64));
+        trackNameRow.removeFromLeft(8);
+        disableTrackButton_.setBounds(trackNameRow.removeFromLeft(64));
+        trackNameRow.removeFromLeft(8);
+        hideTrackButton_.setBounds(trackNameRow.removeFromLeft(64));
 
         bounds.removeFromTop(8);
         auto clipRow = bounds.removeFromTop(36);
@@ -605,6 +641,26 @@ private:
         refreshFromSession();
     }
 
+    void renameSelectedTrack()
+    {
+        if (selectedTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条乐器轨，再重命名轨道。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::renameTrackById(
+            session_,
+            selectedTrackId_,
+            juceStringToUtf8(trackNameEditor_.getText()));
+        if (feedback.success) {
+            selectedTrackId_ = feedback.trackId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void setTrackStateFeedback(const trackloom::AppTrackStateActionFeedback& feedback)
     {
         lastActionMessage_ = feedback.message;
@@ -770,10 +826,28 @@ private:
         targetTrackBox_.setEnabled(!selectableTrackIds_.empty());
         createMidiClipButton_.setEnabled(!selectedTrackId_.empty());
         deleteInstrumentTrackButton_.setEnabled(!selectedTrackId_.empty());
+        renameTrackButton_.setEnabled(!selectedTrackId_.empty());
         muteTrackButton_.setEnabled(!selectedTrackId_.empty());
         soloTrackButton_.setEnabled(!selectedTrackId_.empty());
         disableTrackButton_.setEnabled(!selectedTrackId_.empty());
         hideTrackButton_.setEnabled(!selectedTrackId_.empty());
+        syncTrackNameEditorFromSelection(selectedTrackId_ != previousSelection);
+    }
+
+    void syncTrackNameEditorFromSelection(bool forceUpdate)
+    {
+        trackNameEditor_.setEnabled(!selectedTrackId_.empty());
+
+        const auto selectedTrack = session_.project().findTrackById(selectedTrackId_);
+        if (!selectedTrack.has_value()) {
+            trackNameEditor_.setText(juce::String{}, false);
+            return;
+        }
+
+        // 播放 Timer 会定期刷新界面；用户正在输入时不能把文本框重置回旧名称。
+        if (forceUpdate || !trackNameEditor_.hasKeyboardFocus(true)) {
+            trackNameEditor_.setText(toJuceString(selectedTrack->name), false);
+        }
     }
 
     void refreshMidiClipTargetSelector(const trackloom::AppTimelineStatus& timelineStatus)
@@ -981,6 +1055,8 @@ private:
     juce::Label actionLabel_;
     juce::Label targetTrackLabel_;
     juce::ComboBox targetTrackBox_;
+    juce::Label trackNameLabel_;
+    juce::TextEditor trackNameEditor_;
     juce::Label targetMidiClipLabel_;
     juce::ComboBox targetMidiClipBox_;
     juce::Label trackListTitleLabel_;
@@ -1002,6 +1078,7 @@ private:
     juce::TextButton rewindProjectButton_;
     juce::TextButton createMidiClipButton_;
     juce::TextButton deleteInstrumentTrackButton_;
+    juce::TextButton renameTrackButton_;
     juce::TextButton muteTrackButton_;
     juce::TextButton soloTrackButton_;
     juce::TextButton disableTrackButton_;

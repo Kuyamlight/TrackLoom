@@ -12,6 +12,8 @@ enum class AppTrackActionFeedbackKind {
     Success,
     MissingTrack,
     IncompatibleTrackType,
+    EmptyName,
+    RenameFailed,
     DeleteFailed,
     CreateFailed
 };
@@ -34,5 +36,12 @@ AppTrackActionFeedback createDefaultInstrumentTrack(AppProjectSession& session);
 AppTrackActionFeedback deleteInstrumentTrackById(
     AppProjectSession& session,
     const std::string& trackId);
+
+// renameTrackById 修改目标轨道名称。
+// 名称会先去掉首尾空白；空名称会被拒绝，避免 UI 保存不可见轨道名。
+AppTrackActionFeedback renameTrackById(
+    AppProjectSession& session,
+    const std::string& trackId,
+    std::string name);
 
 }
