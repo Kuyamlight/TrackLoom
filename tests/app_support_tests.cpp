@@ -458,6 +458,86 @@ void playbackActionStopsCleanlyBeforeStart()
         "playback stop action before start should not dirty the project session");
 }
 
+void playbackToggleStartsStoppedTransportWithoutDirtyingProject()
+{
+    // 从停止态切换到播放态时，只应改变运行态播放控制，不能把工程标记为已修改。
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "playback-toggle-start.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Toggle Start");
+    require(session.saveAs(path).success,
+        "toggle start test should save setup edits before runtime control");
+
+    const auto feedback = trackloom::toggleAppPlayback(playback, session.project());
+
+    require(feedback.success,
+        "toggle playback should start a stopped runtime");
+    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::Success,
+        "successful toggle start should expose the stable success kind");
+    require(playback.isPrepared(),
+        "toggle playback from stopped should prepare playback runtime");
+    require(playback.isPlaying(),
+        "toggle playback from stopped should start playback");
+    require(playback.currentSample() == 0,
+        "toggle playback from stopped should not move the playback position by itself");
+    require(!session.isDirty(),
+        "toggle playback from stopped should not dirty the project session");
+}
+
+void playbackToggleStopsPlayingTransportWithoutDirtyingProject()
+{
+    // 从播放态切换到停止态时，必须复用标准停止路径，并保持工程 dirty 状态不变。
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "playback-toggle-stop.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Toggle Stop");
+    require(session.saveAs(path).success,
+        "toggle stop test should save setup edits before runtime control");
+    require(trackloom::startAppPlayback(playback, session.project()).success,
+        "toggle stop test should start playback before toggling");
+
+    const auto feedback = trackloom::toggleAppPlayback(playback, session.project());
+
+    require(feedback.success,
+        "toggle playback should stop a playing runtime");
+    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::Success,
+        "successful toggle stop should expose the stable success kind");
+    require(playback.isPrepared(),
+        "toggle playback from playing should keep playback runtime prepared");
+    require(!playback.isPlaying(),
+        "toggle playback from playing should stop playback");
+    require(!session.isDirty(),
+        "toggle playback from playing should not dirty the project session");
+}
+
+void playbackToggleStopsAfterUiAdvanceAndKeepsPosition()
+{
+    // 播放头已经推进后再停止，不应偷偷回到开头；回到开头由单独的 rewind 动作负责。
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Toggle After Advance");
+    require(trackloom::startAppPlayback(playback, session.project()).success,
+        "toggle after advance test should start playback before advancing");
+    require(trackloom::advanceAppPlaybackForUiTick(playback, session.project()).success,
+        "toggle after advance test should advance playback before toggling");
+
+    const auto sampleBeforeToggle = playback.currentSample();
+    const auto feedback = trackloom::toggleAppPlayback(playback, session.project());
+
+    require(feedback.success,
+        "toggle playback should stop after playback has advanced");
+    require(!playback.isPlaying(),
+        "toggle playback after advance should stop playback");
+    require(playback.currentSample() == sampleBeforeToggle,
+        "toggle playback after advance should keep the current playback position");
+    require(!session.isDirty(),
+        "toggle playback after advance should not dirty the project session");
+}
+
 void playbackStatusDescribesStoppedAndPlayingStates()
 {
     trackloom::AppProjectSession session;
@@ -1231,6 +1311,9 @@ int main()
     playbackActionStartsTransportWithoutDirtyingProject();
     playbackActionStopsTransportWithoutDirtyingProject();
     playbackActionStopsCleanlyBeforeStart();
+    playbackToggleStartsStoppedTransportWithoutDirtyingProject();
+    playbackToggleStopsPlayingTransportWithoutDirtyingProject();
+    playbackToggleStopsAfterUiAdvanceAndKeepsPosition();
     playbackStatusDescribesStoppedAndPlayingStates();
     playbackUiTickAdvancesPlayingTransportWithoutDirtyingProject();
     playbackUiTickSkipsStoppedTransportWithoutPreparingRuntime();

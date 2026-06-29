@@ -159,6 +159,19 @@ AppPlaybackActionFeedback stopAppPlayback(
     return successFeedback("已停止播放。");
 }
 
+AppPlaybackActionFeedback toggleAppPlayback(
+    AppPlaybackController& playback,
+    const Project& project)
+{
+    // 已经在播放时必须走标准停止入口，因为停止入口会复用核心安全命令。
+    if (playback.isPlaying()) {
+        return stopAppPlayback(playback, project);
+    }
+
+    // 停止态必须走标准开始入口，确保 prepare、Transport 和反馈消息保持一致。
+    return startAppPlayback(playback, project);
+}
+
 AppPlaybackActionFeedback rewindAppPlaybackToStart(
     AppPlaybackController& playback,
     const Project& project)

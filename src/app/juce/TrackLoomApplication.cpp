@@ -168,6 +168,8 @@ public:
         addAndMakeVisible(deleteMidiNoteButton_);
         addAndMakeVisible(deleteMidiClipButton_);
 
+        // MainComponent 主动获取键盘焦点后，Space 键才能先交给 keyPressed 处理。
+        setWantsKeyboardFocus(true);
         refreshFromSession();
         setSize(1040, 680);
     }
@@ -241,6 +243,17 @@ public:
         trackListText_.setBounds(leftColumn);
         timelineTitleLabel_.setBounds(rightColumn.removeFromTop(30));
         timelineText_.setBounds(rightColumn);
+    }
+
+    bool keyPressed(const juce::KeyPress& key) override
+    {
+        // 当前只实现窗口内 Space 快捷键；全局快捷键和完整菜单属于后续阶段。
+        if (key.getKeyCode() == juce::KeyPress::spaceKey) {
+            toggleProjectPlayback();
+            return true;
+        }
+
+        return false;
     }
 
 private:
@@ -417,6 +430,19 @@ private:
         const auto feedback = trackloom::stopAppPlayback(playback_, session_.project());
         lastActionMessage_ = feedback.message;
         if (feedback.success) {
+            stopTimer();
+        }
+        refreshFromSession();
+    }
+
+    void toggleProjectPlayback()
+    {
+        const auto feedback = trackloom::toggleAppPlayback(playback_, session_.project());
+        lastActionMessage_ = feedback.message;
+        // Timer 只跟随成功后的真实播放状态，避免快捷键和按钮各自维护一套状态。
+        if (feedback.success && playback_.isPlaying()) {
+            startTimerHz(30);
+        } else if (feedback.success) {
             stopTimer();
         }
         refreshFromSession();

@@ -77,6 +77,12 @@ AppPlaybackActionFeedback stopAppPlayback(
     AppPlaybackController& playback,
     const Project& project);
 
+// 播放/停止切换是给按钮、快捷键、菜单和 AI 工具复用的统一入口；
+// UI 不需要自己判断 isPlaying 后再复制开始、停止和错误反馈规则。
+AppPlaybackActionFeedback toggleAppPlayback(
+    AppPlaybackController& playback,
+    const Project& project);
+
 AppPlaybackActionFeedback rewindAppPlaybackToStart(
     AppPlaybackController& playback,
     const Project& project);
