@@ -103,6 +103,12 @@ bool AppPlaybackController::stop(const Project& project)
     return command.execute(playbackSession_, transport_, project).success;
 }
 
+bool AppPlaybackController::rewindToStart(const Project& project)
+{
+    SeekPlaybackCommand command(defaultAppPlaybackStartSample, defaultAppPlaybackReleaseSampleOffset);
+    return command.execute(playbackSession_, transport_, project).success;
+}
+
 bool AppPlaybackController::advanceOneUiBlock(const Project& project)
 {
     if (!playbackSession_.isPrepared()) {
@@ -151,6 +157,25 @@ AppPlaybackActionFeedback stopAppPlayback(
     }
 
     return successFeedback("已停止播放。");
+}
+
+AppPlaybackActionFeedback rewindAppPlaybackToStart(
+    AppPlaybackController& playback,
+    const Project& project)
+{
+    if (!playback.ensurePrepared(project)) {
+        return failureFeedback(
+            AppPlaybackActionFeedbackKind::PrepareFailed,
+            "无法回到开头：播放运行态准备失败。");
+    }
+
+    if (!playback.rewindToStart(project)) {
+        return failureFeedback(
+            AppPlaybackActionFeedbackKind::SeekFailed,
+            "无法回到开头：安全跳转命令被拒绝。");
+    }
+
+    return successFeedback("已回到开头。");
 }
 
 AppPlaybackActionFeedback advanceAppPlaybackForUiTick(

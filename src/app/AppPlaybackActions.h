@@ -17,6 +17,7 @@ inline constexpr int defaultAppPlaybackChannelCount = 2;
 inline constexpr int defaultAppPlaybackMaxBlockFrames = 512;
 inline constexpr int defaultAppPlaybackUiBlockFrames = 512;
 inline constexpr int defaultAppPlaybackReleaseSampleOffset = 0;
+inline constexpr std::int64_t defaultAppPlaybackStartSample = 0;
 
 // AppPlaybackActionFeedbackKind 给 UI 和测试提供稳定分支。
 // 播放控制是运行态动作，不应进入工程撤销栈，也不应标脏工程。
@@ -25,6 +26,7 @@ enum class AppPlaybackActionFeedbackKind {
     NoOp,
     PrepareFailed,
     StopFailed,
+    SeekFailed,
     RenderFailed
 };
 
@@ -58,6 +60,7 @@ public:
 
     void start();
     bool stop(const Project& project);
+    bool rewindToStart(const Project& project);
     bool advanceOneUiBlock(const Project& project);
 
 private:
@@ -71,6 +74,10 @@ AppPlaybackActionFeedback startAppPlayback(
     const Project& project);
 
 AppPlaybackActionFeedback stopAppPlayback(
+    AppPlaybackController& playback,
+    const Project& project);
+
+AppPlaybackActionFeedback rewindAppPlaybackToStart(
     AppPlaybackController& playback,
     const Project& project);
 

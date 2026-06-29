@@ -118,6 +118,7 @@ public:
         addInstrumentTrackButton_.setButtonText(toJuceString("添加乐器轨"));
         playProjectButton_.setButtonText(toJuceString("播放"));
         stopProjectButton_.setButtonText(toJuceString("停止"));
+        rewindProjectButton_.setButtonText(toJuceString("回到开头"));
         createMidiClipButton_.setButtonText(toJuceString("创建 MIDI 片段"));
         deleteInstrumentTrackButton_.setButtonText(toJuceString("删除乐器轨"));
         addMidiNoteButton_.setButtonText(toJuceString("添加默认音符"));
@@ -130,6 +131,7 @@ public:
         saveAsProjectButton_.onClick = [this] { chooseProjectToSaveAs(); };
         playProjectButton_.onClick = [this] { startProjectPlayback(); };
         stopProjectButton_.onClick = [this] { stopProjectPlayback(); };
+        rewindProjectButton_.onClick = [this] { rewindProjectPlayback(); };
         targetTrackBox_.onChange = [this] { updateSelectedTrackFromComboBox(); };
         targetMidiClipBox_.onChange = [this] { updateSelectedMidiClipFromComboBox(); };
         addInstrumentTrackButton_.onClick = [this] { addDefaultInstrumentTrack(); };
@@ -159,6 +161,7 @@ public:
         addAndMakeVisible(addInstrumentTrackButton_);
         addAndMakeVisible(playProjectButton_);
         addAndMakeVisible(stopProjectButton_);
+        addAndMakeVisible(rewindProjectButton_);
         addAndMakeVisible(createMidiClipButton_);
         addAndMakeVisible(deleteInstrumentTrackButton_);
         addAndMakeVisible(addMidiNoteButton_);
@@ -199,6 +202,8 @@ public:
         playProjectButton_.setBounds(buttonRow.removeFromLeft(88));
         buttonRow.removeFromLeft(12);
         stopProjectButton_.setBounds(buttonRow.removeFromLeft(88));
+        buttonRow.removeFromLeft(12);
+        rewindProjectButton_.setBounds(buttonRow.removeFromLeft(104));
 
         bounds.removeFromTop(24);
         trackSummaryLabel_.setBounds(bounds.removeFromTop(32));
@@ -417,6 +422,16 @@ private:
         refreshFromSession();
     }
 
+    void rewindProjectPlayback()
+    {
+        const auto feedback = trackloom::rewindAppPlaybackToStart(playback_, session_.project());
+        lastActionMessage_ = feedback.message;
+        if (feedback.success && playback_.isPlaying()) {
+            startTimerHz(30);
+        }
+        refreshFromSession();
+    }
+
     void addDefaultInstrumentTrack()
     {
         const auto feedback = trackloom::createDefaultInstrumentTrack(session_);
@@ -614,6 +629,7 @@ private:
         actionLabel_.setText(toJuceString(lastActionMessage_), juce::dontSendNotification);
         playProjectButton_.setEnabled(!playback_.isPlaying());
         stopProjectButton_.setEnabled(playback_.isPlaying());
+        rewindProjectButton_.setEnabled(playback_.currentSample() > 0);
         trackListText_.setText(
             toJuceString(trackListText(trackloom::describeAppTrackList(session_.project()))),
             false);
@@ -714,6 +730,7 @@ private:
     juce::TextButton addInstrumentTrackButton_;
     juce::TextButton playProjectButton_;
     juce::TextButton stopProjectButton_;
+    juce::TextButton rewindProjectButton_;
     juce::TextButton createMidiClipButton_;
     juce::TextButton deleteInstrumentTrackButton_;
     juce::TextButton addMidiNoteButton_;

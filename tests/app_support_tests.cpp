@@ -562,6 +562,81 @@ void playbackUiTickSkipsAfterStopAndKeepsPosition()
         "playback UI tick after stop should keep the stopped position");
 }
 
+void playbackRewindReturnsPlayingTransportToStartWithoutDirtyingProject()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "playback-rewind-playing.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Rewind Playing");
+    require(session.saveAs(path).success,
+        "playing rewind test should save setup edits before runtime control");
+    require(trackloom::startAppPlayback(playback, session.project()).success,
+        "playing rewind test should start playback before advancing");
+    require(trackloom::advanceAppPlaybackForUiTick(playback, session.project()).success,
+        "playing rewind test should advance playback before rewinding");
+
+    const auto feedback = trackloom::rewindAppPlaybackToStart(playback, session.project());
+
+    require(feedback.success,
+        "rewind action should move a playing transport back to the beginning");
+    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::Success,
+        "successful rewind action should expose a stable success kind");
+    require(playback.isPlaying(),
+        "rewind while playing should keep playback running");
+    require(playback.currentSample() == 0,
+        "rewind while playing should move the playback position to sample zero");
+    require(!session.isDirty(),
+        "rewind while playing should not dirty the project session");
+    require(feedback.message.find("开头") != std::string::npos,
+        "successful rewind feedback should describe returning to the beginning");
+}
+
+void playbackRewindReturnsStoppedTransportToStartWithoutDirtyingProject()
+{
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Rewind Stopped");
+    require(trackloom::startAppPlayback(playback, session.project()).success,
+        "stopped rewind test should start playback before advancing");
+    require(trackloom::advanceAppPlaybackForUiTick(playback, session.project()).success,
+        "stopped rewind test should advance playback before stopping");
+    require(trackloom::stopAppPlayback(playback, session.project()).success,
+        "stopped rewind test should stop playback before rewinding");
+
+    const auto feedback = trackloom::rewindAppPlaybackToStart(playback, session.project());
+
+    require(feedback.success,
+        "rewind action should move a stopped transport back to the beginning");
+    require(!playback.isPlaying(),
+        "rewind while stopped should keep playback stopped");
+    require(playback.currentSample() == 0,
+        "rewind while stopped should move the playback position to sample zero");
+    require(!session.isDirty(),
+        "rewind while stopped should not dirty the project session");
+}
+
+void playbackRewindPreparesFreshRuntimeWithoutStartingPlayback()
+{
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Fresh Rewind");
+
+    const auto feedback = trackloom::rewindAppPlaybackToStart(playback, session.project());
+
+    require(feedback.success,
+        "rewind action should prepare a fresh runtime so safe seek can run");
+    require(playback.isPrepared(),
+        "rewind action on a fresh runtime should prepare playback state");
+    require(!playback.isPlaying(),
+        "rewind action on a fresh runtime should not start playback");
+    require(playback.currentSample() == 0,
+        "rewind action on a fresh runtime should keep the playback position at sample zero");
+    require(!session.isDirty(),
+        "rewind action on a fresh runtime should not dirty the project session");
+}
+
 void midiClipActionCreatesDefaultClipOnInstrumentTrack()
 {
     removeTestWorkspace();
@@ -1160,6 +1235,9 @@ int main()
     playbackUiTickAdvancesPlayingTransportWithoutDirtyingProject();
     playbackUiTickSkipsStoppedTransportWithoutPreparingRuntime();
     playbackUiTickSkipsAfterStopAndKeepsPosition();
+    playbackRewindReturnsPlayingTransportToStartWithoutDirtyingProject();
+    playbackRewindReturnsStoppedTransportToStartWithoutDirtyingProject();
+    playbackRewindPreparesFreshRuntimeWithoutStartingPlayback();
     midiClipActionCreatesDefaultClipOnInstrumentTrack();
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionRejectsMissingTrackWithoutDirtyingSession();
