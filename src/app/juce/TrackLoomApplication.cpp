@@ -170,6 +170,8 @@ public:
         rewindProjectButton_.setButtonText(toJuceString("回到开头"));
         createMidiClipButton_.setButtonText(toJuceString("创建 MIDI 片段"));
         deleteInstrumentTrackButton_.setButtonText(toJuceString("删除乐器轨"));
+        moveTrackUpButton_.setButtonText(toJuceString("上移"));
+        moveTrackDownButton_.setButtonText(toJuceString("下移"));
         renameTrackButton_.setButtonText(toJuceString("重命名"));
         muteTrackButton_.setButtonText(toJuceString("静音"));
         soloTrackButton_.setButtonText(toJuceString("独奏"));
@@ -193,6 +195,8 @@ public:
         addInstrumentTrackButton_.onClick = [this] { addDefaultInstrumentTrack(); };
         createMidiClipButton_.onClick = [this] { createMidiClipOnSelectedTrack(); };
         deleteInstrumentTrackButton_.onClick = [this] { deleteSelectedInstrumentTrack(); };
+        moveTrackUpButton_.onClick = [this] { moveSelectedTrackUp(); };
+        moveTrackDownButton_.onClick = [this] { moveSelectedTrackDown(); };
         renameTrackButton_.onClick = [this] { renameSelectedTrack(); };
         trackNameEditor_.onReturnKey = [this] { renameSelectedTrack(); };
         muteTrackButton_.onClick = [this] { toggleSelectedTrackMute(); };
@@ -234,6 +238,8 @@ public:
         addAndMakeVisible(rewindProjectButton_);
         addAndMakeVisible(createMidiClipButton_);
         addAndMakeVisible(deleteInstrumentTrackButton_);
+        addAndMakeVisible(moveTrackUpButton_);
+        addAndMakeVisible(moveTrackDownButton_);
         addAndMakeVisible(renameTrackButton_);
         addAndMakeVisible(muteTrackButton_);
         addAndMakeVisible(soloTrackButton_);
@@ -295,6 +301,10 @@ public:
         createMidiClipButton_.setBounds(targetRow.removeFromLeft(144));
         targetRow.removeFromLeft(8);
         deleteInstrumentTrackButton_.setBounds(targetRow.removeFromLeft(112));
+        targetRow.removeFromLeft(8);
+        moveTrackUpButton_.setBounds(targetRow.removeFromLeft(64));
+        targetRow.removeFromLeft(8);
+        moveTrackDownButton_.setBounds(targetRow.removeFromLeft(64));
 
         bounds.removeFromTop(8);
         auto trackNameRow = bounds.removeFromTop(36);
@@ -641,6 +651,40 @@ private:
         refreshFromSession();
     }
 
+    void moveSelectedTrackUp()
+    {
+        if (selectedTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条乐器轨，再上移轨道。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::moveInstrumentTrackUp(session_, selectedTrackId_);
+        if (feedback.success) {
+            selectedTrackId_ = feedback.trackId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void moveSelectedTrackDown()
+    {
+        if (selectedTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条乐器轨，再下移轨道。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::moveInstrumentTrackDown(session_, selectedTrackId_);
+        if (feedback.success) {
+            selectedTrackId_ = feedback.trackId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void renameSelectedTrack()
     {
         if (selectedTrackId_.empty()) {
@@ -826,6 +870,8 @@ private:
         targetTrackBox_.setEnabled(!selectableTrackIds_.empty());
         createMidiClipButton_.setEnabled(!selectedTrackId_.empty());
         deleteInstrumentTrackButton_.setEnabled(!selectedTrackId_.empty());
+        moveTrackUpButton_.setEnabled(!selectedTrackId_.empty());
+        moveTrackDownButton_.setEnabled(!selectedTrackId_.empty());
         renameTrackButton_.setEnabled(!selectedTrackId_.empty());
         muteTrackButton_.setEnabled(!selectedTrackId_.empty());
         soloTrackButton_.setEnabled(!selectedTrackId_.empty());
@@ -1078,6 +1124,8 @@ private:
     juce::TextButton rewindProjectButton_;
     juce::TextButton createMidiClipButton_;
     juce::TextButton deleteInstrumentTrackButton_;
+    juce::TextButton moveTrackUpButton_;
+    juce::TextButton moveTrackDownButton_;
     juce::TextButton renameTrackButton_;
     juce::TextButton muteTrackButton_;
     juce::TextButton soloTrackButton_;

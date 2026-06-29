@@ -719,6 +719,103 @@ void trackActionRejectsMissingTrackRenameWithoutDirtyingSession()
         "missing track rename action should not dirty an unchanged session");
 }
 
+void trackActionMovesInstrumentTrackUpAndDown()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-action-move.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Move Tracks");
+    const auto first = session.editProject().createTrack("First", trackloom::TrackType::Instrument);
+    const auto second = session.editProject().createTrack("Second", trackloom::TrackType::Instrument);
+    const auto third = session.editProject().createTrack("Third", trackloom::TrackType::Instrument);
+    require(session.saveAs(path).success,
+        "track move action test should save setup edits before moving");
+
+    const auto up = trackloom::moveInstrumentTrackUp(session, second.id);
+
+    require(up.success,
+        "track move action should move the selected instrument track up");
+    require(up.kind == trackloom::AppTrackActionFeedbackKind::Success,
+        "successful track move up should expose a stable success kind");
+    require(up.trackId == second.id,
+        "track move up feedback should report the moved track id");
+    require(session.project().tracks()[0].id == second.id,
+        "track move up should swap the selected track toward the top");
+    require(session.project().tracks()[1].id == first.id,
+        "track move up should shift the previous neighbor down");
+    require(session.project().tracks()[2].id == third.id,
+        "track move up should keep unrelated tracks in order");
+    require(session.isDirty(),
+        "successful track move up should mark the app session dirty");
+
+    require(session.save().success,
+        "track move action test should save after the first move before checking next dirty state");
+    const auto down = trackloom::moveInstrumentTrackDown(session, second.id);
+
+    require(down.success,
+        "track move action should move the selected instrument track down");
+    require(session.project().tracks()[0].id == first.id,
+        "track move down should move the selected track below its next neighbor");
+    require(session.project().tracks()[1].id == second.id,
+        "track move down should keep the selected track id stable");
+    require(session.isDirty(),
+        "successful track move down should mark the app session dirty");
+}
+
+void trackActionRejectsMoveAtBoundariesWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-action-move-boundary.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Move Boundaries");
+    const auto first = session.editProject().createTrack("First", trackloom::TrackType::Instrument);
+    const auto second = session.editProject().createTrack("Second", trackloom::TrackType::Instrument);
+    require(session.saveAs(path).success,
+        "track boundary move test should save setup edits before validation");
+
+    const auto top = trackloom::moveInstrumentTrackUp(session, first.id);
+    const auto bottom = trackloom::moveInstrumentTrackDown(session, second.id);
+
+    require(!top.success && !bottom.success,
+        "track move action should reject top and bottom boundary moves");
+    require(top.kind == trackloom::AppTrackActionFeedbackKind::AlreadyAtBoundary,
+        "top boundary move should expose a stable boundary failure kind");
+    require(bottom.kind == trackloom::AppTrackActionFeedbackKind::AlreadyAtBoundary,
+        "bottom boundary move should expose a stable boundary failure kind");
+    require(session.project().tracks()[0].id == first.id && session.project().tracks()[1].id == second.id,
+        "failed boundary moves should keep track order unchanged");
+    require(!session.isDirty(),
+        "failed boundary moves should not dirty an unchanged session");
+}
+
+void trackActionRejectsInvalidMoveTargetsWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-action-move-invalid.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Invalid Move");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    require(session.saveAs(path).success,
+        "invalid track move test should save setup edits before validation");
+
+    const auto missing = trackloom::moveInstrumentTrackUp(session, "missing-track");
+    const auto incompatible = trackloom::moveInstrumentTrackDown(session, audio.id);
+
+    require(!missing.success,
+        "track move action should reject a missing track");
+    require(missing.kind == trackloom::AppTrackActionFeedbackKind::MissingTrack,
+        "missing track move should expose a stable missing-track kind");
+    require(!incompatible.success,
+        "track move action should reject non-instrument tracks");
+    require(incompatible.kind == trackloom::AppTrackActionFeedbackKind::IncompatibleTrackType,
+        "non-instrument move should expose a stable incompatible-track kind");
+    require(!session.isDirty(),
+        "invalid track move actions should not dirty an unchanged session");
+}
+
 void trackStateActionTogglesMuteAndMarksSessionDirty()
 {
     removeTestWorkspace();
@@ -1777,6 +1874,9 @@ int main()
     trackActionRenamesTrackAndMarksSessionDirty();
     trackActionRejectsEmptyTrackNameWithoutDirtyingSession();
     trackActionRejectsMissingTrackRenameWithoutDirtyingSession();
+    trackActionMovesInstrumentTrackUpAndDown();
+    trackActionRejectsMoveAtBoundariesWithoutDirtyingSession();
+    trackActionRejectsInvalidMoveTargetsWithoutDirtyingSession();
     trackStateActionTogglesMuteAndMarksSessionDirty();
     trackStateActionTogglesPlaybackFlagsIndependently();
     trackStateActionTogglesHiddenWithoutAffectingPlayback();

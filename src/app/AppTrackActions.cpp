@@ -1,5 +1,7 @@
 #include "AppTrackActions.h"
 
+#include <cstddef>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -36,6 +38,16 @@ AppTrackActionFeedback renameSuccessFeedback(const Track& track, const std::stri
     return feedback;
 }
 
+AppTrackActionFeedback moveSuccessFeedback(const Track& track, bool movedUp)
+{
+    AppTrackActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppTrackActionFeedbackKind::Success;
+    feedback.trackId = track.id;
+    feedback.message = std::string(movedUp ? "已上移乐器轨：" : "已下移乐器轨：") + track.name + "。";
+    return feedback;
+}
+
 AppTrackActionFeedback failureFeedback(
     AppTrackActionFeedbackKind kind,
     std::string message)
@@ -63,6 +75,66 @@ std::string trimTrackName(std::string name)
 
     const auto last = name.find_last_not_of(" \t\r\n");
     return name.substr(first, last - first + 1);
+}
+
+std::optional<std::size_t> trackIndexById(const Project& project, const std::string& trackId)
+{
+    const auto& tracks = project.tracks();
+    for (std::size_t index = 0; index < tracks.size(); ++index) {
+        if (tracks[index].id == trackId) {
+            return index;
+        }
+    }
+
+    return std::nullopt;
+}
+
+AppTrackActionFeedback moveInstrumentTrackByOffset(
+    AppProjectSession& session,
+    const std::string& trackId,
+    int offset)
+{
+    const auto targetTrack = session.project().findTrackById(trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppTrackActionFeedbackKind::MissingTrack,
+            "无法移动乐器轨：目标轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Instrument) {
+        return failureFeedback(
+            AppTrackActionFeedbackKind::IncompatibleTrackType,
+            "无法移动乐器轨：当前入口只能移动乐器轨。");
+    }
+
+    const auto currentIndex = trackIndexById(session.project(), trackId);
+    if (!currentIndex.has_value()) {
+        return failureFeedback(
+            AppTrackActionFeedbackKind::MissingTrack,
+            "无法移动乐器轨：目标轨道不存在。");
+    }
+
+    if ((offset < 0 && *currentIndex == 0)
+        || (offset > 0 && *currentIndex + 1 >= session.project().tracks().size())) {
+        return failureFeedback(
+            AppTrackActionFeedbackKind::AlreadyAtBoundary,
+            offset < 0
+                ? "无法上移乐器轨：目标轨道已经在列表顶部。"
+                : "无法下移乐器轨：目标轨道已经在列表底部。");
+    }
+
+    const auto targetIndex = offset < 0
+        ? *currentIndex - 1
+        : *currentIndex + 1;
+
+    // 所有边界都在 editProject() 前完成；真正移动时才把会话标记为 dirty。
+    if (!session.editProject().moveTrackToIndex(trackId, targetIndex)) {
+        return failureFeedback(
+            AppTrackActionFeedbackKind::MoveFailed,
+            "无法移动乐器轨：工程模型拒绝了这次顺序调整。");
+    }
+
+    return moveSuccessFeedback(*targetTrack, offset < 0);
 }
 
 }
@@ -136,6 +208,20 @@ AppTrackActionFeedback renameTrackById(
     }
 
     return renameSuccessFeedback(*targetTrack, trimmedName);
+}
+
+AppTrackActionFeedback moveInstrumentTrackUp(
+    AppProjectSession& session,
+    const std::string& trackId)
+{
+    return moveInstrumentTrackByOffset(session, trackId, -1);
+}
+
+AppTrackActionFeedback moveInstrumentTrackDown(
+    AppProjectSession& session,
+    const std::string& trackId)
+{
+    return moveInstrumentTrackByOffset(session, trackId, 1);
 }
 
 }

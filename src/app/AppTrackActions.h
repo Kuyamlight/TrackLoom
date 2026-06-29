@@ -13,7 +13,9 @@ enum class AppTrackActionFeedbackKind {
     MissingTrack,
     IncompatibleTrackType,
     EmptyName,
+    AlreadyAtBoundary,
     RenameFailed,
+    MoveFailed,
     DeleteFailed,
     CreateFailed
 };
@@ -43,5 +45,14 @@ AppTrackActionFeedback renameTrackById(
     AppProjectSession& session,
     const std::string& trackId,
     std::string name);
+
+// moveInstrumentTrackUp / Down 调整当前乐器轨在工程轨道列表中的顺序。
+// 当前首屏只暴露乐器轨选择，因此这里保持与删除入口相同的类型边界。
+AppTrackActionFeedback moveInstrumentTrackUp(
+    AppProjectSession& session,
+    const std::string& trackId);
+AppTrackActionFeedback moveInstrumentTrackDown(
+    AppProjectSession& session,
+    const std::string& trackId);
 
 }
