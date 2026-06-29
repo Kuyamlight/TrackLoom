@@ -4,6 +4,7 @@
 #include "AppProjectSession.h"
 #include "AppProjectStatus.h"
 #include "AppTimelineStatus.h"
+#include "AppTrackActions.h"
 #include "AppTrackListStatus.h"
 #include "TrackLoomAppInfo.h"
 
@@ -110,6 +111,7 @@ public:
         saveAsProjectButton_.setButtonText(toJuceString("另存为"));
         addInstrumentTrackButton_.setButtonText(toJuceString("添加乐器轨"));
         createMidiClipButton_.setButtonText(toJuceString("创建 MIDI 片段"));
+        deleteInstrumentTrackButton_.setButtonText(toJuceString("删除乐器轨"));
         addMidiNoteButton_.setButtonText(toJuceString("添加默认音符"));
         deleteMidiNoteButton_.setButtonText(toJuceString("删除末尾音符"));
         deleteMidiClipButton_.setButtonText(toJuceString("删除片段"));
@@ -120,20 +122,12 @@ public:
         saveAsProjectButton_.onClick = [this] { chooseProjectToSaveAs(); };
         targetTrackBox_.onChange = [this] { updateSelectedTrackFromComboBox(); };
         targetMidiClipBox_.onChange = [this] { updateSelectedMidiClipFromComboBox(); };
+        addInstrumentTrackButton_.onClick = [this] { addDefaultInstrumentTrack(); };
         createMidiClipButton_.onClick = [this] { createMidiClipOnSelectedTrack(); };
+        deleteInstrumentTrackButton_.onClick = [this] { deleteSelectedInstrumentTrack(); };
         addMidiNoteButton_.onClick = [this] { addMidiNoteToSelectedClip(); };
         deleteMidiNoteButton_.onClick = [this] { deleteMidiNoteFromSelectedClip(); };
         deleteMidiClipButton_.onClick = [this] { deleteSelectedMidiClip(); };
-
-        addInstrumentTrackButton_.onClick = [this] {
-            const auto trackNumber = session_.project().tracks().size() + 1;
-            const auto track = session_.editProject().createTrack(
-                "Instrument " + std::to_string(trackNumber),
-                trackloom::TrackType::Instrument);
-            selectedTrackId_ = track.id;
-            lastActionMessage_ = "已添加乐器轨。";
-            refreshFromSession();
-        };
 
         addAndMakeVisible(titleLabel_);
         addAndMakeVisible(statusLabel_);
@@ -153,6 +147,7 @@ public:
         addAndMakeVisible(saveAsProjectButton_);
         addAndMakeVisible(addInstrumentTrackButton_);
         addAndMakeVisible(createMidiClipButton_);
+        addAndMakeVisible(deleteInstrumentTrackButton_);
         addAndMakeVisible(addMidiNoteButton_);
         addAndMakeVisible(deleteMidiNoteButton_);
         addAndMakeVisible(deleteMidiClipButton_);
@@ -197,6 +192,8 @@ public:
         targetTrackBox_.setBounds(targetRow.removeFromLeft(260));
         targetRow.removeFromLeft(12);
         createMidiClipButton_.setBounds(targetRow.removeFromLeft(160));
+        targetRow.removeFromLeft(12);
+        deleteInstrumentTrackButton_.setBounds(targetRow.removeFromLeft(140));
 
         bounds.removeFromTop(8);
         auto clipRow = bounds.removeFromTop(36);
@@ -366,6 +363,17 @@ private:
         selectedMidiClipId_ = selectableMidiClipIds_[static_cast<std::size_t>(selectedId - 1)];
     }
 
+    void addDefaultInstrumentTrack()
+    {
+        const auto feedback = trackloom::createDefaultInstrumentTrack(session_);
+        if (feedback.success) {
+            selectedTrackId_ = feedback.trackId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void createMidiClipOnSelectedTrack()
     {
         if (selectedTrackId_.empty()) {
@@ -379,6 +387,25 @@ private:
         if (feedback.success) {
             selectedTrackId_ = targetTrackId;
             selectedMidiClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void deleteSelectedInstrumentTrack()
+    {
+        if (selectedTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条乐器轨，再删除乐器轨。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto targetTrackId = selectedTrackId_;
+        const auto feedback = trackloom::deleteInstrumentTrackById(session_, targetTrackId);
+        if (feedback.success && selectedTrackId_ == targetTrackId) {
+            selectedTrackId_.clear();
+            selectedMidiClipId_.clear();
         }
 
         lastActionMessage_ = feedback.message;
@@ -474,6 +501,7 @@ private:
         targetTrackBox_.setSelectedId(selectedItemId, juce::dontSendNotification);
         targetTrackBox_.setEnabled(!selectableTrackIds_.empty());
         createMidiClipButton_.setEnabled(!selectedTrackId_.empty());
+        deleteInstrumentTrackButton_.setEnabled(!selectedTrackId_.empty());
     }
 
     void refreshMidiClipTargetSelector(const trackloom::AppTimelineStatus& timelineStatus)
@@ -625,6 +653,7 @@ private:
     juce::TextButton saveAsProjectButton_;
     juce::TextButton addInstrumentTrackButton_;
     juce::TextButton createMidiClipButton_;
+    juce::TextButton deleteInstrumentTrackButton_;
     juce::TextButton addMidiNoteButton_;
     juce::TextButton deleteMidiNoteButton_;
     juce::TextButton deleteMidiClipButton_;

@@ -4,6 +4,7 @@
 #include "AppProjectSession.h"
 #include "AppProjectStatus.h"
 #include "AppTimelineStatus.h"
+#include "AppTrackActions.h"
 #include "AppTrackListStatus.h"
 #include "TrackLoomAppInfo.h"
 
@@ -253,6 +254,131 @@ void projectFileActionFeedbackDescribesSuccessfulSaveAs()
         "save-as feedback should expose a stable success kind");
     require(feedback.message.find("另存为") != std::string::npos,
         "save-as feedback should describe the completed save-as action");
+}
+
+void trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-action-create.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Track Action");
+    require(session.saveAs(path).success,
+        "track action create test should save the setup project before editing");
+
+    const auto feedback = trackloom::createDefaultInstrumentTrack(session);
+
+    require(feedback.success,
+        "track action should create a default instrument track");
+    require(feedback.kind == trackloom::AppTrackActionFeedbackKind::Success,
+        "successful track create action should expose a stable success kind");
+    require(!feedback.trackId.empty(),
+        "successful track create action should expose the created track id");
+    require(session.project().tracks().size() == 1,
+        "track action should add exactly one track");
+    require(session.project().tracks()[0].id == feedback.trackId,
+        "track action feedback should point to the created track");
+    require(session.project().tracks()[0].name == "Instrument 1",
+        "first default instrument track should use the app-level starter name");
+    require(session.project().tracks()[0].type == trackloom::TrackType::Instrument,
+        "track action should create instrument tracks only");
+    require(session.isDirty(),
+        "track create action should mark the app session dirty");
+    require(feedback.message.find("乐器轨") != std::string::npos,
+        "successful track create feedback should describe the created instrument track");
+}
+
+void trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Repeated Tracks");
+
+    const auto first = trackloom::createDefaultInstrumentTrack(session);
+    const auto second = trackloom::createDefaultInstrumentTrack(session);
+
+    require(first.success && second.success,
+        "track action should create repeated default instrument tracks");
+    require(session.project().tracks().size() == 2,
+        "repeated track action should create two tracks");
+    require(session.project().tracks()[0].name == "Instrument 1",
+        "first default track should keep the first generated name");
+    require(session.project().tracks()[1].name == "Instrument 2",
+        "second default track should use the next generated name");
+}
+
+void trackActionDeletesInstrumentTrackAndOwnedClips()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-action-delete.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Delete Track");
+    const auto trackFeedback = trackloom::createDefaultInstrumentTrack(session);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, trackFeedback.trackId);
+    const auto noteFeedback = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(trackFeedback.success && clipFeedback.success && noteFeedback.success,
+        "track delete action test should create a track with a MIDI clip and note");
+    require(session.saveAs(path).success,
+        "track delete action test should save setup edits before deleting");
+
+    const auto feedback = trackloom::deleteInstrumentTrackById(session, trackFeedback.trackId);
+
+    require(feedback.success,
+        "track action should delete the requested instrument track");
+    require(feedback.kind == trackloom::AppTrackActionFeedbackKind::Success,
+        "successful track delete action should expose a stable success kind");
+    require(feedback.trackId == trackFeedback.trackId,
+        "track delete action should report the deleted track id");
+    require(session.project().tracks().empty(),
+        "track delete action should remove the target track");
+    require(session.project().clips().empty(),
+        "track delete action should remove clips owned by the deleted track");
+    require(!session.project().findMidiNoteById(noteFeedback.noteId).has_value(),
+        "track delete action should remove notes inside clips owned by the deleted track");
+    require(session.isDirty(),
+        "track delete action should mark the app session dirty");
+    require(feedback.message.find("删除") != std::string::npos,
+        "successful track delete feedback should describe the deletion");
+}
+
+void trackActionRejectsMissingTrackDeleteWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Track Delete");
+
+    const auto feedback = trackloom::deleteInstrumentTrackById(session, "missing-track");
+
+    require(!feedback.success,
+        "track delete action should reject a missing track");
+    require(feedback.kind == trackloom::AppTrackActionFeedbackKind::MissingTrack,
+        "missing track delete action should expose a stable failure kind");
+    require(session.project().tracks().empty(),
+        "missing track delete action should not change tracks");
+    require(!session.isDirty(),
+        "missing track delete action should not dirty an unchanged session");
+}
+
+void trackActionRejectsNonInstrumentTrackDeleteWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-action-delete-audio.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Track Delete");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    require(session.saveAs(path).success,
+        "non-instrument track delete test should save setup edits before validation");
+
+    const auto feedback = trackloom::deleteInstrumentTrackById(session, audio.id);
+
+    require(!feedback.success,
+        "instrument track delete action should reject audio tracks");
+    require(feedback.kind == trackloom::AppTrackActionFeedbackKind::IncompatibleTrackType,
+        "non-instrument track delete action should expose a stable failure kind");
+    require(session.project().tracks().size() == 1 && session.project().tracks()[0].id == audio.id,
+        "non-instrument track delete action should keep the audio track unchanged");
+    require(!session.isDirty(),
+        "non-instrument track delete action should not dirty an unchanged session");
 }
 
 void midiClipActionCreatesDefaultClipOnInstrumentTrack()
@@ -841,6 +967,11 @@ int main()
     projectFileActionFeedbackExplainsSaveWithoutPath();
     projectFileActionFeedbackDescribesCanceledOpen();
     projectFileActionFeedbackDescribesSuccessfulSaveAs();
+    trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
+    trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
+    trackActionDeletesInstrumentTrackAndOwnedClips();
+    trackActionRejectsMissingTrackDeleteWithoutDirtyingSession();
+    trackActionRejectsNonInstrumentTrackDeleteWithoutDirtyingSession();
     midiClipActionCreatesDefaultClipOnInstrumentTrack();
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionRejectsMissingTrackWithoutDirtyingSession();
