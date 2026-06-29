@@ -16,12 +16,15 @@ inline constexpr std::int64_t defaultAppMidiClipLengthTick = Project::ticksPerQu
 enum class AppMidiClipActionFeedbackKind {
     Success,
     MissingTrack,
+    MissingClip,
     IncompatibleTrackType,
+    IncompatibleClipType,
+    DeleteFailed,
     CreateFailed
 };
 
-// AppMidiClipActionFeedback 是创建 MIDI 片段动作的展示结果。
-// clipId 只在 success 为 true 时有效，便于后续 UI 自动选中新片段。
+// AppMidiClipActionFeedback 是 MIDI 片段创建/删除动作的展示结果。
+// clipId 只在 success 为 true 时有效，便于后续 UI 自动选中新片段或清理已删选择。
 struct AppMidiClipActionFeedback {
     bool success = false;
     AppMidiClipActionFeedbackKind kind = AppMidiClipActionFeedbackKind::CreateFailed;
@@ -34,5 +37,11 @@ struct AppMidiClipActionFeedback {
 AppMidiClipActionFeedback createDefaultMidiClipOnTrack(
     AppProjectSession& session,
     const std::string& trackId);
+
+// deleteMidiClipById 删除一个已存在的 MIDI 片段。
+// 它只接受 MIDI 片段 ID；音频片段和不存在的片段都会在 dirty 之前被拒绝。
+AppMidiClipActionFeedback deleteMidiClipById(
+    AppProjectSession& session,
+    const std::string& clipId);
 
 }

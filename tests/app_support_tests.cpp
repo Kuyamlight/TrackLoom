@@ -352,6 +352,87 @@ void midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession()
         "incompatible track MIDI clip action should not dirty an unchanged session");
 }
 
+void midiClipActionDeletesMidiClipAndItsNotes()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "delete-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Delete Clip");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto noteFeedback = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(clipFeedback.success && noteFeedback.success,
+        "delete MIDI clip action test should create a MIDI clip with a note");
+    require(session.saveAs(path).success,
+        "delete MIDI clip action test should save setup edits before deleting");
+
+    const auto feedback = trackloom::deleteMidiClipById(session, clipFeedback.clipId);
+
+    require(feedback.success,
+        "MIDI clip action should delete the requested MIDI clip");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::Success,
+        "successful MIDI clip delete action should expose the stable success kind");
+    require(feedback.clipId == clipFeedback.clipId,
+        "MIDI clip delete action should report the deleted clip id");
+    require(session.project().clips().empty(),
+        "MIDI clip delete action should remove the whole target clip");
+    require(!session.project().findMidiNoteById(noteFeedback.noteId).has_value(),
+        "MIDI clip delete action should remove notes stored inside the deleted clip");
+    require(session.isDirty(),
+        "MIDI clip delete action should mark the app session dirty");
+    require(feedback.message.find("删除") != std::string::npos,
+        "successful MIDI clip delete feedback should describe the deletion");
+}
+
+void midiClipActionRejectsMissingClipDeleteWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Clip Delete");
+
+    const auto feedback = trackloom::deleteMidiClipById(session, "missing-clip");
+
+    require(!feedback.success,
+        "MIDI clip delete action should reject a missing clip");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::MissingClip,
+        "missing clip MIDI clip delete action should expose a stable failure kind");
+    require(session.project().clips().empty(),
+        "missing clip MIDI clip delete action should not change clips");
+    require(!session.isDirty(),
+        "missing clip MIDI clip delete action should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsAudioClipDeleteWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "audio-delete-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Delete");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Vocal clip",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::Project::ticksPerQuarterNote);
+    require(clip.has_value(),
+        "audio MIDI clip delete test should create an audio clip");
+    require(session.saveAs(path).success,
+        "audio MIDI clip delete test should save setup edits before validation");
+
+    const auto feedback = trackloom::deleteMidiClipById(session, clip->id);
+
+    require(!feedback.success,
+        "MIDI clip delete action should reject audio clips");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::IncompatibleClipType,
+        "audio clip MIDI clip delete action should expose a stable failure kind");
+    require(session.project().clips().size() == 1 && session.project().clips()[0].id == clip->id,
+        "audio clip MIDI clip delete action should keep the audio clip unchanged");
+    require(!session.isDirty(),
+        "audio clip MIDI clip delete action should not dirty an unchanged session");
+}
+
 void midiNoteActionCreatesDefaultNoteInMidiClip()
 {
     removeTestWorkspace();
@@ -764,6 +845,9 @@ int main()
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionRejectsMissingTrackWithoutDirtyingSession();
     midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
+    midiClipActionDeletesMidiClipAndItsNotes();
+    midiClipActionRejectsMissingClipDeleteWithoutDirtyingSession();
+    midiClipActionRejectsAudioClipDeleteWithoutDirtyingSession();
     midiNoteActionCreatesDefaultNoteInMidiClip();
     midiNoteActionAppendsAfterExistingNotes();
     midiNoteActionRejectsMissingClipWithoutDirtyingSession();

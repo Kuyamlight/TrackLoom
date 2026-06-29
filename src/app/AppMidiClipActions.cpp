@@ -18,6 +18,16 @@ AppMidiClipActionFeedback successFeedback(const TimelineClip& clip)
     return feedback;
 }
 
+AppMidiClipActionFeedback deleteSuccessFeedback(const TimelineClip& clip)
+{
+    AppMidiClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已删除 MIDI 片段：" + clip.name + "。";
+    return feedback;
+}
+
 AppMidiClipActionFeedback failureFeedback(
     AppMidiClipActionFeedbackKind kind,
     std::string message)
@@ -93,6 +103,33 @@ AppMidiClipActionFeedback createDefaultMidiClipOnTrack(
     }
 
     return successFeedback(*createdClip);
+}
+
+AppMidiClipActionFeedback deleteMidiClipById(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingClip,
+            "无法删除 MIDI 片段：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleClipType,
+            "无法删除 MIDI 片段：只能删除 MIDI 片段。");
+    }
+
+    // 删除前所有校验都已完成；只有真实删除才允许把会话标记为 dirty。
+    if (!session.editProject().removeClipById(clipId)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::DeleteFailed,
+            "无法删除 MIDI 片段：工程模型拒绝了这次删除。");
+    }
+
+    return deleteSuccessFeedback(*targetClip);
 }
 
 }

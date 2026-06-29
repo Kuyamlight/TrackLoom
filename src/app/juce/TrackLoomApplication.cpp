@@ -112,6 +112,7 @@ public:
         createMidiClipButton_.setButtonText(toJuceString("创建 MIDI 片段"));
         addMidiNoteButton_.setButtonText(toJuceString("添加默认音符"));
         deleteMidiNoteButton_.setButtonText(toJuceString("删除末尾音符"));
+        deleteMidiClipButton_.setButtonText(toJuceString("删除片段"));
 
         newProjectButton_.onClick = [this] { requestNewProject(); };
         openProjectButton_.onClick = [this] { chooseProjectToOpen(); };
@@ -122,6 +123,7 @@ public:
         createMidiClipButton_.onClick = [this] { createMidiClipOnSelectedTrack(); };
         addMidiNoteButton_.onClick = [this] { addMidiNoteToSelectedClip(); };
         deleteMidiNoteButton_.onClick = [this] { deleteMidiNoteFromSelectedClip(); };
+        deleteMidiClipButton_.onClick = [this] { deleteSelectedMidiClip(); };
 
         addInstrumentTrackButton_.onClick = [this] {
             const auto trackNumber = session_.project().tracks().size() + 1;
@@ -153,6 +155,7 @@ public:
         addAndMakeVisible(createMidiClipButton_);
         addAndMakeVisible(addMidiNoteButton_);
         addAndMakeVisible(deleteMidiNoteButton_);
+        addAndMakeVisible(deleteMidiClipButton_);
 
         refreshFromSession();
         setSize(1040, 680);
@@ -204,6 +207,8 @@ public:
         addMidiNoteButton_.setBounds(clipRow.removeFromLeft(144));
         clipRow.removeFromLeft(12);
         deleteMidiNoteButton_.setBounds(clipRow.removeFromLeft(144));
+        clipRow.removeFromLeft(12);
+        deleteMidiClipButton_.setBounds(clipRow.removeFromLeft(112));
 
         bounds.removeFromTop(14);
         auto columns = bounds;
@@ -416,6 +421,24 @@ private:
         refreshFromSession();
     }
 
+    void deleteSelectedMidiClip()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再删除片段。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto targetClipId = selectedMidiClipId_;
+        const auto feedback = trackloom::deleteMidiClipById(session_, targetClipId);
+        if (feedback.success && selectedMidiClipId_ == targetClipId) {
+            selectedMidiClipId_.clear();
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void refreshTrackTargetSelector()
     {
         const auto previousSelection = selectedTrackId_;
@@ -491,6 +514,7 @@ private:
         targetMidiClipBox_.setEnabled(!selectableMidiClipIds_.empty());
         addMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
         deleteMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
+        deleteMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
     }
 
     void refreshFromSession()
@@ -603,6 +627,7 @@ private:
     juce::TextButton createMidiClipButton_;
     juce::TextButton addMidiNoteButton_;
     juce::TextButton deleteMidiNoteButton_;
+    juce::TextButton deleteMidiClipButton_;
 };
 
 class MainWindow final : public juce::DocumentWindow {
