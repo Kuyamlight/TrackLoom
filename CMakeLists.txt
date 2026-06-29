@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(TrackLoom VERSION 0.1.0 LANGUAGES CXX)
+project(TrackLoom VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -28,6 +28,8 @@ if(TRACKLOOM_ENABLE_JUCE_ADAPTERS)
     add_subdirectory("${TRACKLOOM_JUCE_ROOT}" "${CMAKE_BINARY_DIR}/juce" EXCLUDE_FROM_ALL)
     add_subdirectory(src/platform/juce)
 endif()
+
+add_subdirectory(src/app)
 
 include(CTest)
 if(BUILD_TESTING)

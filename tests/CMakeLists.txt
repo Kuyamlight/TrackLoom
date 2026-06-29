@@ -9,6 +9,17 @@ target_link_libraries(trackloom_core_tests
 
 add_test(NAME trackloom_core_tests COMMAND trackloom_core_tests)
 
+add_executable(trackloom_app_support_tests
+    app_support_tests.cpp
+)
+
+target_link_libraries(trackloom_app_support_tests
+    PRIVATE
+        trackloom_app_support
+)
+
+add_test(NAME trackloom_app_support_tests COMMAND trackloom_app_support_tests)
+
 if(TARGET trackloom_juce)
     add_executable(trackloom_juce_tests
         juce_midi_output_tests.cpp
