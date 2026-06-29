@@ -5,6 +5,7 @@ add_library(trackloom_app_support STATIC
     AppProjectFileActions.cpp
     AppProjectSession.cpp
     AppProjectStatus.cpp
+    AppRecentProjects.cpp
     AppTimelineStatus.cpp
     AppTrackActions.cpp
     AppTrackListStatus.cpp

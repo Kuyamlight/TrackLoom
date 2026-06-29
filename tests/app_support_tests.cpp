@@ -1,4 +1,5 @@
 #include "AppProjectFileActions.h"
+#include "AppRecentProjects.h"
 #include "AppMidiClipActions.h"
 #include "AppMidiNoteActions.h"
 #include "AppPlaybackActions.h"
@@ -255,6 +256,69 @@ void projectFileActionFeedbackDescribesSuccessfulSaveAs()
         "save-as feedback should expose a stable success kind");
     require(feedback.message.find("另存为") != std::string::npos,
         "save-as feedback should describe the completed save-as action");
+}
+
+void recentProjectsKeepNewestUniquePathsWithinLimit()
+{
+    trackloom::AppRecentProjects recent(3);
+    const auto first = testWorkspace() / "first.trackloom";
+    const auto second = testWorkspace() / "second.trackloom";
+    const auto third = testWorkspace() / "third.trackloom";
+    const auto fourth = testWorkspace() / "fourth.trackloom";
+
+    // 最近工程列表按“最新在前”展示；重复打开同一工程时只移动位置，不保留重复项。
+    recent.record(first);
+    recent.record(second);
+    recent.record(third);
+    recent.record(second);
+    recent.record(fourth);
+
+    const auto& paths = recent.paths();
+    require(paths.size() == 3,
+        "recent projects should trim old entries beyond the configured limit");
+    require(paths[0] == fourth,
+        "most recently recorded project should appear first");
+    require(paths[1] == second,
+        "recording an existing project should move it near the front without duplication");
+    require(paths[2] == third,
+        "recent projects should keep remaining entries in newest-first order");
+}
+
+void recentProjectsSaveAndLoadUtf8TextFile()
+{
+    removeTestWorkspace();
+    const auto settingsPath = testWorkspace() / "settings" / "recent-projects.txt";
+    const auto first = testWorkspace() / "织音草稿.trackloom";
+    const auto second = testWorkspace() / "arrangement.trackloom";
+
+    trackloom::AppRecentProjects saved;
+    saved.record(first);
+    saved.record(second);
+
+    require(trackloom::saveAppRecentProjects(saved, settingsPath),
+        "recent projects should save to a simple local settings file");
+    require(std::filesystem::exists(settingsPath),
+        "saving recent projects should create the settings file");
+
+    const auto loaded = trackloom::loadAppRecentProjects(settingsPath);
+
+    require(loaded.paths().size() == 2,
+        "loading recent projects should restore saved entries");
+    require(loaded.paths()[0] == second,
+        "loaded recent projects should preserve newest-first order");
+    require(loaded.paths()[1] == first,
+        "loaded recent projects should preserve UTF-8 project paths");
+}
+
+void recentProjectsLoadMissingFileAsEmptyList()
+{
+    removeTestWorkspace();
+    const auto missingPath = testWorkspace() / "missing" / "recent-projects.txt";
+
+    const auto loaded = trackloom::loadAppRecentProjects(missingPath);
+
+    require(loaded.paths().empty(),
+        "missing recent-project settings should load as an empty list");
 }
 
 void trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty()
@@ -1303,6 +1367,9 @@ int main()
     projectFileActionFeedbackExplainsSaveWithoutPath();
     projectFileActionFeedbackDescribesCanceledOpen();
     projectFileActionFeedbackDescribesSuccessfulSaveAs();
+    recentProjectsKeepNewestUniquePathsWithinLimit();
+    recentProjectsSaveAndLoadUtf8TextFile();
+    recentProjectsLoadMissingFileAsEmptyList();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
     trackActionDeletesInstrumentTrackAndOwnedClips();
