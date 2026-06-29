@@ -1,4 +1,5 @@
 add_library(trackloom_app_support STATIC
+    AppProjectSession.cpp
     TrackLoomAppInfo.cpp
 )
 
@@ -10,6 +11,11 @@ target_include_directories(trackloom_app_support
 target_compile_definitions(trackloom_app_support
     PUBLIC
         TRACKLOOM_APP_VERSION="${PROJECT_VERSION}"
+)
+
+target_link_libraries(trackloom_app_support
+    PUBLIC
+        trackloom_core
 )
 
 if(MSVC)
@@ -24,7 +30,6 @@ if(TARGET trackloom_juce)
     target_link_libraries(trackloom_app
         PRIVATE
             trackloom_app_support
-            trackloom_core
             trackloom_juce
             juce::juce_gui_basics
     )
