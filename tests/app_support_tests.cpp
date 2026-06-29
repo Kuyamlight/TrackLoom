@@ -1,4 +1,5 @@
 #include "AppProjectSession.h"
+#include "AppProjectStatus.h"
 #include "TrackLoomAppInfo.h"
 
 #include <filesystem>
@@ -132,6 +133,59 @@ void projectSessionRejectsSaveWithoutPath()
         "failed save without path should keep the previous dirty state");
 }
 
+void projectStatusDescribesUnsavedDirtyProject()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Sketch");
+    session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto status = trackloom::describeAppProjectSession(session);
+
+    require(status.projectName == "Sketch",
+        "project status should expose the current project name");
+    require(!status.hasProjectPath,
+        "project status should keep unsaved projects separate from saved file paths");
+    require(status.dirty,
+        "project status should expose dirty state for the desktop UI");
+    require(status.trackCount == 1,
+        "project status should count tracks for the desktop UI");
+    require(status.windowTitle == "Sketch* - TrackLoom",
+        "dirty project status should mark the window title");
+    require(status.statusLine.find("未保存工程") != std::string::npos,
+        "unsaved project status should tell the user that no project file exists yet");
+    require(status.statusLine.find("有未保存修改") != std::string::npos,
+        "dirty project status should tell the user that changes need saving");
+}
+
+void projectStatusDescribesSavedCleanProject()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "saved-status.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Saved");
+    const auto save = session.saveAs(path);
+
+    require(save.success, "status test project should save before describing saved state");
+
+    const auto status = trackloom::describeAppProjectSession(session);
+
+    require(status.projectName == "Saved",
+        "saved project status should expose the current project name");
+    require(status.hasProjectPath,
+        "saved project status should expose that a project file exists");
+    require(status.projectPath == path.string(),
+        "saved project status should expose the exact current project path string");
+    require(!status.dirty,
+        "saved project status should expose clean state after save");
+    require(status.windowTitle == "Saved - TrackLoom",
+        "clean project status should not mark the window title as dirty");
+    require(status.statusLine.find("已保存") != std::string::npos,
+        "clean project status should tell the user that the project is saved");
+    require(status.statusLine.find(path.string()) != std::string::npos,
+        "saved project status should include the current project path");
+}
+
 }
 
 int main()
@@ -141,5 +195,7 @@ int main()
     projectSessionSavesAndOpensProjectFile();
     projectSessionKeepsCurrentProjectWhenOpenFails();
     projectSessionRejectsSaveWithoutPath();
+    projectStatusDescribesUnsavedDirtyProject();
+    projectStatusDescribesSavedCleanProject();
     return 0;
 }
