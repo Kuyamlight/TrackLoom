@@ -9,6 +9,7 @@ add_library(trackloom_app_support STATIC
     AppTimelineStatus.cpp
     AppTrackActions.cpp
     AppTrackListStatus.cpp
+    AppTrackStateActions.cpp
     TrackLoomAppInfo.cpp
 )
 

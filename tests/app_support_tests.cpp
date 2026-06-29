@@ -8,6 +8,7 @@
 #include "AppTimelineStatus.h"
 #include "AppTrackActions.h"
 #include "AppTrackListStatus.h"
+#include "AppTrackStateActions.h"
 #include "TrackLoomAppInfo.h"
 
 #include <filesystem>
@@ -649,6 +650,125 @@ void trackActionRejectsNonInstrumentTrackDeleteWithoutDirtyingSession()
         "non-instrument track delete action should keep the audio track unchanged");
     require(!session.isDirty(),
         "non-instrument track delete action should not dirty an unchanged session");
+}
+
+void trackStateActionTogglesMuteAndMarksSessionDirty()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-state-mute.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Mute Track");
+    const auto track = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    require(session.saveAs(path).success,
+        "track state mute test should save setup edits before toggling");
+
+    const auto feedback = trackloom::toggleTrackMuted(session, track.id);
+
+    require(feedback.success,
+        "track state action should toggle mute on an existing track");
+    require(feedback.kind == trackloom::AppTrackStateActionFeedbackKind::Success,
+        "successful mute toggle should expose a stable success kind");
+    require(feedback.target == trackloom::AppTrackStateActionTarget::Mute,
+        "mute toggle feedback should expose the changed state target");
+    require(feedback.trackId == track.id,
+        "mute toggle feedback should report the changed track id");
+    require(feedback.enabled,
+        "first mute toggle should enable muted state");
+    require(session.project().tracks()[0].playback.muted,
+        "mute toggle should update the project playback state");
+    require(session.isDirty(),
+        "successful mute toggle should mark the app session dirty");
+    require(feedback.message.find("静音") != std::string::npos,
+        "mute toggle feedback should describe the visible action");
+}
+
+void trackStateActionTogglesPlaybackFlagsIndependently()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Track Playback Flags");
+    const auto track = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto mute = trackloom::toggleTrackMuted(session, track.id);
+    const auto solo = trackloom::toggleTrackSoloed(session, track.id);
+    const auto disabled = trackloom::toggleTrackDisabled(session, track.id);
+    const auto unmute = trackloom::toggleTrackMuted(session, track.id);
+
+    require(mute.success && solo.success && disabled.success && unmute.success,
+        "track state playback toggles should all succeed on the same track");
+    require(!session.project().tracks()[0].playback.muted,
+        "second mute toggle should only clear muted state");
+    require(session.project().tracks()[0].playback.soloed,
+        "solo toggle should remain enabled after mute changes");
+    require(session.project().tracks()[0].playback.disabled,
+        "disabled toggle should remain enabled after mute changes");
+}
+
+void trackStateActionTogglesHiddenWithoutAffectingPlayback()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Track Hidden Flag");
+    const auto track = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto mute = trackloom::toggleTrackMuted(session, track.id);
+
+    const auto hidden = trackloom::toggleTrackHidden(session, track.id);
+
+    require(mute.success && hidden.success,
+        "hidden toggle test should set up playback and view state");
+    require(hidden.target == trackloom::AppTrackStateActionTarget::Hide,
+        "hidden toggle feedback should expose the changed state target");
+    require(hidden.enabled,
+        "first hidden toggle should enable hidden state");
+    require(session.project().tracks()[0].view.hidden,
+        "hidden toggle should update only the project view state");
+    require(session.project().tracks()[0].playback.muted,
+        "hidden toggle should not clear playback mute state");
+}
+
+void trackStateActionRejectsMissingTrackWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Track State");
+
+    const auto feedback = trackloom::toggleTrackHidden(session, "missing-track");
+
+    require(!feedback.success,
+        "track state action should reject a missing track");
+    require(feedback.kind == trackloom::AppTrackStateActionFeedbackKind::MissingTrack,
+        "missing track state action should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing track state action should not dirty an unchanged session");
+}
+
+void trackStateActionUpdatesTrackListStatusLabels()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Track State Labels");
+    const auto track = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+
+    require(trackloom::toggleTrackMuted(session, track.id).success,
+        "track state label test should enable muted state");
+    require(trackloom::toggleTrackSoloed(session, track.id).success,
+        "track state label test should enable soloed state");
+    require(trackloom::toggleTrackDisabled(session, track.id).success,
+        "track state label test should enable disabled state");
+    require(trackloom::toggleTrackHidden(session, track.id).success,
+        "track state label test should enable hidden state");
+
+    const auto status = trackloom::describeAppTrackList(session.project());
+
+    require(status.rows.size() == 1,
+        "track list status should expose the toggled track");
+    require(status.rows[0].stateLabels.size() == 4,
+        "track list status should expose all toggled state labels");
+    require(status.rows[0].summary.find("静音") != std::string::npos,
+        "track list summary should include muted state after app toggle");
+    require(status.rows[0].summary.find("独奏") != std::string::npos,
+        "track list summary should include soloed state after app toggle");
+    require(status.rows[0].summary.find("禁用") != std::string::npos,
+        "track list summary should include disabled state after app toggle");
+    require(status.rows[0].summary.find("隐藏") != std::string::npos,
+        "track list summary should include hidden state after app toggle");
 }
 
 void playbackActionStartsTransportWithoutDirtyingProject()
@@ -1587,6 +1707,11 @@ int main()
     trackActionDeletesInstrumentTrackAndOwnedClips();
     trackActionRejectsMissingTrackDeleteWithoutDirtyingSession();
     trackActionRejectsNonInstrumentTrackDeleteWithoutDirtyingSession();
+    trackStateActionTogglesMuteAndMarksSessionDirty();
+    trackStateActionTogglesPlaybackFlagsIndependently();
+    trackStateActionTogglesHiddenWithoutAffectingPlayback();
+    trackStateActionRejectsMissingTrackWithoutDirtyingSession();
+    trackStateActionUpdatesTrackListStatusLabels();
     playbackActionStartsTransportWithoutDirtyingProject();
     playbackActionStopsTransportWithoutDirtyingProject();
     playbackActionStopsCleanlyBeforeStart();

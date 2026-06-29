@@ -8,6 +8,7 @@
 #include "AppTimelineStatus.h"
 #include "AppTrackActions.h"
 #include "AppTrackListStatus.h"
+#include "AppTrackStateActions.h"
 #include "TrackLoomAppInfo.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -147,6 +148,10 @@ public:
         rewindProjectButton_.setButtonText(toJuceString("回到开头"));
         createMidiClipButton_.setButtonText(toJuceString("创建 MIDI 片段"));
         deleteInstrumentTrackButton_.setButtonText(toJuceString("删除乐器轨"));
+        muteTrackButton_.setButtonText(toJuceString("静音"));
+        soloTrackButton_.setButtonText(toJuceString("独奏"));
+        disableTrackButton_.setButtonText(toJuceString("禁用"));
+        hideTrackButton_.setButtonText(toJuceString("隐藏"));
         addMidiNoteButton_.setButtonText(toJuceString("添加默认音符"));
         deleteMidiNoteButton_.setButtonText(toJuceString("删除末尾音符"));
         deleteMidiClipButton_.setButtonText(toJuceString("删除片段"));
@@ -165,6 +170,10 @@ public:
         addInstrumentTrackButton_.onClick = [this] { addDefaultInstrumentTrack(); };
         createMidiClipButton_.onClick = [this] { createMidiClipOnSelectedTrack(); };
         deleteInstrumentTrackButton_.onClick = [this] { deleteSelectedInstrumentTrack(); };
+        muteTrackButton_.onClick = [this] { toggleSelectedTrackMute(); };
+        soloTrackButton_.onClick = [this] { toggleSelectedTrackSolo(); };
+        disableTrackButton_.onClick = [this] { toggleSelectedTrackDisabled(); };
+        hideTrackButton_.onClick = [this] { toggleSelectedTrackHidden(); };
         addMidiNoteButton_.onClick = [this] { addMidiNoteToSelectedClip(); };
         deleteMidiNoteButton_.onClick = [this] { deleteMidiNoteFromSelectedClip(); };
         deleteMidiClipButton_.onClick = [this] { deleteSelectedMidiClip(); };
@@ -198,6 +207,10 @@ public:
         addAndMakeVisible(rewindProjectButton_);
         addAndMakeVisible(createMidiClipButton_);
         addAndMakeVisible(deleteInstrumentTrackButton_);
+        addAndMakeVisible(muteTrackButton_);
+        addAndMakeVisible(soloTrackButton_);
+        addAndMakeVisible(disableTrackButton_);
+        addAndMakeVisible(hideTrackButton_);
         addAndMakeVisible(addMidiNoteButton_);
         addAndMakeVisible(deleteMidiNoteButton_);
         addAndMakeVisible(deleteMidiClipButton_);
@@ -248,12 +261,20 @@ public:
 
         auto targetRow = bounds.removeFromTop(36);
         targetTrackLabel_.setBounds(targetRow.removeFromLeft(96));
+        targetRow.removeFromLeft(8);
+        targetTrackBox_.setBounds(targetRow.removeFromLeft(220));
         targetRow.removeFromLeft(10);
-        targetTrackBox_.setBounds(targetRow.removeFromLeft(260));
-        targetRow.removeFromLeft(12);
-        createMidiClipButton_.setBounds(targetRow.removeFromLeft(160));
-        targetRow.removeFromLeft(12);
-        deleteInstrumentTrackButton_.setBounds(targetRow.removeFromLeft(140));
+        createMidiClipButton_.setBounds(targetRow.removeFromLeft(144));
+        targetRow.removeFromLeft(8);
+        deleteInstrumentTrackButton_.setBounds(targetRow.removeFromLeft(112));
+        targetRow.removeFromLeft(8);
+        muteTrackButton_.setBounds(targetRow.removeFromLeft(64));
+        targetRow.removeFromLeft(8);
+        soloTrackButton_.setBounds(targetRow.removeFromLeft(64));
+        targetRow.removeFromLeft(8);
+        disableTrackButton_.setBounds(targetRow.removeFromLeft(64));
+        targetRow.removeFromLeft(8);
+        hideTrackButton_.setBounds(targetRow.removeFromLeft(64));
 
         bounds.removeFromTop(8);
         auto clipRow = bounds.removeFromTop(36);
@@ -584,6 +605,59 @@ private:
         refreshFromSession();
     }
 
+    void setTrackStateFeedback(const trackloom::AppTrackStateActionFeedback& feedback)
+    {
+        lastActionMessage_ = feedback.message;
+        if (feedback.success) {
+            selectedTrackId_ = feedback.trackId;
+        }
+        refreshFromSession();
+    }
+
+    void toggleSelectedTrackMute()
+    {
+        if (selectedTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条乐器轨，再切换静音状态。";
+            refreshFromSession();
+            return;
+        }
+
+        setTrackStateFeedback(trackloom::toggleTrackMuted(session_, selectedTrackId_));
+    }
+
+    void toggleSelectedTrackSolo()
+    {
+        if (selectedTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条乐器轨，再切换独奏状态。";
+            refreshFromSession();
+            return;
+        }
+
+        setTrackStateFeedback(trackloom::toggleTrackSoloed(session_, selectedTrackId_));
+    }
+
+    void toggleSelectedTrackDisabled()
+    {
+        if (selectedTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条乐器轨，再切换禁用状态。";
+            refreshFromSession();
+            return;
+        }
+
+        setTrackStateFeedback(trackloom::toggleTrackDisabled(session_, selectedTrackId_));
+    }
+
+    void toggleSelectedTrackHidden()
+    {
+        if (selectedTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条乐器轨，再切换隐藏状态。";
+            refreshFromSession();
+            return;
+        }
+
+        setTrackStateFeedback(trackloom::toggleTrackHidden(session_, selectedTrackId_));
+    }
+
     void addMidiNoteToSelectedClip()
     {
         if (selectedMidiClipId_.empty()) {
@@ -696,6 +770,10 @@ private:
         targetTrackBox_.setEnabled(!selectableTrackIds_.empty());
         createMidiClipButton_.setEnabled(!selectedTrackId_.empty());
         deleteInstrumentTrackButton_.setEnabled(!selectedTrackId_.empty());
+        muteTrackButton_.setEnabled(!selectedTrackId_.empty());
+        soloTrackButton_.setEnabled(!selectedTrackId_.empty());
+        disableTrackButton_.setEnabled(!selectedTrackId_.empty());
+        hideTrackButton_.setEnabled(!selectedTrackId_.empty());
     }
 
     void refreshMidiClipTargetSelector(const trackloom::AppTimelineStatus& timelineStatus)
@@ -924,6 +1002,10 @@ private:
     juce::TextButton rewindProjectButton_;
     juce::TextButton createMidiClipButton_;
     juce::TextButton deleteInstrumentTrackButton_;
+    juce::TextButton muteTrackButton_;
+    juce::TextButton soloTrackButton_;
+    juce::TextButton disableTrackButton_;
+    juce::TextButton hideTrackButton_;
     juce::TextButton addMidiNoteButton_;
     juce::TextButton deleteMidiNoteButton_;
     juce::TextButton deleteMidiClipButton_;
