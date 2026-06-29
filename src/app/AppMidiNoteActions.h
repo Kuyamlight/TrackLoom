@@ -21,6 +21,8 @@ enum class AppMidiNoteActionFeedbackKind {
     MissingClip,
     IncompatibleClipType,
     ClipFull,
+    EmptyClip,
+    DeleteFailed,
     CreateFailed
 };
 
@@ -36,6 +38,12 @@ struct AppMidiNoteActionFeedback {
 // createDefaultMidiNoteInClip 在目标 MIDI 片段里追加一个默认音符。
 // 它不会创建片段，也不会改变音高或长度规则；这些属于后续编辑器入口。
 AppMidiNoteActionFeedback createDefaultMidiNoteInClip(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// deleteLastMidiNoteInClip 删除目标 MIDI 片段里时间位置最后的音符。
+// 这是首屏的安全撤回入口，不等同于任意音符选择或钢琴卷帘删除。
+AppMidiNoteActionFeedback deleteLastMidiNoteInClip(
     AppProjectSession& session,
     const std::string& clipId);
 

@@ -502,6 +502,112 @@ void midiNoteActionRejectsFullClipWithoutDirtyingSession()
         "full clip MIDI note action should not dirty an unchanged session");
 }
 
+void midiNoteActionDeletesLastNoteInMidiClip()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "delete-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Delete Note");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto first = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    const auto second = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(first.success && second.success,
+        "delete MIDI note action test should create two notes");
+    require(session.saveAs(path).success,
+        "delete MIDI note action test should save setup edits before deleting");
+
+    const auto feedback = trackloom::deleteLastMidiNoteInClip(session, clipFeedback.clipId);
+
+    require(feedback.success,
+        "MIDI note action should delete the last note in a MIDI clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::Success,
+        "successful MIDI note delete action should expose the stable success kind");
+    require(feedback.noteId == second.noteId,
+        "MIDI note delete action should report the deleted note id");
+    require(session.project().clips()[0].midiNotes.size() == 1,
+        "MIDI note delete action should remove one note");
+    require(session.project().clips()[0].midiNotes[0].id == first.noteId,
+        "MIDI note delete action should keep the earlier note");
+    require(session.isDirty(),
+        "MIDI note delete action should mark the app session dirty");
+    require(feedback.message.find("删除") != std::string::npos,
+        "successful MIDI note delete feedback should describe the deletion");
+}
+
+void midiNoteActionRejectsEmptyClipDeleteWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "empty-delete-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Empty Delete");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    require(clipFeedback.success,
+        "empty MIDI note delete test should create an empty MIDI clip");
+    require(session.saveAs(path).success,
+        "empty MIDI note delete test should save setup edits before validation");
+
+    const auto feedback = trackloom::deleteLastMidiNoteInClip(session, clipFeedback.clipId);
+
+    require(!feedback.success,
+        "MIDI note delete action should reject an empty MIDI clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::EmptyClip,
+        "empty MIDI note delete action should expose a stable failure kind");
+    require(session.project().clips()[0].midiNotes.empty(),
+        "empty MIDI note delete action should keep the clip unchanged");
+    require(!session.isDirty(),
+        "empty MIDI note delete action should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsMissingClipDeleteWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Delete");
+
+    const auto feedback = trackloom::deleteLastMidiNoteInClip(session, "missing-clip");
+
+    require(!feedback.success,
+        "MIDI note delete action should reject a missing target clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::MissingClip,
+        "missing clip MIDI note delete action should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing clip MIDI note delete action should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsAudioClipDeleteWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "audio-delete-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Delete");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Vocal clip",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::Project::ticksPerQuarterNote);
+    require(clip.has_value(),
+        "audio MIDI note delete test should create an audio clip");
+    require(session.saveAs(path).success,
+        "audio MIDI note delete test should save setup edits before validation");
+
+    const auto feedback = trackloom::deleteLastMidiNoteInClip(session, clip->id);
+
+    require(!feedback.success,
+        "MIDI note delete action should reject audio clips");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::IncompatibleClipType,
+        "audio clip MIDI note delete action should expose a stable failure kind");
+    require(session.project().clips()[0].midiNotes.empty(),
+        "audio clip MIDI note delete action should not create or delete notes");
+    require(!session.isDirty(),
+        "audio clip MIDI note delete action should not dirty an unchanged session");
+}
+
 void timelineStatusDescribesEmptyProject()
 {
     const trackloom::Project project("Empty Timeline");
@@ -663,6 +769,10 @@ int main()
     midiNoteActionRejectsMissingClipWithoutDirtyingSession();
     midiNoteActionRejectsAudioClipWithoutDirtyingSession();
     midiNoteActionRejectsFullClipWithoutDirtyingSession();
+    midiNoteActionDeletesLastNoteInMidiClip();
+    midiNoteActionRejectsEmptyClipDeleteWithoutDirtyingSession();
+    midiNoteActionRejectsMissingClipDeleteWithoutDirtyingSession();
+    midiNoteActionRejectsAudioClipDeleteWithoutDirtyingSession();
     timelineStatusDescribesEmptyProject();
     timelineStatusDescribesClipRowsWithTrackNames();
     trackListStatusDescribesEmptyProject();

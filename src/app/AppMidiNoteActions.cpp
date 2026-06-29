@@ -18,6 +18,16 @@ AppMidiNoteActionFeedback successFeedback(const MidiNoteEvent& note)
     return feedback;
 }
 
+AppMidiNoteActionFeedback deleteSuccessFeedback(const MidiNoteEvent& note)
+{
+    AppMidiNoteActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiNoteActionFeedbackKind::Success;
+    feedback.noteId = note.id;
+    feedback.message = "已删除末尾 MIDI 音符。";
+    return feedback;
+}
+
 AppMidiNoteActionFeedback failureFeedback(
     AppMidiNoteActionFeedbackKind kind,
     std::string message)
@@ -44,6 +54,22 @@ bool canFitDefaultNoteAt(const TimelineClip& clip, std::int64_t startTick)
 {
     return clip.lengthTick >= defaultAppMidiNoteLengthTick
         && startTick <= clip.lengthTick - defaultAppMidiNoteLengthTick;
+}
+
+const MidiNoteEvent& lastNoteInTimelineOrder(const TimelineClip& clip)
+{
+    return *std::max_element(
+        clip.midiNotes.begin(),
+        clip.midiNotes.end(),
+        [](const MidiNoteEvent& left, const MidiNoteEvent& right) {
+            const auto leftEndTick = left.startTick + left.lengthTick;
+            const auto rightEndTick = right.startTick + right.lengthTick;
+            if (leftEndTick != rightEndTick) {
+                return leftEndTick < rightEndTick;
+            }
+
+            return left.startTick < right.startTick;
+        });
 }
 
 }
@@ -88,6 +114,41 @@ AppMidiNoteActionFeedback createDefaultMidiNoteInClip(
     }
 
     return successFeedback(*createdNote);
+}
+
+AppMidiNoteActionFeedback deleteLastMidiNoteInClip(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::MissingClip,
+            "无法删除 MIDI 音符：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::IncompatibleClipType,
+            "无法删除 MIDI 音符：只能从 MIDI 片段删除音符。");
+    }
+
+    if (targetClip->midiNotes.empty()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::EmptyClip,
+            "无法删除 MIDI 音符：当前片段里还没有音符。");
+    }
+
+    const auto noteToDelete = lastNoteInTimelineOrder(*targetClip);
+
+    // 删除前所有校验都已完成；只有真实删除才允许把会话标记为 dirty。
+    if (!session.editProject().removeMidiNoteById(noteToDelete.id)) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::DeleteFailed,
+            "无法删除 MIDI 音符：工程模型拒绝了这次删除。");
+    }
+
+    return deleteSuccessFeedback(noteToDelete);
 }
 
 }
