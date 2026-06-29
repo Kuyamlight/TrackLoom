@@ -2,6 +2,8 @@
 
 #include "PlaybackControl.h"
 
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -17,6 +19,15 @@ AppPlaybackActionFeedback successFeedback(std::string message)
     return feedback;
 }
 
+AppPlaybackActionFeedback noOpFeedback(std::string message)
+{
+    AppPlaybackActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppPlaybackActionFeedbackKind::NoOp;
+    feedback.message = std::move(message);
+    return feedback;
+}
+
 AppPlaybackActionFeedback failureFeedback(
     AppPlaybackActionFeedbackKind kind,
     std::string message)
@@ -26,6 +37,13 @@ AppPlaybackActionFeedback failureFeedback(
     feedback.kind = kind;
     feedback.message = std::move(message);
     return feedback;
+}
+
+std::string secondsText(double seconds)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(3) << seconds;
+    return stream.str();
 }
 
 }
@@ -85,6 +103,23 @@ bool AppPlaybackController::stop(const Project& project)
     return command.execute(playbackSession_, transport_, project).success;
 }
 
+bool AppPlaybackController::advanceOneUiBlock(const Project& project)
+{
+    if (!playbackSession_.isPrepared()) {
+        return false;
+    }
+
+    const auto channelCount = playbackSession_.channelCount();
+    const auto frameCount = defaultAppPlaybackUiBlockFrames;
+    scratchAudioBuffer_.resize(static_cast<std::size_t>(channelCount * frameCount));
+
+    // UI tick 使用应用层持有的静音缓冲区推动已测试的核心播放会话。
+    // 它不会打开声卡；真实音频设备接入后应由设备回调提供 AudioBlock。
+    AudioBlock block(scratchAudioBuffer_.data(), channelCount, frameCount);
+    const auto result = playbackSession_.renderNextBlock(transport_, block, project);
+    return result.renderSucceeded;
+}
+
 AppPlaybackActionFeedback startAppPlayback(
     AppPlaybackController& playback,
     const Project& project)
@@ -118,6 +153,29 @@ AppPlaybackActionFeedback stopAppPlayback(
     return successFeedback("已停止播放。");
 }
 
+AppPlaybackActionFeedback advanceAppPlaybackForUiTick(
+    AppPlaybackController& playback,
+    const Project& project)
+{
+    if (!playback.isPlaying()) {
+        return noOpFeedback("播放未运行，本次界面刷新不推进播放位置。");
+    }
+
+    if (!playback.ensurePrepared(project)) {
+        return failureFeedback(
+            AppPlaybackActionFeedbackKind::PrepareFailed,
+            "无法推进播放：播放运行态准备失败。");
+    }
+
+    if (!playback.advanceOneUiBlock(project)) {
+        return failureFeedback(
+            AppPlaybackActionFeedbackKind::RenderFailed,
+            "无法推进播放：播放 block 渲染失败。");
+    }
+
+    return successFeedback("播放位置已推进。");
+}
+
 AppPlaybackStatus describeAppPlayback(const AppPlaybackController& playback)
 {
     AppPlaybackStatus status;
@@ -127,7 +185,8 @@ AppPlaybackStatus describeAppPlayback(const AppPlaybackController& playback)
     status.currentSeconds = playback.currentSeconds();
     status.stateLabel = status.playing ? "播放中" : "已停止";
     status.summary = "播放状态：" + status.stateLabel
-        + "，位置 " + std::to_string(status.currentSample) + " samples。";
+        + "，位置 " + std::to_string(status.currentSample)
+        + " samples，约 " + secondsText(status.currentSeconds) + " 秒。";
     return status;
 }
 

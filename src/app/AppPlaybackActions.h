@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace trackloom {
 
@@ -14,14 +15,17 @@ namespace trackloom {
 inline constexpr double defaultAppPlaybackSampleRate = 44100.0;
 inline constexpr int defaultAppPlaybackChannelCount = 2;
 inline constexpr int defaultAppPlaybackMaxBlockFrames = 512;
+inline constexpr int defaultAppPlaybackUiBlockFrames = 512;
 inline constexpr int defaultAppPlaybackReleaseSampleOffset = 0;
 
 // AppPlaybackActionFeedbackKind 给 UI 和测试提供稳定分支。
 // 播放控制是运行态动作，不应进入工程撤销栈，也不应标脏工程。
 enum class AppPlaybackActionFeedbackKind {
     Success,
+    NoOp,
     PrepareFailed,
-    StopFailed
+    StopFailed,
+    RenderFailed
 };
 
 struct AppPlaybackActionFeedback {
@@ -54,10 +58,12 @@ public:
 
     void start();
     bool stop(const Project& project);
+    bool advanceOneUiBlock(const Project& project);
 
 private:
     ProjectPlaybackSession playbackSession_;
     Transport transport_;
+    std::vector<float> scratchAudioBuffer_;
 };
 
 AppPlaybackActionFeedback startAppPlayback(
@@ -65,6 +71,10 @@ AppPlaybackActionFeedback startAppPlayback(
     const Project& project);
 
 AppPlaybackActionFeedback stopAppPlayback(
+    AppPlaybackController& playback,
+    const Project& project);
+
+AppPlaybackActionFeedback advanceAppPlaybackForUiTick(
     AppPlaybackController& playback,
     const Project& project);
 

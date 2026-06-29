@@ -486,6 +486,82 @@ void playbackStatusDescribesStoppedAndPlayingStates()
         "playing status summary should include the visible playback state");
 }
 
+void playbackUiTickAdvancesPlayingTransportWithoutDirtyingProject()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "playback-ui-tick.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Playback UI Tick");
+    require(session.saveAs(path).success,
+        "playback UI tick test should save setup edits before runtime control");
+    require(trackloom::startAppPlayback(playback, session.project()).success,
+        "playback UI tick test should start playback before advancing");
+
+    const auto feedback = trackloom::advanceAppPlaybackForUiTick(playback, session.project());
+
+    require(feedback.success,
+        "playback UI tick should advance a playing runtime");
+    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::Success,
+        "successful playback UI tick should expose a stable success kind");
+    require(playback.currentSample() == trackloom::defaultAppPlaybackUiBlockFrames,
+        "playback UI tick should advance the transport by one app UI block");
+    require(playback.currentSeconds() > 0.0,
+        "playback UI tick should make the visible playback seconds advance");
+    require(!session.isDirty(),
+        "playback UI tick should not dirty the project session");
+
+    const auto status = trackloom::describeAppPlayback(playback);
+    require(status.currentSample == trackloom::defaultAppPlaybackUiBlockFrames,
+        "playback status should report the advanced sample position");
+    require(status.summary.find("秒") != std::string::npos,
+        "playback status summary should include a human-readable seconds value");
+}
+
+void playbackUiTickSkipsStoppedTransportWithoutPreparingRuntime()
+{
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Stopped UI Tick");
+
+    const auto feedback = trackloom::advanceAppPlaybackForUiTick(playback, session.project());
+
+    require(feedback.success,
+        "playback UI tick should treat stopped playback as a harmless no-op");
+    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::NoOp,
+        "stopped playback UI tick should expose a stable no-op kind");
+    require(!playback.isPrepared(),
+        "stopped playback UI tick should not prepare playback until the user starts playback");
+    require(playback.currentSample() == 0,
+        "stopped playback UI tick should keep the playback position unchanged");
+    require(!session.isDirty(),
+        "stopped playback UI tick should not dirty the project session");
+}
+
+void playbackUiTickSkipsAfterStopAndKeepsPosition()
+{
+    trackloom::AppProjectSession session;
+    trackloom::AppPlaybackController playback;
+    session.createNewProject("Tick After Stop");
+    require(trackloom::startAppPlayback(playback, session.project()).success,
+        "tick after stop test should start playback before advancing");
+    require(trackloom::advanceAppPlaybackForUiTick(playback, session.project()).success,
+        "tick after stop test should advance once before stopping");
+    require(trackloom::stopAppPlayback(playback, session.project()).success,
+        "tick after stop test should stop playback before the no-op tick");
+
+    const auto sampleAfterStop = playback.currentSample();
+    const auto feedback = trackloom::advanceAppPlaybackForUiTick(playback, session.project());
+
+    require(feedback.success,
+        "playback UI tick after stop should be a harmless no-op");
+    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::NoOp,
+        "playback UI tick after stop should expose a stable no-op kind");
+    require(playback.currentSample() == sampleAfterStop,
+        "playback UI tick after stop should keep the stopped position");
+}
+
 void midiClipActionCreatesDefaultClipOnInstrumentTrack()
 {
     removeTestWorkspace();
@@ -1081,6 +1157,9 @@ int main()
     playbackActionStopsTransportWithoutDirtyingProject();
     playbackActionStopsCleanlyBeforeStart();
     playbackStatusDescribesStoppedAndPlayingStates();
+    playbackUiTickAdvancesPlayingTransportWithoutDirtyingProject();
+    playbackUiTickSkipsStoppedTransportWithoutPreparingRuntime();
+    playbackUiTickSkipsAfterStopAndKeepsPosition();
     midiClipActionCreatesDefaultClipOnInstrumentTrack();
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionRejectsMissingTrackWithoutDirtyingSession();

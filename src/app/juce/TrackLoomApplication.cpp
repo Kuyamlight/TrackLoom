@@ -57,7 +57,9 @@ void styleReadOnlyTextEditor(juce::TextEditor& editor)
     editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour(0xff6ccf8d));
 }
 
-class MainComponent final : public juce::Component {
+class MainComponent final
+    : public juce::Component
+    , private juce::Timer {
 public:
     explicit MainComponent(std::function<void(std::string)> titleChanged)
         : titleChanged_(std::move(titleChanged))
@@ -68,6 +70,9 @@ public:
 
         statusLabel_.setFont(juce::FontOptions(16.0f));
         statusLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffb7c7b3));
+
+        playbackStatusLabel_.setFont(juce::FontOptions(15.0f));
+        playbackStatusLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffc8dccb));
 
         trackSummaryLabel_.setFont(juce::FontOptions(16.0f));
         trackSummaryLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffd9d4c5));
@@ -136,6 +141,7 @@ public:
 
         addAndMakeVisible(titleLabel_);
         addAndMakeVisible(statusLabel_);
+        addAndMakeVisible(playbackStatusLabel_);
         addAndMakeVisible(trackSummaryLabel_);
         addAndMakeVisible(actionLabel_);
         addAndMakeVisible(targetTrackLabel_);
@@ -176,6 +182,8 @@ public:
         auto bounds = getLocalBounds().reduced(40);
         titleLabel_.setBounds(bounds.removeFromTop(48));
         statusLabel_.setBounds(bounds.removeFromTop(36));
+        playbackStatusLabel_.setBounds(bounds.removeFromTop(28));
+        bounds.removeFromTop(4);
 
         auto buttonRow = bounds.removeFromTop(44);
         newProjectButton_.setBounds(buttonRow.removeFromLeft(120));
@@ -231,6 +239,19 @@ public:
     }
 
 private:
+    void timerCallback() override
+    {
+        const auto feedback = trackloom::advanceAppPlaybackForUiTick(playback_, session_.project());
+        if (!feedback.success) {
+            lastActionMessage_ = feedback.message;
+            stopTimer();
+        } else if (feedback.kind == trackloom::AppPlaybackActionFeedbackKind::NoOp) {
+            stopTimer();
+        }
+
+        refreshFromSession();
+    }
+
     void requestNewProject()
     {
         if (session_.isDirty()) {
@@ -378,6 +399,11 @@ private:
     {
         const auto feedback = trackloom::startAppPlayback(playback_, session_.project());
         lastActionMessage_ = feedback.message;
+        if (feedback.success) {
+            // 当前阶段还没有真实音频设备回调；先用 UI Timer 推进可见播放头。
+            // 后续接入声卡时，应改由设备 block 回调驱动播放会话。
+            startTimerHz(30);
+        }
         refreshFromSession();
     }
 
@@ -385,6 +411,9 @@ private:
     {
         const auto feedback = trackloom::stopAppPlayback(playback_, session_.project());
         lastActionMessage_ = feedback.message;
+        if (feedback.success) {
+            stopTimer();
+        }
         refreshFromSession();
     }
 
@@ -573,12 +602,14 @@ private:
     void refreshFromSession()
     {
         const auto status = trackloom::describeAppProjectSession(session_);
+        const auto playbackStatus = trackloom::describeAppPlayback(playback_);
         const auto timelineStatus = trackloom::describeAppTimeline(session_.project());
         refreshTrackTargetSelector();
         refreshMidiClipTargetSelector(timelineStatus);
 
         titleLabel_.setText(toJuceString(status.windowTitle), juce::dontSendNotification);
         statusLabel_.setText(toJuceString(status.statusLine), juce::dontSendNotification);
+        playbackStatusLabel_.setText(toJuceString(playbackStatus.summary), juce::dontSendNotification);
         trackSummaryLabel_.setText(toJuceString(trackSummaryText(status)), juce::dontSendNotification);
         actionLabel_.setText(toJuceString(lastActionMessage_), juce::dontSendNotification);
         playProjectButton_.setEnabled(!playback_.isPlaying());
@@ -665,6 +696,7 @@ private:
     std::string selectedMidiClipId_;
     juce::Label titleLabel_;
     juce::Label statusLabel_;
+    juce::Label playbackStatusLabel_;
     juce::Label trackSummaryLabel_;
     juce::Label actionLabel_;
     juce::Label targetTrackLabel_;
