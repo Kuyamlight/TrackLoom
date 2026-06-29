@@ -1,3 +1,4 @@
+#include "AppProjectFileActions.h"
 #include "AppProjectSession.h"
 #include "AppProjectStatus.h"
 #include "TrackLoomAppInfo.h"
@@ -127,6 +128,8 @@ void projectSessionRejectsSaveWithoutPath()
 
     require(!save.success,
         "saving without a current path should fail and ask the caller to use save-as");
+    require(save.failureReason == trackloom::AppProjectSessionFailureReason::MissingProjectPath,
+        "saving without a current path should expose a stable missing-path reason");
     require(!session.currentProjectPath().has_value(),
         "failed save without path should not invent a project path");
     require(!session.isDirty(),
@@ -186,6 +189,68 @@ void projectStatusDescribesSavedCleanProject()
         "saved project status should include the current project path");
 }
 
+void projectFileActionAddsDefaultTrackLoomExtension()
+{
+    const auto noExtension = testWorkspace() / "song";
+    const auto withExtension = testWorkspace() / "song.trackloom";
+    const auto customExtension = testWorkspace() / "song.trackloom-test";
+
+    require(trackloom::withTrackLoomProjectExtension(noExtension) == withExtension,
+        "save-as should add the default TrackLoom extension when the user omits one");
+    require(trackloom::withTrackLoomProjectExtension(customExtension) == customExtension,
+        "save-as should keep an explicit existing extension");
+}
+
+void projectFileActionFeedbackExplainsSaveWithoutPath()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Unsaved");
+
+    const auto feedback = trackloom::describeAppProjectFileActionResult(
+        trackloom::AppProjectFileAction::Save,
+        session.save());
+
+    require(!feedback.success,
+        "save feedback should report failure when the session has no file path");
+    require(feedback.kind == trackloom::AppProjectFileActionFeedbackKind::NeedsSaveAs,
+        "save feedback should expose a stable needs-save-as kind");
+    require(feedback.message.find("另存为") != std::string::npos,
+        "save feedback should tell the user to use save-as");
+}
+
+void projectFileActionFeedbackDescribesCanceledOpen()
+{
+    const auto feedback = trackloom::describeCanceledAppProjectFileAction(
+        trackloom::AppProjectFileAction::Open);
+
+    require(!feedback.success,
+        "canceled open feedback should not be reported as a successful file action");
+    require(feedback.kind == trackloom::AppProjectFileActionFeedbackKind::Canceled,
+        "canceled open feedback should expose a stable canceled kind");
+    require(feedback.message.find("取消打开") != std::string::npos,
+        "canceled open feedback should clearly describe the canceled action");
+}
+
+void projectFileActionFeedbackDescribesSuccessfulSaveAs()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "saved-feedback.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Saved Feedback");
+
+    const auto feedback = trackloom::describeAppProjectFileActionResult(
+        trackloom::AppProjectFileAction::SaveAs,
+        session.saveAs(path));
+
+    require(feedback.success,
+        "save-as feedback should report success after a successful save");
+    require(feedback.kind == trackloom::AppProjectFileActionFeedbackKind::Success,
+        "save-as feedback should expose a stable success kind");
+    require(feedback.message.find("另存为") != std::string::npos,
+        "save-as feedback should describe the completed save-as action");
+}
+
 }
 
 int main()
@@ -197,5 +262,9 @@ int main()
     projectSessionRejectsSaveWithoutPath();
     projectStatusDescribesUnsavedDirtyProject();
     projectStatusDescribesSavedCleanProject();
+    projectFileActionAddsDefaultTrackLoomExtension();
+    projectFileActionFeedbackExplainsSaveWithoutPath();
+    projectFileActionFeedbackDescribesCanceledOpen();
+    projectFileActionFeedbackDescribesSuccessfulSaveAs();
     return 0;
 }

@@ -6,12 +6,14 @@ namespace trackloom {
 
 AppProjectSessionResult AppProjectSessionResult::ok()
 {
-    return { true, "" };
+    return { true, AppProjectSessionFailureReason::None, "" };
 }
 
-AppProjectSessionResult AppProjectSessionResult::fail(std::string message)
+AppProjectSessionResult AppProjectSessionResult::fail(
+    AppProjectSessionFailureReason reason,
+    std::string message)
 {
-    return { false, std::move(message) };
+    return { false, reason, std::move(message) };
 }
 
 AppProjectSession::AppProjectSession()
@@ -50,7 +52,9 @@ void AppProjectSession::createNewProject(std::string name)
 AppProjectSessionResult AppProjectSession::save()
 {
     if (!currentProjectPath_.has_value()) {
-        return AppProjectSessionResult::fail("Project file path is not set. Use save-as first.");
+        return AppProjectSessionResult::fail(
+            AppProjectSessionFailureReason::MissingProjectPath,
+            "Project file path is not set. Use save-as first.");
     }
 
     return saveAs(*currentProjectPath_);
@@ -60,7 +64,9 @@ AppProjectSessionResult AppProjectSession::saveAs(const std::filesystem::path& p
 {
     const auto saved = saveProjectToFileAtomically(project_, path);
     if (!saved.success) {
-        return AppProjectSessionResult::fail(saved.error);
+        return AppProjectSessionResult::fail(
+            AppProjectSessionFailureReason::SaveFailed,
+            saved.error);
     }
 
     currentProjectPath_ = path;
@@ -72,7 +78,9 @@ AppProjectSessionResult AppProjectSession::openFrom(const std::filesystem::path&
 {
     const auto loaded = loadProjectFromFile(path);
     if (!loaded.project.has_value()) {
-        return AppProjectSessionResult::fail(loaded.error);
+        return AppProjectSessionResult::fail(
+            AppProjectSessionFailureReason::OpenFailed,
+            loaded.error);
     }
 
     project_ = std::move(*loaded.project);

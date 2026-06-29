@@ -9,14 +9,24 @@
 
 namespace trackloom {
 
+// AppProjectSessionFailureReason 给 UI 和快捷键提供稳定失败原因。
+// message 只用于显示或日志，不应作为逻辑分支依据。
+enum class AppProjectSessionFailureReason {
+    None,
+    MissingProjectPath,
+    SaveFailed,
+    OpenFailed
+};
+
 // AppProjectSessionResult 是桌面壳工程会话操作的统一结果。
 // 它只描述应用层动作是否成功；底层工程文件格式仍由 ProjectFile 负责。
 struct AppProjectSessionResult {
     bool success = false;
+    AppProjectSessionFailureReason failureReason = AppProjectSessionFailureReason::None;
     std::string error;
 
     static AppProjectSessionResult ok();
-    static AppProjectSessionResult fail(std::string message);
+    static AppProjectSessionResult fail(AppProjectSessionFailureReason reason, std::string message);
 };
 
 // AppProjectSession 保存桌面应用“当前打开的工程”状态。
