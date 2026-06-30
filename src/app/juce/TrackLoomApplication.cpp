@@ -192,6 +192,8 @@ public:
         decreaseMidiNoteVelocityButton_.setButtonText(toJuceString("减弱力度"));
         lengthenMidiNoteButton_.setButtonText(toJuceString("延长音符"));
         shortenMidiNoteButton_.setButtonText(toJuceString("缩短音符"));
+        moveMidiNoteEarlierButton_.setButtonText(toJuceString("左移音符"));
+        moveMidiNoteLaterButton_.setButtonText(toJuceString("右移音符"));
         duplicateMidiClipButton_.setButtonText(toJuceString("复制片段"));
         splitMidiClipButton_.setButtonText(toJuceString("拆分片段"));
         moveMidiClipLeftButton_.setButtonText(toJuceString("左移片段"));
@@ -236,6 +238,8 @@ public:
         decreaseMidiNoteVelocityButton_.onClick = [this] { decreaseMidiNoteVelocityInSelectedClip(); };
         lengthenMidiNoteButton_.onClick = [this] { lengthenMidiNoteInSelectedClip(); };
         shortenMidiNoteButton_.onClick = [this] { shortenMidiNoteInSelectedClip(); };
+        moveMidiNoteEarlierButton_.onClick = [this] { moveMidiNoteEarlierInSelectedClip(); };
+        moveMidiNoteLaterButton_.onClick = [this] { moveMidiNoteLaterInSelectedClip(); };
         duplicateMidiClipButton_.onClick = [this] { duplicateSelectedMidiClip(); };
         splitMidiClipButton_.onClick = [this] { splitSelectedMidiClip(); };
         moveMidiClipLeftButton_.onClick = [this] { moveSelectedMidiClipLeft(); };
@@ -299,6 +303,8 @@ public:
         addAndMakeVisible(decreaseMidiNoteVelocityButton_);
         addAndMakeVisible(lengthenMidiNoteButton_);
         addAndMakeVisible(shortenMidiNoteButton_);
+        addAndMakeVisible(moveMidiNoteEarlierButton_);
+        addAndMakeVisible(moveMidiNoteLaterButton_);
         addAndMakeVisible(duplicateMidiClipButton_);
         addAndMakeVisible(splitMidiClipButton_);
         addAndMakeVisible(moveMidiClipLeftButton_);
@@ -314,7 +320,7 @@ public:
         // MainComponent 主动获取键盘焦点后，Space 键才能先交给 keyPressed 处理。
         setWantsKeyboardFocus(true);
         refreshFromSession();
-        setSize(1040, 680);
+        setSize(1040, 760);
     }
 
     void paint(juce::Graphics& graphics) override
@@ -409,10 +415,18 @@ public:
         increaseMidiNoteVelocityButton_.setBounds(noteEditRow.removeFromLeft(96));
         noteEditRow.removeFromLeft(8);
         decreaseMidiNoteVelocityButton_.setBounds(noteEditRow.removeFromLeft(96));
-        noteEditRow.removeFromLeft(12);
-        lengthenMidiNoteButton_.setBounds(noteEditRow.removeFromLeft(96));
-        noteEditRow.removeFromLeft(8);
-        shortenMidiNoteButton_.setBounds(noteEditRow.removeFromLeft(96));
+
+        bounds.removeFromTop(8);
+        auto noteTimingRow = bounds.removeFromTop(36);
+        noteTimingRow.removeFromLeft(108);
+        noteTimingRow.removeFromLeft(10);
+        lengthenMidiNoteButton_.setBounds(noteTimingRow.removeFromLeft(96));
+        noteTimingRow.removeFromLeft(8);
+        shortenMidiNoteButton_.setBounds(noteTimingRow.removeFromLeft(96));
+        noteTimingRow.removeFromLeft(12);
+        moveMidiNoteEarlierButton_.setBounds(noteTimingRow.removeFromLeft(96));
+        noteTimingRow.removeFromLeft(8);
+        moveMidiNoteLaterButton_.setBounds(noteTimingRow.removeFromLeft(96));
 
         bounds.removeFromTop(8);
         auto clipNameRow = bounds.removeFromTop(36);
@@ -1032,6 +1046,42 @@ private:
         refreshFromSession();
     }
 
+    void moveMidiNoteEarlierInSelectedClip()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再左移末尾音符。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto targetClipId = selectedMidiClipId_;
+        const auto feedback = trackloom::moveLastMidiNoteStartEarlierInClip(session_, targetClipId);
+        if (feedback.success) {
+            selectedMidiClipId_ = targetClipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void moveMidiNoteLaterInSelectedClip()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再右移末尾音符。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto targetClipId = selectedMidiClipId_;
+        const auto feedback = trackloom::moveLastMidiNoteStartLaterInClip(session_, targetClipId);
+        if (feedback.success) {
+            selectedMidiClipId_ = targetClipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void renameSelectedMidiClip()
     {
         if (selectedMidiClipId_.empty()) {
@@ -1359,6 +1409,8 @@ private:
         decreaseMidiNoteVelocityButton_.setEnabled(!selectedMidiClipId_.empty());
         lengthenMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
         shortenMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
+        moveMidiNoteEarlierButton_.setEnabled(!selectedMidiClipId_.empty());
+        moveMidiNoteLaterButton_.setEnabled(!selectedMidiClipId_.empty());
         duplicateMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         splitMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         moveMidiClipLeftButton_.setEnabled(!selectedMidiClipId_.empty());
@@ -1595,6 +1647,8 @@ private:
     juce::TextButton decreaseMidiNoteVelocityButton_;
     juce::TextButton lengthenMidiNoteButton_;
     juce::TextButton shortenMidiNoteButton_;
+    juce::TextButton moveMidiNoteEarlierButton_;
+    juce::TextButton moveMidiNoteLaterButton_;
     juce::TextButton duplicateMidiClipButton_;
     juce::TextButton splitMidiClipButton_;
     juce::TextButton moveMidiClipLeftButton_;

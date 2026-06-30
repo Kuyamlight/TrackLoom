@@ -58,6 +58,16 @@ AppMidiNoteActionFeedback lengthSuccessFeedback(const MidiNoteEvent& note, const
     return feedback;
 }
 
+AppMidiNoteActionFeedback timingSuccessFeedback(const MidiNoteEvent& note, const std::string& directionLabel)
+{
+    AppMidiNoteActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiNoteActionFeedbackKind::Success;
+    feedback.noteId = note.id;
+    feedback.message = "已" + directionLabel + "末尾 MIDI 音符起点。";
+    return feedback;
+}
+
 AppMidiNoteActionFeedback failureFeedback(
     AppMidiNoteActionFeedbackKind kind,
     std::string message)
@@ -237,6 +247,56 @@ AppMidiNoteActionFeedback adjustLastMidiNoteLengthInClip(
     return lengthSuccessFeedback(noteToEdit, directionLabel);
 }
 
+AppMidiNoteActionFeedback moveLastMidiNoteStartInClip(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::int64_t startDeltaTick,
+    const std::string& directionLabel)
+{
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::MissingClip,
+            "无法移动 MIDI 音符起点：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::IncompatibleClipType,
+            "无法移动 MIDI 音符起点：只能编辑 MIDI 片段里的音符。");
+    }
+
+    if (targetClip->midiNotes.empty()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::EmptyClip,
+            "无法移动 MIDI 音符起点：当前片段里还没有音符。");
+    }
+
+    const auto noteToEdit = lastNoteInTimelineOrder(*targetClip);
+    const auto newStartTick = noteToEdit.startTick + startDeltaTick;
+    if (newStartTick < 0) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::TimingFailed,
+            "无法移动 MIDI 音符起点：音符起点不能早于片段开头。");
+    }
+
+    if (noteToEdit.lengthTick > targetClip->lengthTick
+        || newStartTick > targetClip->lengthTick - noteToEdit.lengthTick) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::TimingFailed,
+            "无法移动 MIDI 音符起点：音符右边界不能超出片段。");
+    }
+
+    // 起点微调只改变音符在片段内的位置；长度、音高、力度和通道必须保持原样。
+    if (!session.editProject().setMidiNoteTiming(noteToEdit.id, newStartTick, noteToEdit.lengthTick)) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::TimingFailed,
+            "无法移动 MIDI 音符起点：工程模型拒绝了这次时间修改。");
+    }
+
+    return timingSuccessFeedback(noteToEdit, directionLabel);
+}
+
 }
 
 AppMidiNoteActionFeedback createDefaultMidiNoteInClip(
@@ -356,6 +416,20 @@ AppMidiNoteActionFeedback shortenLastMidiNoteInClip(
     const std::string& clipId)
 {
     return adjustLastMidiNoteLengthInClip(session, clipId, -defaultAppMidiNoteLengthStepTick, "缩短");
+}
+
+AppMidiNoteActionFeedback moveLastMidiNoteStartEarlierInClip(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return moveLastMidiNoteStartInClip(session, clipId, -defaultAppMidiNoteLengthStepTick, "左移");
+}
+
+AppMidiNoteActionFeedback moveLastMidiNoteStartLaterInClip(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return moveLastMidiNoteStartInClip(session, clipId, defaultAppMidiNoteLengthStepTick, "右移");
 }
 
 }

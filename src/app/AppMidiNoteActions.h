@@ -27,6 +27,7 @@ enum class AppMidiNoteActionFeedbackKind {
     PitchFailed,
     VelocityFailed,
     LengthFailed,
+    TimingFailed,
     DeleteFailed,
     CreateFailed
 };
@@ -79,6 +80,16 @@ AppMidiNoteActionFeedback lengthenLastMidiNoteInClip(
     const std::string& clipId);
 
 AppMidiNoteActionFeedback shortenLastMidiNoteInClip(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// moveLastMidiNoteStartEarlierInClip / moveLastMidiNoteStartLaterInClip 只移动末尾音符起点。
+// 步长为十六分音符 tick；长度不变，且起点不能小于 0，右边界不能超出片段。
+AppMidiNoteActionFeedback moveLastMidiNoteStartEarlierInClip(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+AppMidiNoteActionFeedback moveLastMidiNoteStartLaterInClip(
     AppProjectSession& session,
     const std::string& clipId);
 

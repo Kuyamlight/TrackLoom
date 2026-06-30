@@ -3361,6 +3361,239 @@ void midiNoteActionRejectsAudioClipLengthWithoutDirtyingSession()
         "audio MIDI note length action should not dirty an unchanged session");
 }
 
+void midiNoteActionMovesLastNoteStartEarlierByStep()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "move-earlier-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Move Note Earlier");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto first = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    const auto second = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(first.success && second.success,
+        "move earlier MIDI note test should create two notes");
+    require(session.saveAs(path).success,
+        "move earlier MIDI note test should save setup edits before changing timing");
+
+    const auto feedback = trackloom::moveLastMidiNoteStartEarlierInClip(session, clipFeedback.clipId);
+
+    const auto clip = session.project().findClipById(clipFeedback.clipId);
+    require(feedback.success,
+        "MIDI note timing action should move the last note earlier");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::Success,
+        "successful MIDI note timing move should expose the stable success kind");
+    require(feedback.noteId == second.noteId,
+        "MIDI note timing move should report the changed note id");
+    require(clip.has_value() && clip->midiNotes.size() == 2,
+        "MIDI note timing move should keep all notes in the clip");
+    require(clip->midiNotes[0].startTick == 0,
+        "MIDI note timing move should keep earlier notes unchanged");
+    require(clip->midiNotes[1].startTick
+            == trackloom::defaultAppMidiNoteLengthTick - trackloom::defaultAppMidiNoteLengthStepTick,
+        "MIDI note timing move earlier should subtract one app-level step from the last note start");
+    require(clip->midiNotes[1].lengthTick == trackloom::defaultAppMidiNoteLengthTick,
+        "MIDI note timing move earlier should keep the last note length unchanged");
+    require(session.isDirty(),
+        "successful MIDI note timing move should mark the app session dirty");
+}
+
+void midiNoteActionMovesLastNoteStartLaterByStep()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "move-later-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Move Note Later");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto first = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    const auto second = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(first.success && second.success,
+        "move later MIDI note test should create two notes");
+    require(session.saveAs(path).success,
+        "move later MIDI note test should save setup edits before changing timing");
+
+    const auto feedback = trackloom::moveLastMidiNoteStartLaterInClip(session, clipFeedback.clipId);
+
+    const auto clip = session.project().findClipById(clipFeedback.clipId);
+    require(feedback.success,
+        "MIDI note timing action should move the last note later");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::Success,
+        "successful MIDI note timing move should expose the stable success kind");
+    require(feedback.noteId == second.noteId,
+        "MIDI note timing move should report the changed note id");
+    require(clip.has_value() && clip->midiNotes.size() == 2,
+        "MIDI note timing move should keep all notes in the clip");
+    require(clip->midiNotes[0].startTick == 0,
+        "MIDI note timing move should keep earlier notes unchanged");
+    require(clip->midiNotes[1].startTick
+            == trackloom::defaultAppMidiNoteLengthTick + trackloom::defaultAppMidiNoteLengthStepTick,
+        "MIDI note timing move later should add one app-level step to the last note start");
+    require(clip->midiNotes[1].lengthTick == trackloom::defaultAppMidiNoteLengthTick,
+        "MIDI note timing move later should keep the last note length unchanged");
+    require(session.isDirty(),
+        "successful MIDI note timing move should mark the app session dirty");
+}
+
+void midiNoteActionRejectsMoveEarlierBeforeClipStartWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "move-earlier-midi-note-boundary.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Move Earlier Boundary");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick);
+    require(clip.has_value(),
+        "move earlier boundary test should create a MIDI clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick,
+        trackloom::defaultAppMidiNoteNumber,
+        trackloom::defaultAppMidiNoteVelocity,
+        trackloom::defaultAppMidiNoteChannel);
+    require(note.has_value(),
+        "move earlier boundary test should create a note at the clip start");
+    require(session.saveAs(path).success,
+        "move earlier boundary test should save setup edits before validation");
+
+    const auto feedback = trackloom::moveLastMidiNoteStartEarlierInClip(session, clip->id);
+
+    const auto sourceClip = session.project().findClipById(clip->id);
+    require(!feedback.success,
+        "MIDI note timing move earlier should reject negative note starts");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::TimingFailed,
+        "move earlier boundary rejection should expose a stable timing-failed kind");
+    require(sourceClip.has_value() && sourceClip->midiNotes[0].startTick == 0,
+        "move earlier boundary rejection should keep the note start unchanged");
+    require(!session.isDirty(),
+        "move earlier boundary rejection should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsMoveLaterBeyondClipEndWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "move-later-midi-note-boundary.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Move Later Boundary");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick);
+    require(clip.has_value(),
+        "move later boundary test should create a MIDI clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick,
+        trackloom::defaultAppMidiNoteNumber,
+        trackloom::defaultAppMidiNoteVelocity,
+        trackloom::defaultAppMidiNoteChannel);
+    require(note.has_value(),
+        "move later boundary test should create a note ending at the clip boundary");
+    require(session.saveAs(path).success,
+        "move later boundary test should save setup edits before validation");
+
+    const auto feedback = trackloom::moveLastMidiNoteStartLaterInClip(session, clip->id);
+
+    const auto sourceClip = session.project().findClipById(clip->id);
+    require(!feedback.success,
+        "MIDI note timing move later should reject note ends beyond the clip boundary");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::TimingFailed,
+        "move later boundary rejection should expose a stable timing-failed kind");
+    require(sourceClip.has_value() && sourceClip->midiNotes[0].startTick == 0,
+        "move later boundary rejection should keep the note start unchanged");
+    require(!session.isDirty(),
+        "move later boundary rejection should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsEmptyClipTimingWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "empty-timing-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Empty Timing");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    require(clipFeedback.success,
+        "empty MIDI note timing test should create an empty MIDI clip");
+    require(session.saveAs(path).success,
+        "empty MIDI note timing test should save setup edits before validation");
+
+    const auto feedback = trackloom::moveLastMidiNoteStartLaterInClip(session, clipFeedback.clipId);
+
+    require(!feedback.success,
+        "MIDI note timing action should reject an empty MIDI clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::EmptyClip,
+        "empty MIDI note timing action should expose a stable empty-clip failure kind");
+    require(session.project().clips()[0].midiNotes.empty(),
+        "empty MIDI note timing action should keep the clip unchanged");
+    require(!session.isDirty(),
+        "empty MIDI note timing action should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsMissingClipTimingWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "missing-timing-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Timing Clip");
+    require(session.saveAs(path).success,
+        "missing MIDI note timing test should save setup edits before validation");
+
+    const auto feedback = trackloom::moveLastMidiNoteStartLaterInClip(session, "missing-clip-id");
+
+    require(!feedback.success,
+        "MIDI note timing action should reject a missing clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::MissingClip,
+        "missing MIDI note timing action should expose a stable missing-clip failure kind");
+    require(!session.isDirty(),
+        "missing MIDI note timing action should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsAudioClipTimingWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "audio-timing-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Timing Clip");
+    const auto audioTrack = session.editProject().createTrack("Audio", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audioTrack.id,
+        "Audio Clip",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick);
+    require(clip.has_value(),
+        "audio MIDI note timing test should create an audio clip");
+    require(session.saveAs(path).success,
+        "audio MIDI note timing test should save setup edits before validation");
+
+    const auto feedback = trackloom::moveLastMidiNoteStartLaterInClip(session, clip->id);
+
+    require(!feedback.success,
+        "MIDI note timing action should reject an audio clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::IncompatibleClipType,
+        "audio MIDI note timing action should expose a stable incompatible-clip failure kind");
+    require(!session.isDirty(),
+        "audio MIDI note timing action should not dirty an unchanged session");
+}
+
 void midiNoteActionRejectsEmptyClipDeleteWithoutDirtyingSession()
 {
     removeTestWorkspace();
@@ -3693,6 +3926,13 @@ int main()
     midiNoteActionRejectsEmptyClipLengthWithoutDirtyingSession();
     midiNoteActionRejectsMissingClipLengthWithoutDirtyingSession();
     midiNoteActionRejectsAudioClipLengthWithoutDirtyingSession();
+    midiNoteActionMovesLastNoteStartEarlierByStep();
+    midiNoteActionMovesLastNoteStartLaterByStep();
+    midiNoteActionRejectsMoveEarlierBeforeClipStartWithoutDirtyingSession();
+    midiNoteActionRejectsMoveLaterBeyondClipEndWithoutDirtyingSession();
+    midiNoteActionRejectsEmptyClipTimingWithoutDirtyingSession();
+    midiNoteActionRejectsMissingClipTimingWithoutDirtyingSession();
+    midiNoteActionRejectsAudioClipTimingWithoutDirtyingSession();
     midiNoteActionRejectsEmptyClipDeleteWithoutDirtyingSession();
     midiNoteActionRejectsMissingClipDeleteWithoutDirtyingSession();
     midiNoteActionRejectsAudioClipDeleteWithoutDirtyingSession();
