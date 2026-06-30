@@ -22,6 +22,7 @@ enum class AppMidiNoteActionFeedbackKind {
     IncompatibleClipType,
     ClipFull,
     EmptyClip,
+    PitchFailed,
     DeleteFailed,
     CreateFailed
 };
@@ -44,6 +45,16 @@ AppMidiNoteActionFeedback createDefaultMidiNoteInClip(
 // deleteLastMidiNoteInClip 删除目标 MIDI 片段里时间位置最后的音符。
 // 这是首屏的安全撤回入口，不等同于任意音符选择或钢琴卷帘删除。
 AppMidiNoteActionFeedback deleteLastMidiNoteInClip(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// raiseLastMidiNotePitchInClip / lowerLastMidiNotePitchInClip 只调整目标片段里的末尾音符音高。
+// 当前没有任意音符选择 UI，因此沿用“时间位置最后”的安全目标选择规则。
+AppMidiNoteActionFeedback raiseLastMidiNotePitchInClip(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+AppMidiNoteActionFeedback lowerLastMidiNotePitchInClip(
     AppProjectSession& session,
     const std::string& clipId);
 

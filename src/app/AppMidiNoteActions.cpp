@@ -28,6 +28,16 @@ AppMidiNoteActionFeedback deleteSuccessFeedback(const MidiNoteEvent& note)
     return feedback;
 }
 
+AppMidiNoteActionFeedback pitchSuccessFeedback(const MidiNoteEvent& note, const std::string& directionLabel)
+{
+    AppMidiNoteActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiNoteActionFeedbackKind::Success;
+    feedback.noteId = note.id;
+    feedback.message = "已" + directionLabel + "末尾 MIDI 音符。";
+    return feedback;
+}
+
 AppMidiNoteActionFeedback failureFeedback(
     AppMidiNoteActionFeedbackKind kind,
     std::string message)
@@ -70,6 +80,49 @@ const MidiNoteEvent& lastNoteInTimelineOrder(const TimelineClip& clip)
 
             return left.startTick < right.startTick;
         });
+}
+
+AppMidiNoteActionFeedback transposeLastMidiNotePitchInClip(
+    AppProjectSession& session,
+    const std::string& clipId,
+    int semitoneDelta,
+    const std::string& directionLabel)
+{
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::MissingClip,
+            "无法调整 MIDI 音符音高：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::IncompatibleClipType,
+            "无法调整 MIDI 音符音高：只能编辑 MIDI 片段里的音符。");
+    }
+
+    if (targetClip->midiNotes.empty()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::EmptyClip,
+            "无法调整 MIDI 音符音高：当前片段里还没有音符。");
+    }
+
+    const auto noteToEdit = lastNoteInTimelineOrder(*targetClip);
+    const auto newNoteNumber = noteToEdit.noteNumber + semitoneDelta;
+    if (newNoteNumber < 0 || newNoteNumber > 127) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::PitchFailed,
+            "无法调整 MIDI 音符音高：目标音高超出 MIDI 0-127 范围。");
+    }
+
+    // 所有可预见失败都在 editProject() 前处理；只有真实改音高才允许把会话标记为 dirty。
+    if (!session.editProject().setMidiNotePitch(noteToEdit.id, newNoteNumber)) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::PitchFailed,
+            "无法调整 MIDI 音符音高：工程模型拒绝了这次音高修改。");
+    }
+
+    return pitchSuccessFeedback(noteToEdit, directionLabel);
 }
 
 }
@@ -149,6 +202,20 @@ AppMidiNoteActionFeedback deleteLastMidiNoteInClip(
     }
 
     return deleteSuccessFeedback(noteToDelete);
+}
+
+AppMidiNoteActionFeedback raiseLastMidiNotePitchInClip(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return transposeLastMidiNotePitchInClip(session, clipId, 1, "升高");
+}
+
+AppMidiNoteActionFeedback lowerLastMidiNotePitchInClip(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return transposeLastMidiNotePitchInClip(session, clipId, -1, "降低");
 }
 
 }

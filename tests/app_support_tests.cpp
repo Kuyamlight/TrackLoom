@@ -2729,6 +2729,184 @@ void midiNoteActionDeletesLastNoteInMidiClip()
         "successful MIDI note delete feedback should describe the deletion");
 }
 
+void midiNoteActionRaisesLastNotePitchOneSemitone()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "raise-midi-note-pitch-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Raise Note Pitch");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto first = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    const auto second = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(first.success && second.success,
+        "raise MIDI note pitch test should create two notes");
+    require(session.saveAs(path).success,
+        "raise MIDI note pitch test should save setup edits before transposing");
+
+    const auto feedback = trackloom::raiseLastMidiNotePitchInClip(session, clipFeedback.clipId);
+
+    const auto clip = session.project().findClipById(clipFeedback.clipId);
+    require(feedback.success,
+        "MIDI note pitch action should raise the last note by one semitone");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::Success,
+        "successful MIDI note pitch raise should expose the stable success kind");
+    require(feedback.noteId == second.noteId,
+        "MIDI note pitch raise should report the changed note id");
+    require(clip.has_value() && clip->midiNotes.size() == 2,
+        "MIDI note pitch raise should keep all notes in the clip");
+    require(clip->midiNotes[0].noteNumber == trackloom::defaultAppMidiNoteNumber,
+        "MIDI note pitch raise should keep earlier notes unchanged");
+    require(clip->midiNotes[1].noteNumber == trackloom::defaultAppMidiNoteNumber + 1,
+        "MIDI note pitch raise should increase only the last note pitch by one");
+    require(session.isDirty(),
+        "successful MIDI note pitch raise should mark the app session dirty");
+}
+
+void midiNoteActionLowersLastNotePitchOneSemitone()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "lower-midi-note-pitch-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Lower Note Pitch");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto first = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    const auto second = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(first.success && second.success,
+        "lower MIDI note pitch test should create two notes");
+    require(session.saveAs(path).success,
+        "lower MIDI note pitch test should save setup edits before transposing");
+
+    const auto feedback = trackloom::lowerLastMidiNotePitchInClip(session, clipFeedback.clipId);
+
+    const auto clip = session.project().findClipById(clipFeedback.clipId);
+    require(feedback.success,
+        "MIDI note pitch action should lower the last note by one semitone");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::Success,
+        "successful MIDI note pitch lower should expose the stable success kind");
+    require(feedback.noteId == second.noteId,
+        "MIDI note pitch lower should report the changed note id");
+    require(clip.has_value() && clip->midiNotes.size() == 2,
+        "MIDI note pitch lower should keep all notes in the clip");
+    require(clip->midiNotes[0].noteNumber == trackloom::defaultAppMidiNoteNumber,
+        "MIDI note pitch lower should keep earlier notes unchanged");
+    require(clip->midiNotes[1].noteNumber == trackloom::defaultAppMidiNoteNumber - 1,
+        "MIDI note pitch lower should decrease only the last note pitch by one");
+    require(session.isDirty(),
+        "successful MIDI note pitch lower should mark the app session dirty");
+}
+
+void midiNoteActionRejectsPitchRaiseAboveMidiRangeWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "raise-midi-note-pitch-boundary.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Raise Pitch Boundary");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick);
+    require(clip.has_value(),
+        "raise pitch boundary test should create a MIDI clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick,
+        127,
+        trackloom::defaultAppMidiNoteVelocity,
+        trackloom::defaultAppMidiNoteChannel);
+    require(note.has_value(),
+        "raise pitch boundary test should create a top-range MIDI note");
+    require(session.saveAs(path).success,
+        "raise pitch boundary test should save setup edits before validation");
+
+    const auto feedback = trackloom::raiseLastMidiNotePitchInClip(session, clip->id);
+
+    const auto sourceClip = session.project().findClipById(clip->id);
+    require(!feedback.success,
+        "MIDI note pitch raise should reject pitches above 127");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::PitchFailed,
+        "top-range pitch raise should expose a stable pitch-failed kind");
+    require(sourceClip.has_value() && sourceClip->midiNotes[0].noteNumber == 127,
+        "top-range pitch raise should keep the note pitch unchanged");
+    require(!session.isDirty(),
+        "top-range pitch raise should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsPitchLowerBelowMidiRangeWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "lower-midi-note-pitch-boundary.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Lower Pitch Boundary");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick);
+    require(clip.has_value(),
+        "lower pitch boundary test should create a MIDI clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick,
+        0,
+        trackloom::defaultAppMidiNoteVelocity,
+        trackloom::defaultAppMidiNoteChannel);
+    require(note.has_value(),
+        "lower pitch boundary test should create a bottom-range MIDI note");
+    require(session.saveAs(path).success,
+        "lower pitch boundary test should save setup edits before validation");
+
+    const auto feedback = trackloom::lowerLastMidiNotePitchInClip(session, clip->id);
+
+    const auto sourceClip = session.project().findClipById(clip->id);
+    require(!feedback.success,
+        "MIDI note pitch lower should reject pitches below 0");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::PitchFailed,
+        "bottom-range pitch lower should expose a stable pitch-failed kind");
+    require(sourceClip.has_value() && sourceClip->midiNotes[0].noteNumber == 0,
+        "bottom-range pitch lower should keep the note pitch unchanged");
+    require(!session.isDirty(),
+        "bottom-range pitch lower should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsEmptyClipPitchWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "empty-pitch-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Empty Pitch");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    require(clipFeedback.success,
+        "empty MIDI note pitch test should create an empty MIDI clip");
+    require(session.saveAs(path).success,
+        "empty MIDI note pitch test should save setup edits before validation");
+
+    const auto feedback = trackloom::raiseLastMidiNotePitchInClip(session, clipFeedback.clipId);
+
+    require(!feedback.success,
+        "MIDI note pitch action should reject an empty MIDI clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::EmptyClip,
+        "empty MIDI note pitch action should expose a stable empty-clip failure kind");
+    require(session.project().clips()[0].midiNotes.empty(),
+        "empty MIDI note pitch action should keep the clip unchanged");
+    require(!session.isDirty(),
+        "empty MIDI note pitch action should not dirty an unchanged session");
+}
+
 void midiNoteActionRejectsEmptyClipDeleteWithoutDirtyingSession()
 {
     removeTestWorkspace();
@@ -3042,6 +3220,11 @@ int main()
     midiNoteActionRejectsAudioClipWithoutDirtyingSession();
     midiNoteActionRejectsFullClipWithoutDirtyingSession();
     midiNoteActionDeletesLastNoteInMidiClip();
+    midiNoteActionRaisesLastNotePitchOneSemitone();
+    midiNoteActionLowersLastNotePitchOneSemitone();
+    midiNoteActionRejectsPitchRaiseAboveMidiRangeWithoutDirtyingSession();
+    midiNoteActionRejectsPitchLowerBelowMidiRangeWithoutDirtyingSession();
+    midiNoteActionRejectsEmptyClipPitchWithoutDirtyingSession();
     midiNoteActionRejectsEmptyClipDeleteWithoutDirtyingSession();
     midiNoteActionRejectsMissingClipDeleteWithoutDirtyingSession();
     midiNoteActionRejectsAudioClipDeleteWithoutDirtyingSession();
