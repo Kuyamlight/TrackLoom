@@ -53,6 +53,12 @@ AppMidiNoteActionFeedback deleteLastMidiNoteInClip(
     AppProjectSession& session,
     const std::string& clipId);
 
+// duplicateLastMidiNoteInClip 复制目标 MIDI 片段里时间位置最后的音符。
+// 副本放在源音符之后，保留长度、音高、力度和通道；空间不足时必须拒绝。
+AppMidiNoteActionFeedback duplicateLastMidiNoteInClip(
+    AppProjectSession& session,
+    const std::string& clipId);
+
 // raiseLastMidiNotePitchInClip / lowerLastMidiNotePitchInClip 只调整目标片段里的末尾音符音高。
 // 当前没有任意音符选择 UI，因此沿用“时间位置最后”的安全目标选择规则。
 AppMidiNoteActionFeedback raiseLastMidiNotePitchInClip(

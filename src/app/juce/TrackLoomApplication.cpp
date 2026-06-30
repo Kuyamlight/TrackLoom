@@ -186,6 +186,7 @@ public:
         hideTrackButton_.setButtonText(toJuceString("隐藏"));
         addMidiNoteButton_.setButtonText(toJuceString("添加默认音符"));
         deleteMidiNoteButton_.setButtonText(toJuceString("删除末尾音符"));
+        duplicateMidiNoteButton_.setButtonText(toJuceString("复制末尾音符"));
         raiseMidiNotePitchButton_.setButtonText(toJuceString("升高音符"));
         lowerMidiNotePitchButton_.setButtonText(toJuceString("降低音符"));
         increaseMidiNoteVelocityButton_.setButtonText(toJuceString("增强力度"));
@@ -232,6 +233,7 @@ public:
         hideTrackButton_.onClick = [this] { toggleSelectedTrackHidden(); };
         addMidiNoteButton_.onClick = [this] { addMidiNoteToSelectedClip(); };
         deleteMidiNoteButton_.onClick = [this] { deleteMidiNoteFromSelectedClip(); };
+        duplicateMidiNoteButton_.onClick = [this] { duplicateMidiNoteInSelectedClip(); };
         raiseMidiNotePitchButton_.onClick = [this] { raiseMidiNotePitchInSelectedClip(); };
         lowerMidiNotePitchButton_.onClick = [this] { lowerMidiNotePitchInSelectedClip(); };
         increaseMidiNoteVelocityButton_.onClick = [this] { increaseMidiNoteVelocityInSelectedClip(); };
@@ -297,6 +299,7 @@ public:
         addAndMakeVisible(hideTrackButton_);
         addAndMakeVisible(addMidiNoteButton_);
         addAndMakeVisible(deleteMidiNoteButton_);
+        addAndMakeVisible(duplicateMidiNoteButton_);
         addAndMakeVisible(raiseMidiNotePitchButton_);
         addAndMakeVisible(lowerMidiNotePitchButton_);
         addAndMakeVisible(increaseMidiNoteVelocityButton_);
@@ -403,6 +406,8 @@ public:
         addMidiNoteButton_.setBounds(clipRow.removeFromLeft(144));
         clipRow.removeFromLeft(12);
         deleteMidiNoteButton_.setBounds(clipRow.removeFromLeft(144));
+        clipRow.removeFromLeft(12);
+        duplicateMidiNoteButton_.setBounds(clipRow.removeFromLeft(144));
 
         bounds.removeFromTop(8);
         auto noteEditRow = bounds.removeFromTop(36);
@@ -938,6 +943,24 @@ private:
         refreshFromSession();
     }
 
+    void duplicateMidiNoteInSelectedClip()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再复制末尾音符。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto targetClipId = selectedMidiClipId_;
+        const auto feedback = trackloom::duplicateLastMidiNoteInClip(session_, targetClipId);
+        if (feedback.success) {
+            selectedMidiClipId_ = targetClipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void raiseMidiNotePitchInSelectedClip()
     {
         if (selectedMidiClipId_.empty()) {
@@ -1403,6 +1426,7 @@ private:
         targetMidiClipBox_.setEnabled(!selectableMidiClipIds_.empty());
         addMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
         deleteMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
+        duplicateMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
         raiseMidiNotePitchButton_.setEnabled(!selectedMidiClipId_.empty());
         lowerMidiNotePitchButton_.setEnabled(!selectedMidiClipId_.empty());
         increaseMidiNoteVelocityButton_.setEnabled(!selectedMidiClipId_.empty());
@@ -1641,6 +1665,7 @@ private:
     juce::TextButton hideTrackButton_;
     juce::TextButton addMidiNoteButton_;
     juce::TextButton deleteMidiNoteButton_;
+    juce::TextButton duplicateMidiNoteButton_;
     juce::TextButton raiseMidiNotePitchButton_;
     juce::TextButton lowerMidiNotePitchButton_;
     juce::TextButton increaseMidiNoteVelocityButton_;

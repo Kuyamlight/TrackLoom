@@ -28,6 +28,16 @@ AppMidiNoteActionFeedback deleteSuccessFeedback(const MidiNoteEvent& note)
     return feedback;
 }
 
+AppMidiNoteActionFeedback duplicateSuccessFeedback(const MidiNoteEvent& note)
+{
+    AppMidiNoteActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiNoteActionFeedbackKind::Success;
+    feedback.noteId = note.id;
+    feedback.message = "已复制末尾 MIDI 音符。";
+    return feedback;
+}
+
 AppMidiNoteActionFeedback pitchSuccessFeedback(const MidiNoteEvent& note, const std::string& directionLabel)
 {
     AppMidiNoteActionFeedback feedback;
@@ -374,6 +384,56 @@ AppMidiNoteActionFeedback deleteLastMidiNoteInClip(
     }
 
     return deleteSuccessFeedback(noteToDelete);
+}
+
+AppMidiNoteActionFeedback duplicateLastMidiNoteInClip(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::MissingClip,
+            "无法复制 MIDI 音符：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::IncompatibleClipType,
+            "无法复制 MIDI 音符：只能从 MIDI 片段复制音符。");
+    }
+
+    if (targetClip->midiNotes.empty()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::EmptyClip,
+            "无法复制 MIDI 音符：当前片段里还没有音符。");
+    }
+
+    const auto noteToDuplicate = lastNoteInTimelineOrder(*targetClip);
+    const auto newStartTick = noteToDuplicate.startTick + noteToDuplicate.lengthTick;
+    if (noteToDuplicate.lengthTick > targetClip->lengthTick
+        || newStartTick > targetClip->lengthTick - noteToDuplicate.lengthTick) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::ClipFull,
+            "无法复制 MIDI 音符：源音符之后没有足够空间容纳副本。");
+    }
+
+    // 副本必须获得新 note id，不能和源音符共享对象身份；其他 MIDI 属性保持一致。
+    auto copiedNote = session.editProject().createMidiNote(
+        clipId,
+        newStartTick,
+        noteToDuplicate.lengthTick,
+        noteToDuplicate.noteNumber,
+        noteToDuplicate.velocity,
+        noteToDuplicate.channel);
+
+    if (!copiedNote.has_value()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::CreateFailed,
+            "无法复制 MIDI 音符：工程模型拒绝了这次音符创建。");
+    }
+
+    return duplicateSuccessFeedback(*copiedNote);
 }
 
 AppMidiNoteActionFeedback raiseLastMidiNotePitchInClip(
