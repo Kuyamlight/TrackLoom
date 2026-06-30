@@ -19,6 +19,16 @@ AppAudioClipActionFeedback successFeedback(const TimelineClip& clip)
     return feedback;
 }
 
+AppAudioClipActionFeedback deleteSuccessFeedback(const TimelineClip& clip)
+{
+    AppAudioClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppAudioClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已删除音频片段：" + clip.name + "。";
+    return feedback;
+}
+
 AppAudioClipActionFeedback failureFeedback(
     AppAudioClipActionFeedbackKind kind,
     std::string message)
@@ -94,6 +104,34 @@ AppAudioClipActionFeedback createDefaultAudioClipOnTrack(
     }
 
     return successFeedback(*createdClip);
+}
+
+AppAudioClipActionFeedback deleteAudioClipById(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    // 先用只读工程快照校验目标；删除失败时不能把工程误标为 dirty。
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingClip,
+            "无法删除音频片段：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleClipType,
+            "无法删除音频片段：只能删除音频片段。");
+    }
+
+    // 所有可预见校验都已完成；只有真实删除才允许把会话标记为 dirty。
+    if (!session.editProject().removeClipById(clipId)) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::DeleteFailed,
+            "无法删除音频片段：工程模型拒绝了这次删除。");
+    }
+
+    return deleteSuccessFeedback(*targetClip);
 }
 
 }

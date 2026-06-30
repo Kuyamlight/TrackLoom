@@ -130,6 +130,16 @@ public:
         targetAudioTrackBox_.setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff3a463c));
         targetAudioTrackBox_.setColour(juce::ComboBox::arrowColourId, juce::Colour(0xff6ccf8d));
 
+        targetAudioClipLabel_.setText(toJuceString("目标音频片段"), juce::dontSendNotification);
+        targetAudioClipLabel_.setFont(juce::FontOptions(15.0f));
+        targetAudioClipLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffd9d4c5));
+
+        targetAudioClipBox_.setTextWhenNothingSelected(toJuceString("暂无音频片段"));
+        targetAudioClipBox_.setColour(juce::ComboBox::backgroundColourId, juce::Colour(0xff20231f));
+        targetAudioClipBox_.setColour(juce::ComboBox::textColourId, juce::Colour(0xfff2f0e8));
+        targetAudioClipBox_.setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff3a463c));
+        targetAudioClipBox_.setColour(juce::ComboBox::arrowColourId, juce::Colour(0xff6ccf8d));
+
         trackNameLabel_.setText(toJuceString("轨道名称"), juce::dontSendNotification);
         trackNameLabel_.setFont(juce::FontOptions(15.0f));
         trackNameLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffd9d4c5));
@@ -188,6 +198,7 @@ public:
         rewindProjectButton_.setButtonText(toJuceString("回到开头"));
         createMidiClipButton_.setButtonText(toJuceString("创建 MIDI 片段"));
         createAudioClipButton_.setButtonText(toJuceString("创建音频片段"));
+        deleteAudioClipButton_.setButtonText(toJuceString("删除音频片段"));
         deleteInstrumentTrackButton_.setButtonText(toJuceString("删除乐器轨"));
         moveTrackUpButton_.setButtonText(toJuceString("上移"));
         moveTrackDownButton_.setButtonText(toJuceString("下移"));
@@ -229,6 +240,7 @@ public:
         rewindProjectButton_.onClick = [this] { rewindProjectPlayback(); };
         targetTrackBox_.onChange = [this] { updateSelectedTrackFromComboBox(); };
         targetAudioTrackBox_.onChange = [this] { updateSelectedAudioTrackFromComboBox(); };
+        targetAudioClipBox_.onChange = [this] { updateSelectedAudioClipFromComboBox(); };
         targetMidiClipBox_.onChange = [this] { updateSelectedMidiClipFromComboBox(); };
         recentProjectBox_.onChange = [this] { updateSelectedRecentProjectFromComboBox(); };
         addInstrumentTrackButton_.onClick = [this] { addDefaultInstrumentTrack(); };
@@ -236,6 +248,7 @@ public:
         addFolderTrackButton_.onClick = [this] { addDefaultFolderTrack(); };
         createMidiClipButton_.onClick = [this] { createMidiClipOnSelectedTrack(); };
         createAudioClipButton_.onClick = [this] { createAudioClipOnSelectedAudioTrack(); };
+        deleteAudioClipButton_.onClick = [this] { deleteSelectedAudioClip(); };
         deleteInstrumentTrackButton_.onClick = [this] { deleteSelectedInstrumentTrack(); };
         moveTrackUpButton_.onClick = [this] { moveSelectedTrackUp(); };
         moveTrackDownButton_.onClick = [this] { moveSelectedTrackDown(); };
@@ -279,6 +292,8 @@ public:
         addAndMakeVisible(targetTrackBox_);
         addAndMakeVisible(targetAudioTrackLabel_);
         addAndMakeVisible(targetAudioTrackBox_);
+        addAndMakeVisible(targetAudioClipLabel_);
+        addAndMakeVisible(targetAudioClipBox_);
         addAndMakeVisible(trackNameLabel_);
         addAndMakeVisible(trackNameEditor_);
         addAndMakeVisible(targetMidiClipLabel_);
@@ -306,6 +321,7 @@ public:
         addAndMakeVisible(rewindProjectButton_);
         addAndMakeVisible(createMidiClipButton_);
         addAndMakeVisible(createAudioClipButton_);
+        addAndMakeVisible(deleteAudioClipButton_);
         addAndMakeVisible(deleteInstrumentTrackButton_);
         addAndMakeVisible(moveTrackUpButton_);
         addAndMakeVisible(moveTrackDownButton_);
@@ -340,7 +356,7 @@ public:
         // MainComponent 主动获取键盘焦点后，Space 键才能先交给 keyPressed 处理。
         setWantsKeyboardFocus(true);
         refreshFromSession();
-        setSize(1040, 760);
+        setSize(1040, 800);
     }
 
     void paint(juce::Graphics& graphics) override
@@ -405,6 +421,14 @@ public:
         addAudioTrackButton_.setBounds(audioTargetRow.removeFromLeft(104));
         audioTargetRow.removeFromLeft(8);
         addFolderTrackButton_.setBounds(audioTargetRow.removeFromLeft(104));
+
+        bounds.removeFromTop(8);
+        auto audioClipRow = bounds.removeFromTop(36);
+        targetAudioClipLabel_.setBounds(audioClipRow.removeFromLeft(108));
+        audioClipRow.removeFromLeft(10);
+        targetAudioClipBox_.setBounds(audioClipRow.removeFromLeft(260));
+        audioClipRow.removeFromLeft(12);
+        deleteAudioClipButton_.setBounds(audioClipRow.removeFromLeft(144));
 
         bounds.removeFromTop(8);
         auto trackNameRow = bounds.removeFromTop(36);
@@ -547,6 +571,7 @@ private:
         }
 
         session_.createNewProject("Untitled");
+        clearProjectObjectSelections();
         lastActionMessage_ = "已新建空白工程。";
         refreshFromSession();
     }
@@ -621,9 +646,13 @@ private:
             return;
         }
 
+        const auto openResult = session_.openFrom(juceFileToPath(selectedFile));
+        if (openResult.success) {
+            clearProjectObjectSelections();
+        }
         setFileActionFeedback(trackloom::describeAppProjectFileActionResult(
             trackloom::AppProjectFileAction::Open,
-            session_.openFrom(juceFileToPath(selectedFile))));
+            openResult));
     }
 
     void finishSaveProjectChoice(const juce::FileChooser& chooser)
@@ -698,6 +727,18 @@ private:
         }
 
         selectedAudioTrackId_ = selectableAudioTrackIds_[static_cast<std::size_t>(selectedId - 1)];
+    }
+
+    void updateSelectedAudioClipFromComboBox()
+    {
+        const auto selectedId = targetAudioClipBox_.getSelectedId();
+        if (selectedId <= 0
+            || static_cast<std::size_t>(selectedId) > selectableAudioClipIds_.size()) {
+            selectedAudioClipId_.clear();
+            return;
+        }
+
+        selectedAudioClipId_ = selectableAudioClipIds_[static_cast<std::size_t>(selectedId - 1)];
     }
 
     void updateSelectedMidiClipFromComboBox()
@@ -833,6 +874,25 @@ private:
         const auto feedback = trackloom::createDefaultAudioClipOnTrack(session_, targetTrackId);
         if (feedback.success) {
             selectedAudioTrackId_ = targetTrackId;
+            selectedAudioClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void deleteSelectedAudioClip()
+    {
+        if (selectedAudioClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个音频片段，再删除音频片段。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto targetClipId = selectedAudioClipId_;
+        const auto feedback = trackloom::deleteAudioClipById(session_, targetClipId);
+        if (feedback.success && selectedAudioClipId_ == targetClipId) {
+            selectedAudioClipId_.clear();
         }
 
         lastActionMessage_ = feedback.message;
@@ -1377,11 +1437,20 @@ private:
             recentProjectsSettingsPath_);
         lastActionMessage_ = feedback.message;
         if (feedback.success) {
-            selectedTrackId_.clear();
-            selectedMidiClipId_.clear();
+            clearProjectObjectSelections();
         }
 
         refreshFromSession();
+    }
+
+    void clearProjectObjectSelections()
+    {
+        // 这些 ID 都只在当前工程内有效。新建或打开其他工程后，旧 ID 必须清空，
+        // 让刷新逻辑从新工程里重新选择可操作对象。
+        selectedTrackId_.clear();
+        selectedAudioTrackId_.clear();
+        selectedAudioClipId_.clear();
+        selectedMidiClipId_.clear();
     }
 
     void refreshTrackTargetSelector()
@@ -1465,6 +1534,45 @@ private:
         targetAudioTrackBox_.setSelectedId(selectedItemId, juce::dontSendNotification);
         targetAudioTrackBox_.setEnabled(!selectableAudioTrackIds_.empty());
         createAudioClipButton_.setEnabled(!selectedAudioTrackId_.empty());
+    }
+
+    void refreshAudioClipTargetSelector(const trackloom::AppTimelineStatus& timelineStatus)
+    {
+        const auto previousSelection = selectedAudioClipId_;
+        selectableAudioClipIds_.clear();
+        targetAudioClipBox_.clear(juce::dontSendNotification);
+
+        int itemId = 1;
+        int selectedItemId = 0;
+        for (const auto& row : timelineStatus.rows) {
+            if (row.type != trackloom::ClipType::Audio) {
+                continue;
+            }
+
+            selectableAudioClipIds_.push_back(row.clipId);
+            targetAudioClipBox_.addItem(
+                toJuceString(row.name + " - " + row.trackName),
+                itemId);
+
+            if (row.clipId == previousSelection) {
+                selectedItemId = itemId;
+            }
+
+            ++itemId;
+        }
+
+        if (selectedItemId == 0 && !selectableAudioClipIds_.empty()) {
+            selectedItemId = 1;
+            selectedAudioClipId_ = selectableAudioClipIds_.front();
+        } else if (selectedItemId > 0) {
+            selectedAudioClipId_ = previousSelection;
+        } else {
+            selectedAudioClipId_.clear();
+        }
+
+        targetAudioClipBox_.setSelectedId(selectedItemId, juce::dontSendNotification);
+        targetAudioClipBox_.setEnabled(!selectableAudioClipIds_.empty());
+        deleteAudioClipButton_.setEnabled(!selectedAudioClipId_.empty());
     }
 
     void syncTrackNameEditorFromSelection(bool forceUpdate)
@@ -1601,6 +1709,7 @@ private:
         const auto recentStatus = trackloom::describeAppRecentProjects(recentProjects_);
         refreshTrackTargetSelector();
         refreshAudioTrackTargetSelector();
+        refreshAudioClipTargetSelector(timelineStatus);
         refreshMidiClipTargetSelector(timelineStatus);
         refreshRecentProjectSelector(recentStatus);
 
@@ -1713,11 +1822,13 @@ private:
     trackloom::AppRecentProjects recentProjects_;
     std::vector<std::string> selectableTrackIds_;
     std::vector<std::string> selectableAudioTrackIds_;
+    std::vector<std::string> selectableAudioClipIds_;
     std::vector<std::string> selectableMidiClipIds_;
     std::vector<std::size_t> selectableRecentProjectNumbers_;
     std::string lastActionMessage_ = "文件动作：尚未打开或保存工程。";
     std::string selectedTrackId_;
     std::string selectedAudioTrackId_;
+    std::string selectedAudioClipId_;
     std::string selectedMidiClipId_;
     std::size_t selectedRecentProjectNumber_ = 0;
     juce::Label titleLabel_;
@@ -1729,6 +1840,8 @@ private:
     juce::ComboBox targetTrackBox_;
     juce::Label targetAudioTrackLabel_;
     juce::ComboBox targetAudioTrackBox_;
+    juce::Label targetAudioClipLabel_;
+    juce::ComboBox targetAudioClipBox_;
     juce::Label trackNameLabel_;
     juce::TextEditor trackNameEditor_;
     juce::Label targetMidiClipLabel_;
@@ -1756,6 +1869,7 @@ private:
     juce::TextButton rewindProjectButton_;
     juce::TextButton createMidiClipButton_;
     juce::TextButton createAudioClipButton_;
+    juce::TextButton deleteAudioClipButton_;
     juce::TextButton deleteInstrumentTrackButton_;
     juce::TextButton moveTrackUpButton_;
     juce::TextButton moveTrackDownButton_;

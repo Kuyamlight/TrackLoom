@@ -1506,6 +1506,82 @@ void audioClipActionRejectsIncompatibleTrackWithoutDirtyingSession()
         "incompatible track audio clip action should not dirty an unchanged session");
 }
 
+void audioClipActionDeletesAudioClip()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "delete-audio-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Delete Audio Clip");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clipFeedback = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+    require(clipFeedback.success,
+        "delete audio clip action test should create an audio clip");
+    require(session.saveAs(path).success,
+        "delete audio clip action test should save setup edits before deleting");
+
+    const auto feedback = trackloom::deleteAudioClipById(session, clipFeedback.clipId);
+
+    require(feedback.success,
+        "audio clip action should delete the requested audio clip");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::Success,
+        "successful audio clip delete action should expose the stable success kind");
+    require(feedback.clipId == clipFeedback.clipId,
+        "audio clip delete action should report the deleted clip id");
+    require(session.project().clips().empty(),
+        "audio clip delete action should remove the whole target clip");
+    require(session.isDirty(),
+        "audio clip delete action should mark the app session dirty");
+    require(feedback.message.find("删除") != std::string::npos,
+        "successful audio clip delete feedback should describe the deletion");
+}
+
+void audioClipActionRejectsMissingClipDeleteWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Audio Clip Delete");
+
+    const auto feedback = trackloom::deleteAudioClipById(session, "missing-clip");
+
+    require(!feedback.success,
+        "audio clip delete action should reject a missing clip");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::MissingClip,
+        "missing audio clip delete action should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing audio clip delete action should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMidiClipDeleteWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "midi-delete-audio-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Delete As Audio Clip");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto midi = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::Project::ticksPerQuarterNote);
+    require(midi.has_value(),
+        "MIDI-as-audio delete test should create a MIDI clip");
+    require(session.saveAs(path).success,
+        "MIDI-as-audio delete test should save setup edits before validation");
+
+    const auto feedback = trackloom::deleteAudioClipById(session, midi->id);
+
+    require(!feedback.success,
+        "audio clip delete action should reject MIDI clips");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::IncompatibleClipType,
+        "MIDI clip audio delete action should expose a stable failure kind");
+    require(session.project().clips().size() == 1,
+        "MIDI clip audio delete action should keep the original clip");
+    require(!session.isDirty(),
+        "MIDI clip audio delete action should not dirty an unchanged session");
+}
+
 void midiClipActionAppendsAfterExistingTrackClips()
 {
     trackloom::AppProjectSession session;
@@ -4215,6 +4291,9 @@ int main()
     audioClipActionAppendsAfterExistingTrackClips();
     audioClipActionRejectsMissingTrackWithoutDirtyingSession();
     audioClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
+    audioClipActionDeletesAudioClip();
+    audioClipActionRejectsMissingClipDeleteWithoutDirtyingSession();
+    audioClipActionRejectsMidiClipDeleteWithoutDirtyingSession();
     midiClipActionCreatesDefaultClipOnInstrumentTrack();
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionDuplicatesMidiClipAfterItself();
