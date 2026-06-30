@@ -171,6 +171,7 @@ public:
         saveAsProjectButton_.setButtonText(toJuceString("另存为"));
         addInstrumentTrackButton_.setButtonText(toJuceString("添加乐器轨"));
         addAudioTrackButton_.setButtonText(toJuceString("添加音频轨"));
+        addFolderTrackButton_.setButtonText(toJuceString("添加文件夹"));
         playProjectButton_.setButtonText(toJuceString("播放"));
         stopProjectButton_.setButtonText(toJuceString("停止"));
         rewindProjectButton_.setButtonText(toJuceString("回到开头"));
@@ -208,6 +209,7 @@ public:
         recentProjectBox_.onChange = [this] { updateSelectedRecentProjectFromComboBox(); };
         addInstrumentTrackButton_.onClick = [this] { addDefaultInstrumentTrack(); };
         addAudioTrackButton_.onClick = [this] { addDefaultAudioTrack(); };
+        addFolderTrackButton_.onClick = [this] { addDefaultFolderTrack(); };
         createMidiClipButton_.onClick = [this] { createMidiClipOnSelectedTrack(); };
         deleteInstrumentTrackButton_.onClick = [this] { deleteSelectedInstrumentTrack(); };
         moveTrackUpButton_.onClick = [this] { moveSelectedTrackUp(); };
@@ -260,6 +262,7 @@ public:
         addAndMakeVisible(saveAsProjectButton_);
         addAndMakeVisible(addInstrumentTrackButton_);
         addAndMakeVisible(addAudioTrackButton_);
+        addAndMakeVisible(addFolderTrackButton_);
         addAndMakeVisible(playProjectButton_);
         addAndMakeVisible(stopProjectButton_);
         addAndMakeVisible(rewindProjectButton_);
@@ -331,9 +334,9 @@ public:
         auto targetRow = bounds.removeFromTop(36);
         targetTrackLabel_.setBounds(targetRow.removeFromLeft(96));
         targetRow.removeFromLeft(8);
-        targetTrackBox_.setBounds(targetRow.removeFromLeft(220));
+        targetTrackBox_.setBounds(targetRow.removeFromLeft(200));
         targetRow.removeFromLeft(10);
-        createMidiClipButton_.setBounds(targetRow.removeFromLeft(144));
+        createMidiClipButton_.setBounds(targetRow.removeFromLeft(136));
         targetRow.removeFromLeft(8);
         deleteInstrumentTrackButton_.setBounds(targetRow.removeFromLeft(112));
         targetRow.removeFromLeft(8);
@@ -341,7 +344,9 @@ public:
         targetRow.removeFromLeft(8);
         moveTrackDownButton_.setBounds(targetRow.removeFromLeft(64));
         targetRow.removeFromLeft(8);
-        addAudioTrackButton_.setBounds(targetRow.removeFromLeft(112));
+        addAudioTrackButton_.setBounds(targetRow.removeFromLeft(104));
+        targetRow.removeFromLeft(8);
+        addFolderTrackButton_.setBounds(targetRow.removeFromLeft(104));
 
         bounds.removeFromTop(8);
         auto trackNameRow = bounds.removeFromTop(36);
@@ -681,6 +686,15 @@ private:
         const auto feedback = trackloom::createDefaultAudioTrack(session_);
 
         // 音频轨当前只在只读轨道列表中展示；目标下拉框仍只选择乐器轨，避免误把 MIDI 片段创建到音频轨。
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void addDefaultFolderTrack()
+    {
+        const auto feedback = trackloom::createDefaultFolderTrack(session_);
+
+        // 文件夹轨当前只在只读轨道列表中展示；层级归组和折叠编辑后续单独接入。
         lastActionMessage_ = feedback.message;
         refreshFromSession();
     }
@@ -1366,6 +1380,7 @@ private:
     juce::TextButton saveAsProjectButton_;
     juce::TextButton addInstrumentTrackButton_;
     juce::TextButton addAudioTrackButton_;
+    juce::TextButton addFolderTrackButton_;
     juce::TextButton playProjectButton_;
     juce::TextButton stopProjectButton_;
     juce::TextButton rewindProjectButton_;

@@ -627,6 +627,56 @@ void trackActionNamesRepeatedDefaultAudioTracksByProjectOrder()
         "second default audio track should use the next generated name");
 }
 
+void trackActionCreatesDefaultFolderTrackAndMarksSessionDirty()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-action-create-folder.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Folder Track Action");
+    require(session.saveAs(path).success,
+        "folder track action create test should save the setup project before editing");
+
+    const auto feedback = trackloom::createDefaultFolderTrack(session);
+
+    require(feedback.success,
+        "track action should create a default folder track");
+    require(feedback.kind == trackloom::AppTrackActionFeedbackKind::Success,
+        "successful folder track create action should expose a stable success kind");
+    require(!feedback.trackId.empty(),
+        "successful folder track create action should expose the created track id");
+    require(session.project().tracks().size() == 1,
+        "folder track create action should append one track to the project");
+    require(session.project().tracks()[0].id == feedback.trackId,
+        "folder track create feedback should point to the created track");
+    require(session.project().tracks()[0].type == trackloom::TrackType::Folder,
+        "folder track create action should create a folder track");
+    require(session.project().tracks()[0].name == "Folder 1",
+        "first default folder track should use the app-level starter name");
+    require(session.isDirty(),
+        "successful folder track create action should mark the app session dirty");
+    require(feedback.message.find("文件夹轨") != std::string::npos,
+        "successful folder track create feedback should describe the folder track creation");
+}
+
+void trackActionNamesRepeatedDefaultFolderTracksByProjectOrder()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Repeated Folder Tracks");
+
+    const auto first = trackloom::createDefaultFolderTrack(session);
+    const auto second = trackloom::createDefaultFolderTrack(session);
+
+    require(first.success && second.success,
+        "track action should create repeated default folder tracks");
+    require(session.project().tracks().size() == 2,
+        "repeated folder track action should create two tracks");
+    require(session.project().tracks()[0].name == "Folder 1",
+        "first default folder track should keep the first generated name");
+    require(session.project().tracks()[1].name == "Folder 2",
+        "second default folder track should use the next generated name");
+}
+
 void trackActionDeletesInstrumentTrackAndOwnedClips()
 {
     removeTestWorkspace();
@@ -2792,6 +2842,8 @@ int main()
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
     trackActionCreatesDefaultAudioTrackAndMarksSessionDirty();
     trackActionNamesRepeatedDefaultAudioTracksByProjectOrder();
+    trackActionCreatesDefaultFolderTrackAndMarksSessionDirty();
+    trackActionNamesRepeatedDefaultFolderTracksByProjectOrder();
     trackActionDeletesInstrumentTrackAndOwnedClips();
     trackActionRejectsMissingTrackDeleteWithoutDirtyingSession();
     trackActionRejectsNonInstrumentTrackDeleteWithoutDirtyingSession();

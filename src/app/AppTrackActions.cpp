@@ -28,6 +28,16 @@ AppTrackActionFeedback createAudioSuccessFeedback(const Track& track)
     return feedback;
 }
 
+AppTrackActionFeedback createFolderSuccessFeedback(const Track& track)
+{
+    AppTrackActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppTrackActionFeedbackKind::Success;
+    feedback.trackId = track.id;
+    feedback.message = "已添加文件夹轨：" + track.name + "。";
+    return feedback;
+}
+
 AppTrackActionFeedback deleteSuccessFeedback(const Track& track)
 {
     AppTrackActionFeedback feedback;
@@ -79,6 +89,12 @@ std::string nextDefaultAudioTrackName(const Project& project)
 {
     // 音频轨采用与乐器轨一致的项目顺序编号；后续轨道模板稳定后再按类型计数或用户偏好扩展。
     return "Audio " + std::to_string(project.tracks().size() + 1);
+}
+
+std::string nextDefaultFolderTrackName(const Project& project)
+{
+    // 文件夹轨同样按当前工程顺序编号；层级命名和模板命名留给正式轨道编辑器。
+    return "Folder " + std::to_string(project.tracks().size() + 1);
 }
 
 std::string trimTrackName(std::string name)
@@ -183,6 +199,21 @@ AppTrackActionFeedback createDefaultAudioTrack(AppProjectSession& session)
     }
 
     return createAudioSuccessFeedback(createdTrack);
+}
+
+AppTrackActionFeedback createDefaultFolderTrack(AppProjectSession& session)
+{
+    const auto name = nextDefaultFolderTrackName(session.project());
+
+    // 当前只创建空文件夹轨；层级归组、折叠显示和批量移动后续单独接入。
+    const auto createdTrack = session.editProject().createTrack(name, TrackType::Folder);
+    if (createdTrack.id.empty()) {
+        return failureFeedback(
+            AppTrackActionFeedbackKind::CreateFailed,
+            "无法添加文件夹轨：工程模型没有返回有效轨道 ID。");
+    }
+
+    return createFolderSuccessFeedback(createdTrack);
 }
 
 AppTrackActionFeedback deleteInstrumentTrackById(
