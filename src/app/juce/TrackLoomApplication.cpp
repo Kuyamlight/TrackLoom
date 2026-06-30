@@ -170,6 +170,7 @@ public:
         saveProjectButton_.setButtonText(toJuceString("保存"));
         saveAsProjectButton_.setButtonText(toJuceString("另存为"));
         addInstrumentTrackButton_.setButtonText(toJuceString("添加乐器轨"));
+        addAudioTrackButton_.setButtonText(toJuceString("添加音频轨"));
         playProjectButton_.setButtonText(toJuceString("播放"));
         stopProjectButton_.setButtonText(toJuceString("停止"));
         rewindProjectButton_.setButtonText(toJuceString("回到开头"));
@@ -206,6 +207,7 @@ public:
         targetMidiClipBox_.onChange = [this] { updateSelectedMidiClipFromComboBox(); };
         recentProjectBox_.onChange = [this] { updateSelectedRecentProjectFromComboBox(); };
         addInstrumentTrackButton_.onClick = [this] { addDefaultInstrumentTrack(); };
+        addAudioTrackButton_.onClick = [this] { addDefaultAudioTrack(); };
         createMidiClipButton_.onClick = [this] { createMidiClipOnSelectedTrack(); };
         deleteInstrumentTrackButton_.onClick = [this] { deleteSelectedInstrumentTrack(); };
         moveTrackUpButton_.onClick = [this] { moveSelectedTrackUp(); };
@@ -257,6 +259,7 @@ public:
         addAndMakeVisible(saveProjectButton_);
         addAndMakeVisible(saveAsProjectButton_);
         addAndMakeVisible(addInstrumentTrackButton_);
+        addAndMakeVisible(addAudioTrackButton_);
         addAndMakeVisible(playProjectButton_);
         addAndMakeVisible(stopProjectButton_);
         addAndMakeVisible(rewindProjectButton_);
@@ -337,6 +340,8 @@ public:
         moveTrackUpButton_.setBounds(targetRow.removeFromLeft(64));
         targetRow.removeFromLeft(8);
         moveTrackDownButton_.setBounds(targetRow.removeFromLeft(64));
+        targetRow.removeFromLeft(8);
+        addAudioTrackButton_.setBounds(targetRow.removeFromLeft(112));
 
         bounds.removeFromTop(8);
         auto trackNameRow = bounds.removeFromTop(36);
@@ -667,6 +672,15 @@ private:
             selectedTrackId_ = feedback.trackId;
         }
 
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void addDefaultAudioTrack()
+    {
+        const auto feedback = trackloom::createDefaultAudioTrack(session_);
+
+        // 音频轨当前只在只读轨道列表中展示；目标下拉框仍只选择乐器轨，避免误把 MIDI 片段创建到音频轨。
         lastActionMessage_ = feedback.message;
         refreshFromSession();
     }
@@ -1351,6 +1365,7 @@ private:
     juce::TextButton saveProjectButton_;
     juce::TextButton saveAsProjectButton_;
     juce::TextButton addInstrumentTrackButton_;
+    juce::TextButton addAudioTrackButton_;
     juce::TextButton playProjectButton_;
     juce::TextButton stopProjectButton_;
     juce::TextButton rewindProjectButton_;

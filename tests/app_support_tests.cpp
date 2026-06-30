@@ -577,6 +577,56 @@ void trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder()
         "second default track should use the next generated name");
 }
 
+void trackActionCreatesDefaultAudioTrackAndMarksSessionDirty()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-action-create-audio.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Track Action");
+    require(session.saveAs(path).success,
+        "audio track action create test should save the setup project before editing");
+
+    const auto feedback = trackloom::createDefaultAudioTrack(session);
+
+    require(feedback.success,
+        "track action should create a default audio track");
+    require(feedback.kind == trackloom::AppTrackActionFeedbackKind::Success,
+        "successful audio track create action should expose a stable success kind");
+    require(!feedback.trackId.empty(),
+        "successful audio track create action should expose the created track id");
+    require(session.project().tracks().size() == 1,
+        "audio track create action should append one track to the project");
+    require(session.project().tracks()[0].id == feedback.trackId,
+        "audio track create feedback should point to the created track");
+    require(session.project().tracks()[0].type == trackloom::TrackType::Audio,
+        "audio track create action should create an audio track");
+    require(session.project().tracks()[0].name == "Audio 1",
+        "first default audio track should use the app-level starter name");
+    require(session.isDirty(),
+        "successful audio track create action should mark the app session dirty");
+    require(feedback.message.find("音频轨") != std::string::npos,
+        "successful audio track create feedback should describe the audio track creation");
+}
+
+void trackActionNamesRepeatedDefaultAudioTracksByProjectOrder()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Repeated Audio Tracks");
+
+    const auto first = trackloom::createDefaultAudioTrack(session);
+    const auto second = trackloom::createDefaultAudioTrack(session);
+
+    require(first.success && second.success,
+        "track action should create repeated default audio tracks");
+    require(session.project().tracks().size() == 2,
+        "repeated audio track action should create two tracks");
+    require(session.project().tracks()[0].name == "Audio 1",
+        "first default audio track should keep the first generated name");
+    require(session.project().tracks()[1].name == "Audio 2",
+        "second default audio track should use the next generated name");
+}
+
 void trackActionDeletesInstrumentTrackAndOwnedClips()
 {
     removeTestWorkspace();
@@ -2740,6 +2790,8 @@ int main()
     recentProjectsOpenByNumberRejectsMissingFileWithoutMutation();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
+    trackActionCreatesDefaultAudioTrackAndMarksSessionDirty();
+    trackActionNamesRepeatedDefaultAudioTracksByProjectOrder();
     trackActionDeletesInstrumentTrackAndOwnedClips();
     trackActionRejectsMissingTrackDeleteWithoutDirtyingSession();
     trackActionRejectsNonInstrumentTrackDeleteWithoutDirtyingSession();

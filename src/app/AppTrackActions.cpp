@@ -18,6 +18,16 @@ AppTrackActionFeedback createSuccessFeedback(const Track& track)
     return feedback;
 }
 
+AppTrackActionFeedback createAudioSuccessFeedback(const Track& track)
+{
+    AppTrackActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppTrackActionFeedbackKind::Success;
+    feedback.trackId = track.id;
+    feedback.message = "已添加音频轨：" + track.name + "。";
+    return feedback;
+}
+
 AppTrackActionFeedback deleteSuccessFeedback(const Track& track)
 {
     AppTrackActionFeedback feedback;
@@ -63,6 +73,12 @@ std::string nextDefaultInstrumentTrackName(const Project& project)
 {
     // 沿用当前首屏行为：按工程已有轨道总数生成可读名称，避免 UI 自己决定命名规则。
     return "Instrument " + std::to_string(project.tracks().size() + 1);
+}
+
+std::string nextDefaultAudioTrackName(const Project& project)
+{
+    // 音频轨采用与乐器轨一致的项目顺序编号；后续轨道模板稳定后再按类型计数或用户偏好扩展。
+    return "Audio " + std::to_string(project.tracks().size() + 1);
 }
 
 std::string trimTrackName(std::string name)
@@ -152,6 +168,21 @@ AppTrackActionFeedback createDefaultInstrumentTrack(AppProjectSession& session)
     }
 
     return createSuccessFeedback(createdTrack);
+}
+
+AppTrackActionFeedback createDefaultAudioTrack(AppProjectSession& session)
+{
+    const auto name = nextDefaultAudioTrackName(session.project());
+
+    // 当前只创建空音频轨；音频文件导入、波形和音频片段会在后续阶段单独接入。
+    const auto createdTrack = session.editProject().createTrack(name, TrackType::Audio);
+    if (createdTrack.id.empty()) {
+        return failureFeedback(
+            AppTrackActionFeedbackKind::CreateFailed,
+            "无法添加音频轨：工程模型没有返回有效轨道 ID。");
+    }
+
+    return createAudioSuccessFeedback(createdTrack);
 }
 
 AppTrackActionFeedback deleteInstrumentTrackById(

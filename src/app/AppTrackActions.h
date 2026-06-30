@@ -33,6 +33,10 @@ struct AppTrackActionFeedback {
 // 这里固定创建 Instrument N；轨道重命名和轨道类型选择属于后续编辑入口。
 AppTrackActionFeedback createDefaultInstrumentTrack(AppProjectSession& session);
 
+// createDefaultAudioTrack 创建首屏使用的默认音频轨。
+// 它只创建空轨道，不导入音频文件，也不创建音频片段。
+AppTrackActionFeedback createDefaultAudioTrack(AppProjectSession& session);
+
 // deleteInstrumentTrackById 删除一个已存在的乐器轨。
 // 当前首屏只允许删除目标乐器轨；音频轨和文件夹轨由后续正式轨道编辑器处理。
 AppTrackActionFeedback deleteInstrumentTrackById(
