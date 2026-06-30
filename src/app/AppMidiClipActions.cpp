@@ -70,6 +70,16 @@ AppMidiClipActionFeedback moveSuccessFeedback(const TimelineClip& clip, const st
     return feedback;
 }
 
+AppMidiClipActionFeedback moveToTrackSuccessFeedback(const TimelineClip& clip, const Track& targetTrack)
+{
+    AppMidiClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已移动 MIDI 片段到轨道：" + clip.name + " -> " + targetTrack.name + "。";
+    return feedback;
+}
+
 AppMidiClipActionFeedback trimEndSuccessFeedback(const TimelineClip& clip)
 {
     AppMidiClipActionFeedback feedback;
@@ -234,6 +244,67 @@ AppMidiClipActionFeedback moveMidiClipByTickOffset(
     }
 
     return moveSuccessFeedback(*targetClip, directionLabel);
+}
+
+AppMidiClipActionFeedback moveMidiClipToTrackImpl(
+    AppProjectSession& session,
+    const std::string& clipId,
+    const std::string& targetTrackId)
+{
+    // 跨轨移动只改片段归属；失败路径必须先读快照，避免同轨或无效目标把工程误标为 dirty。
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingClip,
+            "无法移动 MIDI 片段到目标轨：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleClipType,
+            "无法移动 MIDI 片段到目标轨：只能移动 MIDI 片段。");
+    }
+
+    const auto sourceTrack = session.project().findTrackById(targetClip->trackId);
+    if (!sourceTrack.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingTrack,
+            "无法移动 MIDI 片段到目标轨：片段所属轨道不存在。");
+    }
+
+    if (sourceTrack->type != TrackType::Instrument) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleTrackType,
+            "无法移动 MIDI 片段到目标轨：源轨道不是乐器轨。");
+    }
+
+    const auto targetTrack = session.project().findTrackById(targetTrackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingTrack,
+            "无法移动 MIDI 片段到目标轨：目标轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Instrument) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleTrackType,
+            "无法移动 MIDI 片段到目标轨：目标轨道必须是乐器轨。");
+    }
+
+    if (targetClip->trackId == targetTrackId) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MoveFailed,
+            "无法移动 MIDI 片段到目标轨：目标轨道与当前轨道相同。");
+    }
+
+    // 当前只做轨道归属切换；重叠处理、跨类型转换和批量移动属于后续时间线编辑器。
+    if (!session.editProject().moveClipToTrack(clipId, targetTrackId)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MoveFailed,
+            "无法移动 MIDI 片段到目标轨：工程模型拒绝了这次移动。");
+    }
+
+    return moveToTrackSuccessFeedback(*targetClip, *targetTrack);
 }
 
 AppMidiClipActionFeedback trimMidiClipEndByTickOffset(
@@ -573,6 +644,14 @@ AppMidiClipActionFeedback moveMidiClipRightOneBeat(
         clipId,
         Project::ticksPerQuarterNote,
         "右移");
+}
+
+AppMidiClipActionFeedback moveMidiClipToTrack(
+    AppProjectSession& session,
+    const std::string& clipId,
+    const std::string& targetTrackId)
+{
+    return moveMidiClipToTrackImpl(session, clipId, targetTrackId);
 }
 
 AppMidiClipActionFeedback trimMidiClipEndEarlierOneBeat(

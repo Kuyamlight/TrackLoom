@@ -188,6 +188,7 @@ public:
         splitMidiClipButton_.setButtonText(toJuceString("拆分片段"));
         moveMidiClipLeftButton_.setButtonText(toJuceString("左移片段"));
         moveMidiClipRightButton_.setButtonText(toJuceString("右移片段"));
+        moveMidiClipToTrackButton_.setButtonText(toJuceString("移到目标轨"));
         trimMidiClipEndButton_.setButtonText(toJuceString("缩短片尾"));
         extendMidiClipEndButton_.setButtonText(toJuceString("延长片尾"));
         deleteMidiClipButton_.setButtonText(toJuceString("删除片段"));
@@ -221,6 +222,7 @@ public:
         splitMidiClipButton_.onClick = [this] { splitSelectedMidiClip(); };
         moveMidiClipLeftButton_.onClick = [this] { moveSelectedMidiClipLeft(); };
         moveMidiClipRightButton_.onClick = [this] { moveSelectedMidiClipRight(); };
+        moveMidiClipToTrackButton_.onClick = [this] { moveSelectedMidiClipToSelectedTrack(); };
         trimMidiClipEndButton_.onClick = [this] { trimSelectedMidiClipEnd(); };
         extendMidiClipEndButton_.onClick = [this] { extendSelectedMidiClipEnd(); };
         deleteMidiClipButton_.onClick = [this] { deleteSelectedMidiClip(); };
@@ -273,6 +275,7 @@ public:
         addAndMakeVisible(splitMidiClipButton_);
         addAndMakeVisible(moveMidiClipLeftButton_);
         addAndMakeVisible(moveMidiClipRightButton_);
+        addAndMakeVisible(moveMidiClipToTrackButton_);
         addAndMakeVisible(trimMidiClipEndButton_);
         addAndMakeVisible(extendMidiClipEndButton_);
         addAndMakeVisible(deleteMidiClipButton_);
@@ -382,6 +385,8 @@ public:
         moveMidiClipLeftButton_.setBounds(clipMoveRow.removeFromLeft(112));
         clipMoveRow.removeFromLeft(12);
         moveMidiClipRightButton_.setBounds(clipMoveRow.removeFromLeft(112));
+        clipMoveRow.removeFromLeft(12);
+        moveMidiClipToTrackButton_.setBounds(clipMoveRow.removeFromLeft(112));
         clipMoveRow.removeFromLeft(12);
         trimMidiClipEndButton_.setBounds(clipMoveRow.removeFromLeft(112));
         clipMoveRow.removeFromLeft(12);
@@ -918,6 +923,31 @@ private:
         refreshFromSession();
     }
 
+    void moveSelectedMidiClipToSelectedTrack()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再移动到目标轨。";
+            refreshFromSession();
+            return;
+        }
+
+        if (selectedTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条目标乐器轨，再移动 MIDI 片段。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto targetTrackId = selectedTrackId_;
+        const auto feedback = trackloom::moveMidiClipToTrack(session_, selectedMidiClipId_, targetTrackId);
+        if (feedback.success) {
+            selectedTrackId_ = targetTrackId;
+            selectedMidiClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void trimSelectedMidiClipEnd()
     {
         if (selectedMidiClipId_.empty()) {
@@ -1113,6 +1143,7 @@ private:
         splitMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         moveMidiClipLeftButton_.setEnabled(!selectedMidiClipId_.empty());
         moveMidiClipRightButton_.setEnabled(!selectedMidiClipId_.empty());
+        moveMidiClipToTrackButton_.setEnabled(!selectedMidiClipId_.empty() && !selectedTrackId_.empty());
         trimMidiClipEndButton_.setEnabled(!selectedMidiClipId_.empty());
         extendMidiClipEndButton_.setEnabled(!selectedMidiClipId_.empty());
         deleteMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
@@ -1338,6 +1369,7 @@ private:
     juce::TextButton splitMidiClipButton_;
     juce::TextButton moveMidiClipLeftButton_;
     juce::TextButton moveMidiClipRightButton_;
+    juce::TextButton moveMidiClipToTrackButton_;
     juce::TextButton trimMidiClipEndButton_;
     juce::TextButton extendMidiClipEndButton_;
     juce::TextButton deleteMidiClipButton_;

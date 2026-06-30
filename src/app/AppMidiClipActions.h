@@ -80,6 +80,13 @@ AppMidiClipActionFeedback moveMidiClipRightOneBeat(
     AppProjectSession& session,
     const std::string& clipId);
 
+// moveMidiClipToTrack 把目标 MIDI 片段移动到另一条乐器轨。
+// 它只改变片段所属 trackId，不改变起点、长度或 MIDI 音符相对 tick。
+AppMidiClipActionFeedback moveMidiClipToTrack(
+    AppProjectSession& session,
+    const std::string& clipId,
+    const std::string& targetTrackId);
+
 // trimMidiClipEndEarlierOneBeat 把目标 MIDI 片段右边界向左缩短一拍。
 // 当前只做向内修剪；向外扩展、左边界修剪和素材偏移属于后续时间线编辑器。
 AppMidiClipActionFeedback trimMidiClipEndEarlierOneBeat(
