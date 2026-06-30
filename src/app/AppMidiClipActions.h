@@ -24,6 +24,7 @@ enum class AppMidiClipActionFeedbackKind {
     DeleteFailed,
     DuplicateFailed,
     SplitFailed,
+    MoveFailed,
     CreateFailed
 };
 
@@ -64,6 +65,16 @@ AppMidiClipActionFeedback renameMidiClipById(
 // splitMidiClipAtMidpoint 把目标 MIDI 片段从当前长度中点拆成左右两段。
 // 这是首屏“拆分片段”的无输入入口；任意切点、刀片工具和跨音符拆分规则属于后续时间线编辑器。
 AppMidiClipActionFeedback splitMidiClipAtMidpoint(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// moveMidiClipLeftOneBeat / moveMidiClipRightOneBeat 用固定一拍步长移动片段外壳。
+// MIDI 音符时间仍保持片段内部相对位置；拖拽、吸附和重叠处理属于后续时间线编辑器。
+AppMidiClipActionFeedback moveMidiClipLeftOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+AppMidiClipActionFeedback moveMidiClipRightOneBeat(
     AppProjectSession& session,
     const std::string& clipId);
 

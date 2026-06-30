@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -55,6 +57,16 @@ AppMidiClipActionFeedback splitSuccessFeedback(const TimelineClip& rightClip)
     feedback.kind = AppMidiClipActionFeedbackKind::Success;
     feedback.clipId = rightClip.id;
     feedback.message = "已拆分 MIDI 片段：" + rightClip.name + "。";
+    return feedback;
+}
+
+AppMidiClipActionFeedback moveSuccessFeedback(const TimelineClip& clip, const std::string& directionLabel)
+{
+    AppMidiClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已" + directionLabel + " MIDI 片段：" + clip.name + "。";
     return feedback;
 }
 
@@ -121,6 +133,75 @@ bool midiNotesCanSplitAtOffset(const TimelineClip& clip, std::int64_t splitOffse
     }
 
     return true;
+}
+
+bool canAddTickOffset(std::int64_t startTick, std::int64_t offsetTick)
+{
+    if (offsetTick > 0) {
+        return startTick <= std::numeric_limits<std::int64_t>::max() - offsetTick;
+    }
+
+    if (offsetTick < 0) {
+        return startTick >= std::numeric_limits<std::int64_t>::min() - offsetTick;
+    }
+
+    return true;
+}
+
+AppMidiClipActionFeedback moveMidiClipByTickOffset(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::int64_t offsetTick,
+    const std::string& directionLabel)
+{
+    // 先用只读快照完成校验；移动失败时不能把未修改工程误标为 dirty。
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingClip,
+            "无法移动 MIDI 片段：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleClipType,
+            "无法移动 MIDI 片段：只能移动 MIDI 片段。");
+    }
+
+    const auto targetTrack = session.project().findTrackById(targetClip->trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingTrack,
+            "无法移动 MIDI 片段：片段所属轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Instrument) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleTrackType,
+            "无法移动 MIDI 片段：MIDI 片段只能停留在乐器轨。");
+    }
+
+    if (!canAddTickOffset(targetClip->startTick, offsetTick)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MoveFailed,
+            "无法移动 MIDI 片段：目标位置超出时间线范围。");
+    }
+
+    const auto newStartTick = targetClip->startTick + offsetTick;
+    if (newStartTick < 0) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MoveFailed,
+            "无法左移 MIDI 片段：片段不能移动到时间线起点之前。");
+    }
+
+    // 当前移动只改变片段外壳起点，不改片段长度，也不改 MIDI 音符在片段内的相对 tick。
+    if (!session.editProject().setClipTiming(clipId, newStartTick, targetClip->lengthTick)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MoveFailed,
+            "无法移动 MIDI 片段：工程模型拒绝了这次移动。");
+    }
+
+    return moveSuccessFeedback(*targetClip, directionLabel);
 }
 
 }
@@ -321,6 +402,28 @@ AppMidiClipActionFeedback splitMidiClipAtMidpoint(
     }
 
     return splitSuccessFeedback(*rightClip);
+}
+
+AppMidiClipActionFeedback moveMidiClipLeftOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return moveMidiClipByTickOffset(
+        session,
+        clipId,
+        -Project::ticksPerQuarterNote,
+        "左移");
+}
+
+AppMidiClipActionFeedback moveMidiClipRightOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return moveMidiClipByTickOffset(
+        session,
+        clipId,
+        Project::ticksPerQuarterNote,
+        "右移");
 }
 
 }

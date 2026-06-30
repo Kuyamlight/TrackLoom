@@ -1455,6 +1455,74 @@ void midiClipActionSplitsMidiClipAtMidpoint()
         "successful MIDI clip split should mark the app session dirty");
 }
 
+void midiClipActionMovesMidiClipRightOneBeat()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "move-midi-clip-right-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Move Clip Right");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto noteFeedback = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(clipFeedback.success && noteFeedback.success,
+        "move-right MIDI clip test should create a source clip with one note");
+    require(session.saveAs(path).success,
+        "move-right MIDI clip test should save setup edits before moving");
+
+    const auto feedback = trackloom::moveMidiClipRightOneBeat(session, clipFeedback.clipId);
+
+    const auto movedClip = session.project().findClipById(clipFeedback.clipId);
+    require(feedback.success,
+        "MIDI clip action should move the target clip right by one beat");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::Success,
+        "successful MIDI clip move-right action should expose the stable success kind");
+    require(feedback.clipId == clipFeedback.clipId,
+        "MIDI clip move-right action should keep reporting the moved clip id");
+    require(movedClip.has_value() && movedClip->startTick == trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip move-right action should add one quarter-note tick span to the clip start");
+    require(movedClip->lengthTick == trackloom::defaultAppMidiClipLengthTick,
+        "MIDI clip move-right action should keep the clip length unchanged");
+    require(movedClip->midiNotes.size() == 1 && movedClip->midiNotes[0].startTick == 0,
+        "MIDI clip move-right action should keep MIDI notes relative to the moved clip");
+    require(session.isDirty(),
+        "successful MIDI clip move-right should mark the app session dirty");
+}
+
+void midiClipActionMovesMidiClipLeftOneBeat()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "move-midi-clip-left-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Move Clip Left");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Verse",
+        trackloom::ClipType::Midi,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "move-left MIDI clip test should create a clip after the timeline start");
+    require(session.saveAs(path).success,
+        "move-left MIDI clip test should save setup edits before moving");
+
+    const auto feedback = trackloom::moveMidiClipLeftOneBeat(session, clip->id);
+
+    const auto movedClip = session.project().findClipById(clip->id);
+    require(feedback.success,
+        "MIDI clip action should move the target clip left by one beat");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::Success,
+        "successful MIDI clip move-left action should expose the stable success kind");
+    require(movedClip.has_value() && movedClip->startTick == 0,
+        "MIDI clip move-left action should subtract one quarter-note tick span from the clip start");
+    require(movedClip->lengthTick == trackloom::defaultAppMidiClipLengthTick,
+        "MIDI clip move-left action should keep the clip length unchanged");
+    require(session.isDirty(),
+        "successful MIDI clip move-left should mark the app session dirty");
+}
+
 void midiClipActionRejectsEmptyClipNameWithoutDirtyingSession()
 {
     removeTestWorkspace();
@@ -1723,6 +1791,78 @@ void midiClipActionRejectsCrossingNoteSplitWithoutDirtyingSession()
         "crossing note split should keep the source clip length unchanged");
     require(!session.isDirty(),
         "crossing note split should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsLeftMoveBeforeTimelineStartWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "left-boundary-move-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Left Boundary Move");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    require(clipFeedback.success,
+        "left-boundary move test should create a source MIDI clip at the timeline start");
+    require(session.saveAs(path).success,
+        "left-boundary move test should save setup edits before validation");
+
+    const auto feedback = trackloom::moveMidiClipLeftOneBeat(session, clipFeedback.clipId);
+
+    require(!feedback.success,
+        "MIDI clip move-left action should reject moves before the timeline start");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::MoveFailed,
+        "left-boundary MIDI clip move should expose the stable move-failed kind");
+    require(session.project().findClipById(clipFeedback.clipId)->startTick == 0,
+        "left-boundary MIDI clip move should keep the source clip start unchanged");
+    require(!session.isDirty(),
+        "left-boundary MIDI clip move should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsMissingClipMoveWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Clip Move");
+
+    const auto feedback = trackloom::moveMidiClipRightOneBeat(session, "missing-clip");
+
+    require(!feedback.success,
+        "MIDI clip move action should reject a missing clip");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::MissingClip,
+        "missing clip move should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing clip move should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsAudioClipMoveWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "audio-move-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Move");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Vocal clip",
+        trackloom::ClipType::Audio,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::Project::ticksPerQuarterNote);
+    require(clip.has_value(),
+        "audio clip move test should create an audio clip");
+    require(session.saveAs(path).success,
+        "audio clip move test should save setup edits before validation");
+
+    const auto feedback = trackloom::moveMidiClipLeftOneBeat(session, clip->id);
+
+    require(!feedback.success,
+        "MIDI clip move action should reject audio clips");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::IncompatibleClipType,
+        "audio clip move should expose a stable failure kind");
+    require(session.project().findClipById(clip->id)->startTick == trackloom::Project::ticksPerQuarterNote,
+        "audio clip move should keep the audio clip unchanged");
+    require(!session.isDirty(),
+        "audio clip move should not dirty an unchanged session");
 }
 
 void midiClipActionDeletesMidiClipAndItsNotes()
@@ -2258,6 +2398,8 @@ int main()
     midiClipActionDuplicatesMidiClipAfterItself();
     midiClipActionRenamesMidiClipAndMarksSessionDirty();
     midiClipActionSplitsMidiClipAtMidpoint();
+    midiClipActionMovesMidiClipRightOneBeat();
+    midiClipActionMovesMidiClipLeftOneBeat();
     midiClipActionRejectsEmptyClipNameWithoutDirtyingSession();
     midiClipActionRejectsMissingTrackWithoutDirtyingSession();
     midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
@@ -2269,6 +2411,9 @@ int main()
     midiClipActionRejectsAudioClipSplitWithoutDirtyingSession();
     midiClipActionRejectsTooShortMidiClipSplitWithoutDirtyingSession();
     midiClipActionRejectsCrossingNoteSplitWithoutDirtyingSession();
+    midiClipActionRejectsLeftMoveBeforeTimelineStartWithoutDirtyingSession();
+    midiClipActionRejectsMissingClipMoveWithoutDirtyingSession();
+    midiClipActionRejectsAudioClipMoveWithoutDirtyingSession();
     midiClipActionDeletesMidiClipAndItsNotes();
     midiClipActionRejectsMissingClipDeleteWithoutDirtyingSession();
     midiClipActionRejectsAudioClipDeleteWithoutDirtyingSession();

@@ -186,6 +186,8 @@ public:
         deleteMidiNoteButton_.setButtonText(toJuceString("删除末尾音符"));
         duplicateMidiClipButton_.setButtonText(toJuceString("复制片段"));
         splitMidiClipButton_.setButtonText(toJuceString("拆分片段"));
+        moveMidiClipLeftButton_.setButtonText(toJuceString("左移片段"));
+        moveMidiClipRightButton_.setButtonText(toJuceString("右移片段"));
         deleteMidiClipButton_.setButtonText(toJuceString("删除片段"));
         renameMidiClipButton_.setButtonText(toJuceString("重命名片段"));
         openRecentProjectButton_.setButtonText(toJuceString("打开最近工程"));
@@ -215,6 +217,8 @@ public:
         deleteMidiNoteButton_.onClick = [this] { deleteMidiNoteFromSelectedClip(); };
         duplicateMidiClipButton_.onClick = [this] { duplicateSelectedMidiClip(); };
         splitMidiClipButton_.onClick = [this] { splitSelectedMidiClip(); };
+        moveMidiClipLeftButton_.onClick = [this] { moveSelectedMidiClipLeft(); };
+        moveMidiClipRightButton_.onClick = [this] { moveSelectedMidiClipRight(); };
         deleteMidiClipButton_.onClick = [this] { deleteSelectedMidiClip(); };
         renameMidiClipButton_.onClick = [this] { renameSelectedMidiClip(); };
         clipNameEditor_.onReturnKey = [this] { renameSelectedMidiClip(); };
@@ -263,6 +267,8 @@ public:
         addAndMakeVisible(deleteMidiNoteButton_);
         addAndMakeVisible(duplicateMidiClipButton_);
         addAndMakeVisible(splitMidiClipButton_);
+        addAndMakeVisible(moveMidiClipLeftButton_);
+        addAndMakeVisible(moveMidiClipRightButton_);
         addAndMakeVisible(deleteMidiClipButton_);
         addAndMakeVisible(renameMidiClipButton_);
 
@@ -362,6 +368,14 @@ public:
         splitMidiClipButton_.setBounds(clipNameRow.removeFromLeft(112));
         clipNameRow.removeFromLeft(12);
         deleteMidiClipButton_.setBounds(clipNameRow.removeFromLeft(112));
+
+        bounds.removeFromTop(8);
+        auto clipMoveRow = bounds.removeFromTop(36);
+        clipMoveRow.removeFromLeft(108);
+        clipMoveRow.removeFromLeft(10);
+        moveMidiClipLeftButton_.setBounds(clipMoveRow.removeFromLeft(112));
+        clipMoveRow.removeFromLeft(12);
+        moveMidiClipRightButton_.setBounds(clipMoveRow.removeFromLeft(112));
 
         bounds.removeFromTop(14);
         auto columns = bounds;
@@ -860,6 +874,40 @@ private:
         refreshFromSession();
     }
 
+    void moveSelectedMidiClipLeft()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再左移片段。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::moveMidiClipLeftOneBeat(session_, selectedMidiClipId_);
+        if (feedback.success) {
+            selectedMidiClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void moveSelectedMidiClipRight()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再右移片段。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::moveMidiClipRightOneBeat(session_, selectedMidiClipId_);
+        if (feedback.success) {
+            selectedMidiClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void duplicateSelectedMidiClip()
     {
         if (selectedMidiClipId_.empty()) {
@@ -1019,6 +1067,8 @@ private:
         deleteMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
         duplicateMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         splitMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
+        moveMidiClipLeftButton_.setEnabled(!selectedMidiClipId_.empty());
+        moveMidiClipRightButton_.setEnabled(!selectedMidiClipId_.empty());
         deleteMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         renameMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         syncClipNameEditorFromSelection(selectedMidiClipId_ != previousSelection);
@@ -1240,6 +1290,8 @@ private:
     juce::TextButton deleteMidiNoteButton_;
     juce::TextButton duplicateMidiClipButton_;
     juce::TextButton splitMidiClipButton_;
+    juce::TextButton moveMidiClipLeftButton_;
+    juce::TextButton moveMidiClipRightButton_;
     juce::TextButton deleteMidiClipButton_;
     juce::TextButton renameMidiClipButton_;
 };
