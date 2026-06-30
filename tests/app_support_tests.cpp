@@ -1726,6 +1726,94 @@ void midiClipActionExtendsMidiClipEndLaterOneBeat()
         "successful MIDI clip extend-end should mark the app session dirty");
 }
 
+void midiClipActionTrimsMidiClipStartLaterOneBeat()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "trim-midi-clip-start-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Trim Clip Start");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto note = session.editProject().createMidiNote(
+        clipFeedback.clipId,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::Project::ticksPerQuarterNote,
+        64,
+        100,
+        1);
+    require(clipFeedback.success && note.has_value(),
+        "trim-start MIDI clip test should create a source clip with a note after the trim boundary");
+    require(session.saveAs(path).success,
+        "trim-start MIDI clip test should save setup edits before trimming");
+
+    const auto feedback = trackloom::trimMidiClipStartLaterOneBeat(session, clipFeedback.clipId);
+
+    const auto trimmedClip = session.project().findClipById(clipFeedback.clipId);
+    require(feedback.success,
+        "MIDI clip action should trim the target clip start later by one beat");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::Success,
+        "successful MIDI clip trim-start action should expose the stable success kind");
+    require(feedback.clipId == clipFeedback.clipId,
+        "MIDI clip trim-start action should report the trimmed clip id");
+    require(trimmedClip.has_value() && trimmedClip->startTick == trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip trim-start action should move the clip start right by one beat");
+    require(trimmedClip->lengthTick == trackloom::defaultAppMidiClipLengthTick - trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip trim-start action should shorten the clip by one beat");
+    require(trimmedClip->midiNotes.size() == 1 && trimmedClip->midiNotes[0].startTick == 0,
+        "MIDI clip trim-start action should shift kept notes left so their absolute time stays unchanged");
+    require(session.isDirty(),
+        "successful MIDI clip trim-start should mark the app session dirty");
+}
+
+void midiClipActionExtendsMidiClipStartEarlierOneBeat()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "extend-midi-clip-start-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Extend Clip Start");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Verse",
+        trackloom::ClipType::Midi,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "extend-start MIDI clip test should create a clip after the timeline start");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::Project::ticksPerQuarterNote,
+        64,
+        100,
+        1);
+    require(note.has_value(),
+        "extend-start MIDI clip test should create a note at the current clip start");
+    require(session.saveAs(path).success,
+        "extend-start MIDI clip test should save setup edits before extending");
+
+    const auto feedback = trackloom::extendMidiClipStartEarlierOneBeat(session, clip->id);
+
+    const auto extendedClip = session.project().findClipById(clip->id);
+    require(feedback.success,
+        "MIDI clip action should extend the target clip start earlier by one beat");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::Success,
+        "successful MIDI clip extend-start action should expose the stable success kind");
+    require(feedback.clipId == clip->id,
+        "MIDI clip extend-start action should report the extended clip id");
+    require(extendedClip.has_value() && extendedClip->startTick == 0,
+        "MIDI clip extend-start action should move the clip start left by one beat");
+    require(extendedClip->lengthTick == trackloom::defaultAppMidiClipLengthTick + trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip extend-start action should lengthen the clip by one beat");
+    require(extendedClip->midiNotes.size() == 1
+            && extendedClip->midiNotes[0].startTick == trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip extend-start action should shift kept notes right so their absolute time stays unchanged");
+    require(session.isDirty(),
+        "successful MIDI clip extend-start should mark the app session dirty");
+}
+
 void midiClipActionRejectsEmptyClipNameWithoutDirtyingSession()
 {
     removeTestWorkspace();
@@ -2291,6 +2379,43 @@ void midiClipActionRejectsClipEndTrimThatWouldDropNotesWithoutDirtyingSession()
         "note-boundary MIDI clip trim-end should keep the source clip length unchanged");
     require(!session.isDirty(),
         "note-boundary MIDI clip trim-end should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsClipStartTrimThatWouldDropNotesWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "note-boundary-trim-midi-clip-start-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Start Note Boundary Trim");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto startNote = session.editProject().createMidiNote(
+        clipFeedback.clipId,
+        0,
+        trackloom::Project::ticksPerQuarterNote,
+        72,
+        100,
+        1);
+    require(clipFeedback.success && startNote.has_value(),
+        "note-boundary trim-start test should create a note at the current clip start");
+    require(session.saveAs(path).success,
+        "note-boundary trim-start test should save setup edits before validation");
+
+    const auto feedback = trackloom::trimMidiClipStartLaterOneBeat(session, clipFeedback.clipId);
+
+    const auto sourceClip = session.project().findClipById(clipFeedback.clipId);
+    require(!feedback.success,
+        "MIDI clip trim-start action should reject trimming away existing notes");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::TrimFailed,
+        "note-boundary MIDI clip trim-start should expose the stable trim-failed kind");
+    require(sourceClip.has_value()
+            && sourceClip->startTick == 0
+            && sourceClip->lengthTick == trackloom::defaultAppMidiClipLengthTick
+            && sourceClip->midiNotes[0].startTick == 0,
+        "note-boundary MIDI clip trim-start should keep the source clip and note unchanged");
+    require(!session.isDirty(),
+        "note-boundary MIDI clip trim-start should not dirty an unchanged session");
 }
 
 void midiClipActionRejectsMissingClipEndExtendWithoutDirtyingSession()
@@ -2881,6 +3006,8 @@ int main()
     midiClipActionMovesMidiClipToInstrumentTrack();
     midiClipActionTrimsMidiClipEndEarlierOneBeat();
     midiClipActionExtendsMidiClipEndLaterOneBeat();
+    midiClipActionTrimsMidiClipStartLaterOneBeat();
+    midiClipActionExtendsMidiClipStartEarlierOneBeat();
     midiClipActionRejectsEmptyClipNameWithoutDirtyingSession();
     midiClipActionRejectsMissingTrackWithoutDirtyingSession();
     midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
@@ -2903,6 +3030,7 @@ int main()
     midiClipActionRejectsMissingClipEndTrimWithoutDirtyingSession();
     midiClipActionRejectsAudioClipEndTrimWithoutDirtyingSession();
     midiClipActionRejectsClipEndTrimThatWouldDropNotesWithoutDirtyingSession();
+    midiClipActionRejectsClipStartTrimThatWouldDropNotesWithoutDirtyingSession();
     midiClipActionRejectsMissingClipEndExtendWithoutDirtyingSession();
     midiClipActionRejectsAudioClipEndExtendWithoutDirtyingSession();
     midiClipActionDeletesMidiClipAndItsNotes();

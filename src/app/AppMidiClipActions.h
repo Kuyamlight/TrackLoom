@@ -99,4 +99,16 @@ AppMidiClipActionFeedback extendMidiClipEndLaterOneBeat(
     AppProjectSession& session,
     const std::string& clipId);
 
+// trimMidiClipStartLaterOneBeat 把目标 MIDI 片段左边界向右缩短一拍。
+// 它会同步左移保留音符的相对 tick，保证音符绝对播放时间不变。
+AppMidiClipActionFeedback trimMidiClipStartLaterOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// extendMidiClipStartEarlierOneBeat 把目标 MIDI 片段左边界向左延长一拍。
+// 它会同步右移已有音符的相对 tick，保证音符绝对播放时间不变。
+AppMidiClipActionFeedback extendMidiClipStartEarlierOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId);
+
 }

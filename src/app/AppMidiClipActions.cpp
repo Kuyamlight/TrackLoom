@@ -6,6 +6,7 @@
 #include <limits>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace trackloom {
 namespace {
@@ -100,6 +101,26 @@ AppMidiClipActionFeedback extendEndSuccessFeedback(const TimelineClip& clip)
     return feedback;
 }
 
+AppMidiClipActionFeedback trimStartSuccessFeedback(const TimelineClip& clip)
+{
+    AppMidiClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已缩短 MIDI 片段片头：" + clip.name + "。";
+    return feedback;
+}
+
+AppMidiClipActionFeedback extendStartSuccessFeedback(const TimelineClip& clip)
+{
+    AppMidiClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已延长 MIDI 片段片头：" + clip.name + "。";
+    return feedback;
+}
+
 AppMidiClipActionFeedback failureFeedback(
     AppMidiClipActionFeedbackKind kind,
     std::string message)
@@ -175,6 +196,20 @@ bool midiNotesFitClipLength(const TimelineClip& clip, std::int64_t lengthTick)
     }
 
     return true;
+}
+
+struct MidiNoteTimingUpdate {
+    std::string noteId;
+    std::int64_t startTick = 0;
+    std::int64_t lengthTick = 0;
+};
+
+bool noteTimingFitsLength(std::int64_t startTick, std::int64_t lengthTick, std::int64_t clipLengthTick)
+{
+    return startTick >= 0
+        && lengthTick > 0
+        && clipLengthTick > 0
+        && startTick <= clipLengthTick - lengthTick;
 }
 
 bool canAddTickOffset(std::int64_t startTick, std::int64_t offsetTick)
@@ -424,6 +459,164 @@ AppMidiClipActionFeedback extendMidiClipEndByTickOffset(
     return extendEndSuccessFeedback(*targetClip);
 }
 
+AppMidiClipActionFeedback trimMidiClipStartByTickOffset(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::int64_t offsetTick)
+{
+    // 片头缩短会改变片段内坐标系；这里先完整预演，避免失败路径留下半截音符移动。
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingClip,
+            "无法缩短 MIDI 片段片头：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleClipType,
+            "无法缩短 MIDI 片段片头：只能修剪 MIDI 片段。");
+    }
+
+    const auto targetTrack = session.project().findTrackById(targetClip->trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingTrack,
+            "无法缩短 MIDI 片段片头：片段所属轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Instrument) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleTrackType,
+            "无法缩短 MIDI 片段片头：MIDI 片段只能停留在乐器轨。");
+    }
+
+    if (offsetTick <= 0 || targetClip->lengthTick <= offsetTick || !canAddTickOffset(targetClip->startTick, offsetTick)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::TrimFailed,
+            "无法缩短 MIDI 片段片头：片段长度不足一拍。");
+    }
+
+    const auto newStartTick = targetClip->startTick + offsetTick;
+    const auto newLengthTick = targetClip->lengthTick - offsetTick;
+    std::vector<MidiNoteTimingUpdate> noteUpdates;
+    noteUpdates.reserve(targetClip->midiNotes.size());
+
+    for (const auto& note : targetClip->midiNotes) {
+        if (note.startTick < offsetTick) {
+            return failureFeedback(
+                AppMidiClipActionFeedbackKind::TrimFailed,
+                "无法缩短 MIDI 片段片头：缩短后会截掉已有音符。");
+        }
+
+        const auto shiftedStartTick = note.startTick - offsetTick;
+        if (!noteTimingFitsLength(shiftedStartTick, note.lengthTick, newLengthTick)) {
+            return failureFeedback(
+                AppMidiClipActionFeedbackKind::TrimFailed,
+                "无法缩短 MIDI 片段片头：音符移动后超出片段范围。");
+        }
+
+        noteUpdates.push_back({ note.id, shiftedStartTick, note.lengthTick });
+    }
+
+    auto& project = session.editProject();
+    for (const auto& update : noteUpdates) {
+        if (!project.setMidiNoteTiming(update.noteId, update.startTick, update.lengthTick)) {
+            return failureFeedback(
+                AppMidiClipActionFeedbackKind::TrimFailed,
+                "无法缩短 MIDI 片段片头：工程模型拒绝了音符时间调整。");
+        }
+    }
+
+    if (!project.setClipTiming(clipId, newStartTick, newLengthTick)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::TrimFailed,
+            "无法缩短 MIDI 片段片头：工程模型拒绝了这次修剪。");
+    }
+
+    return trimStartSuccessFeedback(*targetClip);
+}
+
+AppMidiClipActionFeedback extendMidiClipStartByTickOffset(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::int64_t offsetTick)
+{
+    // 片头延长会在左侧增加空白时间；已有音符相对 tick 右移，绝对播放时间保持不变。
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingClip,
+            "无法延长 MIDI 片段片头：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleClipType,
+            "无法延长 MIDI 片段片头：只能延长 MIDI 片段。");
+    }
+
+    const auto targetTrack = session.project().findTrackById(targetClip->trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingTrack,
+            "无法延长 MIDI 片段片头：片段所属轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Instrument) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleTrackType,
+            "无法延长 MIDI 片段片头：MIDI 片段只能停留在乐器轨。");
+    }
+
+    if (offsetTick <= 0
+        || targetClip->startTick < offsetTick
+        || !canAddTickOffset(targetClip->lengthTick, offsetTick)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::ExtendFailed,
+            "无法延长 MIDI 片段片头：目标片头超出时间线范围。");
+    }
+
+    const auto newStartTick = targetClip->startTick - offsetTick;
+    const auto newLengthTick = targetClip->lengthTick + offsetTick;
+    std::vector<MidiNoteTimingUpdate> noteUpdates;
+    noteUpdates.reserve(targetClip->midiNotes.size());
+
+    for (const auto& note : targetClip->midiNotes) {
+        if (!canAddTickOffset(note.startTick, offsetTick)) {
+            return failureFeedback(
+                AppMidiClipActionFeedbackKind::ExtendFailed,
+                "无法延长 MIDI 片段片头：音符时间超出可表示范围。");
+        }
+
+        const auto shiftedStartTick = note.startTick + offsetTick;
+        if (!noteTimingFitsLength(shiftedStartTick, note.lengthTick, newLengthTick)) {
+            return failureFeedback(
+                AppMidiClipActionFeedbackKind::ExtendFailed,
+                "无法延长 MIDI 片段片头：音符移动后超出片段范围。");
+        }
+
+        noteUpdates.push_back({ note.id, shiftedStartTick, note.lengthTick });
+    }
+
+    auto& project = session.editProject();
+    if (!project.setClipTiming(clipId, newStartTick, newLengthTick)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::ExtendFailed,
+            "无法延长 MIDI 片段片头：工程模型拒绝了这次延长。");
+    }
+
+    for (const auto& update : noteUpdates) {
+        if (!project.setMidiNoteTiming(update.noteId, update.startTick, update.lengthTick)) {
+            return failureFeedback(
+                AppMidiClipActionFeedbackKind::ExtendFailed,
+                "无法延长 MIDI 片段片头：工程模型拒绝了音符时间调整。");
+        }
+    }
+
+    return extendStartSuccessFeedback(*targetClip);
+}
+
 }
 
 AppMidiClipActionFeedback createDefaultMidiClipOnTrack(
@@ -669,6 +862,26 @@ AppMidiClipActionFeedback extendMidiClipEndLaterOneBeat(
     const std::string& clipId)
 {
     return extendMidiClipEndByTickOffset(
+        session,
+        clipId,
+        Project::ticksPerQuarterNote);
+}
+
+AppMidiClipActionFeedback trimMidiClipStartLaterOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return trimMidiClipStartByTickOffset(
+        session,
+        clipId,
+        Project::ticksPerQuarterNote);
+}
+
+AppMidiClipActionFeedback extendMidiClipStartEarlierOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return extendMidiClipStartByTickOffset(
         session,
         clipId,
         Project::ticksPerQuarterNote);

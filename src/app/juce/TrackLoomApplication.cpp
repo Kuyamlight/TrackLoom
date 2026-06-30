@@ -191,6 +191,8 @@ public:
         moveMidiClipLeftButton_.setButtonText(toJuceString("左移片段"));
         moveMidiClipRightButton_.setButtonText(toJuceString("右移片段"));
         moveMidiClipToTrackButton_.setButtonText(toJuceString("移到目标轨"));
+        trimMidiClipStartButton_.setButtonText(toJuceString("缩短片头"));
+        extendMidiClipStartButton_.setButtonText(toJuceString("延长片头"));
         trimMidiClipEndButton_.setButtonText(toJuceString("缩短片尾"));
         extendMidiClipEndButton_.setButtonText(toJuceString("延长片尾"));
         deleteMidiClipButton_.setButtonText(toJuceString("删除片段"));
@@ -227,6 +229,8 @@ public:
         moveMidiClipLeftButton_.onClick = [this] { moveSelectedMidiClipLeft(); };
         moveMidiClipRightButton_.onClick = [this] { moveSelectedMidiClipRight(); };
         moveMidiClipToTrackButton_.onClick = [this] { moveSelectedMidiClipToSelectedTrack(); };
+        trimMidiClipStartButton_.onClick = [this] { trimSelectedMidiClipStart(); };
+        extendMidiClipStartButton_.onClick = [this] { extendSelectedMidiClipStart(); };
         trimMidiClipEndButton_.onClick = [this] { trimSelectedMidiClipEnd(); };
         extendMidiClipEndButton_.onClick = [this] { extendSelectedMidiClipEnd(); };
         deleteMidiClipButton_.onClick = [this] { deleteSelectedMidiClip(); };
@@ -282,6 +286,8 @@ public:
         addAndMakeVisible(moveMidiClipLeftButton_);
         addAndMakeVisible(moveMidiClipRightButton_);
         addAndMakeVisible(moveMidiClipToTrackButton_);
+        addAndMakeVisible(trimMidiClipStartButton_);
+        addAndMakeVisible(extendMidiClipStartButton_);
         addAndMakeVisible(trimMidiClipEndButton_);
         addAndMakeVisible(extendMidiClipEndButton_);
         addAndMakeVisible(deleteMidiClipButton_);
@@ -392,15 +398,19 @@ public:
         auto clipMoveRow = bounds.removeFromTop(36);
         clipMoveRow.removeFromLeft(108);
         clipMoveRow.removeFromLeft(10);
-        moveMidiClipLeftButton_.setBounds(clipMoveRow.removeFromLeft(112));
-        clipMoveRow.removeFromLeft(12);
-        moveMidiClipRightButton_.setBounds(clipMoveRow.removeFromLeft(112));
-        clipMoveRow.removeFromLeft(12);
-        moveMidiClipToTrackButton_.setBounds(clipMoveRow.removeFromLeft(112));
-        clipMoveRow.removeFromLeft(12);
-        trimMidiClipEndButton_.setBounds(clipMoveRow.removeFromLeft(112));
-        clipMoveRow.removeFromLeft(12);
-        extendMidiClipEndButton_.setBounds(clipMoveRow.removeFromLeft(112));
+        moveMidiClipLeftButton_.setBounds(clipMoveRow.removeFromLeft(96));
+        clipMoveRow.removeFromLeft(8);
+        moveMidiClipRightButton_.setBounds(clipMoveRow.removeFromLeft(96));
+        clipMoveRow.removeFromLeft(8);
+        moveMidiClipToTrackButton_.setBounds(clipMoveRow.removeFromLeft(104));
+        clipMoveRow.removeFromLeft(8);
+        trimMidiClipStartButton_.setBounds(clipMoveRow.removeFromLeft(96));
+        clipMoveRow.removeFromLeft(8);
+        extendMidiClipStartButton_.setBounds(clipMoveRow.removeFromLeft(96));
+        clipMoveRow.removeFromLeft(8);
+        trimMidiClipEndButton_.setBounds(clipMoveRow.removeFromLeft(96));
+        clipMoveRow.removeFromLeft(8);
+        extendMidiClipEndButton_.setBounds(clipMoveRow.removeFromLeft(96));
 
         bounds.removeFromTop(14);
         auto columns = bounds;
@@ -993,6 +1003,40 @@ private:
         refreshFromSession();
     }
 
+    void trimSelectedMidiClipStart()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再缩短片头。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::trimMidiClipStartLaterOneBeat(session_, selectedMidiClipId_);
+        if (feedback.success) {
+            selectedMidiClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void extendSelectedMidiClipStart()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再延长片头。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::extendMidiClipStartEarlierOneBeat(session_, selectedMidiClipId_);
+        if (feedback.success) {
+            selectedMidiClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void extendSelectedMidiClipEnd()
     {
         if (selectedMidiClipId_.empty()) {
@@ -1172,6 +1216,8 @@ private:
         moveMidiClipLeftButton_.setEnabled(!selectedMidiClipId_.empty());
         moveMidiClipRightButton_.setEnabled(!selectedMidiClipId_.empty());
         moveMidiClipToTrackButton_.setEnabled(!selectedMidiClipId_.empty() && !selectedTrackId_.empty());
+        trimMidiClipStartButton_.setEnabled(!selectedMidiClipId_.empty());
+        extendMidiClipStartButton_.setEnabled(!selectedMidiClipId_.empty());
         trimMidiClipEndButton_.setEnabled(!selectedMidiClipId_.empty());
         extendMidiClipEndButton_.setEnabled(!selectedMidiClipId_.empty());
         deleteMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
@@ -1400,6 +1446,8 @@ private:
     juce::TextButton moveMidiClipLeftButton_;
     juce::TextButton moveMidiClipRightButton_;
     juce::TextButton moveMidiClipToTrackButton_;
+    juce::TextButton trimMidiClipStartButton_;
+    juce::TextButton extendMidiClipStartButton_;
     juce::TextButton trimMidiClipEndButton_;
     juce::TextButton extendMidiClipEndButton_;
     juce::TextButton deleteMidiClipButton_;
