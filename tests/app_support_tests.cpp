@@ -1371,6 +1371,64 @@ void midiClipActionDuplicatesMidiClipAfterItself()
         "successful MIDI clip duplicate should mark the app session dirty");
 }
 
+void midiClipActionRenamesMidiClipAndMarksSessionDirty()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "rename-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Rename Clip");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    require(clipFeedback.success,
+        "rename MIDI clip test should create a source MIDI clip");
+    require(session.saveAs(path).success,
+        "rename MIDI clip test should save setup edits before renaming");
+
+    const auto feedback = trackloom::renameMidiClipById(session, clipFeedback.clipId, "  Verse Loop  ");
+
+    require(feedback.success,
+        "MIDI clip action should rename the target MIDI clip");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::Success,
+        "successful MIDI clip rename action should expose the stable success kind");
+    require(feedback.clipId == clipFeedback.clipId,
+        "MIDI clip rename action should report the renamed clip id");
+    require(session.project().findClipById(clipFeedback.clipId)->name == "Verse Loop",
+        "MIDI clip rename action should trim outer whitespace before saving the name");
+    require(session.isDirty(),
+        "successful MIDI clip rename should mark the app session dirty");
+
+    const auto status = trackloom::describeAppTimeline(session.project());
+    require(status.rows.size() == 1 && status.rows[0].name == "Verse Loop",
+        "timeline status should expose the renamed MIDI clip name");
+}
+
+void midiClipActionRejectsEmptyClipNameWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "rename-midi-clip-empty.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Empty Clip Rename");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    require(clipFeedback.success,
+        "empty MIDI clip rename test should create a source MIDI clip");
+    require(session.saveAs(path).success,
+        "empty MIDI clip rename test should save setup edits before validation");
+
+    const auto feedback = trackloom::renameMidiClipById(session, clipFeedback.clipId, "   ");
+
+    require(!feedback.success,
+        "MIDI clip rename action should reject a whitespace-only name");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::EmptyName,
+        "empty MIDI clip rename should expose a stable failure kind");
+    require(session.project().findClipById(clipFeedback.clipId)->name != "   ",
+        "empty MIDI clip rename should keep the existing clip name");
+    require(!session.isDirty(),
+        "empty MIDI clip rename should not dirty an unchanged session");
+}
+
 void midiClipActionRejectsMissingTrackWithoutDirtyingSession()
 {
     trackloom::AppProjectSession session;
@@ -1455,6 +1513,52 @@ void midiClipActionRejectsAudioClipDuplicateWithoutDirtyingSession()
         "audio clip duplicate action should keep the audio clip unchanged");
     require(!session.isDirty(),
         "audio clip duplicate action should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsMissingClipRenameWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Clip Rename");
+
+    const auto feedback = trackloom::renameMidiClipById(session, "missing-clip", "Verse");
+
+    require(!feedback.success,
+        "MIDI clip rename action should reject a missing clip");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::MissingClip,
+        "missing clip rename should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing clip rename should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsAudioClipRenameWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "audio-rename-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Rename");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Vocal clip",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::Project::ticksPerQuarterNote);
+    require(clip.has_value(),
+        "audio clip rename test should create an audio clip");
+    require(session.saveAs(path).success,
+        "audio clip rename test should save setup edits before validation");
+
+    const auto feedback = trackloom::renameMidiClipById(session, clip->id, "Verse");
+
+    require(!feedback.success,
+        "MIDI clip rename action should reject audio clips");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::IncompatibleClipType,
+        "audio clip rename should expose a stable failure kind");
+    require(session.project().findClipById(clip->id)->name == "Vocal clip",
+        "audio clip rename should keep the audio clip name unchanged");
+    require(!session.isDirty(),
+        "audio clip rename should not dirty an unchanged session");
 }
 
 void midiClipActionDeletesMidiClipAndItsNotes()
@@ -1988,10 +2092,14 @@ int main()
     midiClipActionCreatesDefaultClipOnInstrumentTrack();
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionDuplicatesMidiClipAfterItself();
+    midiClipActionRenamesMidiClipAndMarksSessionDirty();
+    midiClipActionRejectsEmptyClipNameWithoutDirtyingSession();
     midiClipActionRejectsMissingTrackWithoutDirtyingSession();
     midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
     midiClipActionRejectsMissingClipDuplicateWithoutDirtyingSession();
     midiClipActionRejectsAudioClipDuplicateWithoutDirtyingSession();
+    midiClipActionRejectsMissingClipRenameWithoutDirtyingSession();
+    midiClipActionRejectsAudioClipRenameWithoutDirtyingSession();
     midiClipActionDeletesMidiClipAndItsNotes();
     midiClipActionRejectsMissingClipDeleteWithoutDirtyingSession();
     midiClipActionRejectsAudioClipDeleteWithoutDirtyingSession();

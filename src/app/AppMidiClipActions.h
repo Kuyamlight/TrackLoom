@@ -19,6 +19,8 @@ enum class AppMidiClipActionFeedbackKind {
     MissingClip,
     IncompatibleTrackType,
     IncompatibleClipType,
+    EmptyName,
+    RenameFailed,
     DeleteFailed,
     DuplicateFailed,
     CreateFailed
@@ -50,5 +52,12 @@ AppMidiClipActionFeedback deleteMidiClipById(
 AppMidiClipActionFeedback duplicateMidiClipAfterItself(
     AppProjectSession& session,
     const std::string& clipId);
+
+// renameMidiClipById 修改目标 MIDI 片段名称。
+// 名称会先去掉首尾空白；空名称、音频片段和缺失片段都不会触碰 editable project。
+AppMidiClipActionFeedback renameMidiClipById(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::string name);
 
 }

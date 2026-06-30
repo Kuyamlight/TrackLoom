@@ -134,6 +134,11 @@ public:
         targetMidiClipBox_.setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff3a463c));
         targetMidiClipBox_.setColour(juce::ComboBox::arrowColourId, juce::Colour(0xff6ccf8d));
 
+        clipNameLabel_.setText(toJuceString("片段名称"), juce::dontSendNotification);
+        clipNameLabel_.setFont(juce::FontOptions(15.0f));
+        clipNameLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffd9d4c5));
+        styleSingleLineTextEditor(clipNameEditor_);
+
         trackListTitleLabel_.setText(toJuceString("轨道列表"), juce::dontSendNotification);
         trackListTitleLabel_.setFont(juce::FontOptions(18.0f, juce::Font::bold));
         trackListTitleLabel_.setColour(juce::Label::textColourId, juce::Colour(0xfff2f0e8));
@@ -181,6 +186,7 @@ public:
         deleteMidiNoteButton_.setButtonText(toJuceString("删除末尾音符"));
         duplicateMidiClipButton_.setButtonText(toJuceString("复制片段"));
         deleteMidiClipButton_.setButtonText(toJuceString("删除片段"));
+        renameMidiClipButton_.setButtonText(toJuceString("重命名片段"));
         openRecentProjectButton_.setButtonText(toJuceString("打开最近工程"));
 
         newProjectButton_.onClick = [this] { requestNewProject(); };
@@ -208,6 +214,8 @@ public:
         deleteMidiNoteButton_.onClick = [this] { deleteMidiNoteFromSelectedClip(); };
         duplicateMidiClipButton_.onClick = [this] { duplicateSelectedMidiClip(); };
         deleteMidiClipButton_.onClick = [this] { deleteSelectedMidiClip(); };
+        renameMidiClipButton_.onClick = [this] { renameSelectedMidiClip(); };
+        clipNameEditor_.onReturnKey = [this] { renameSelectedMidiClip(); };
         openRecentProjectButton_.onClick = [this] { openSelectedRecentProject(); };
 
         addAndMakeVisible(titleLabel_);
@@ -221,6 +229,8 @@ public:
         addAndMakeVisible(trackNameEditor_);
         addAndMakeVisible(targetMidiClipLabel_);
         addAndMakeVisible(targetMidiClipBox_);
+        addAndMakeVisible(clipNameLabel_);
+        addAndMakeVisible(clipNameEditor_);
         addAndMakeVisible(trackListTitleLabel_);
         addAndMakeVisible(trackListText_);
         addAndMakeVisible(timelineTitleLabel_);
@@ -251,6 +261,7 @@ public:
         addAndMakeVisible(deleteMidiNoteButton_);
         addAndMakeVisible(duplicateMidiClipButton_);
         addAndMakeVisible(deleteMidiClipButton_);
+        addAndMakeVisible(renameMidiClipButton_);
 
         // MainComponent 主动获取键盘焦点后，Space 键才能先交给 keyPressed 处理。
         setWantsKeyboardFocus(true);
@@ -338,6 +349,14 @@ public:
         duplicateMidiClipButton_.setBounds(clipRow.removeFromLeft(112));
         clipRow.removeFromLeft(12);
         deleteMidiClipButton_.setBounds(clipRow.removeFromLeft(112));
+
+        bounds.removeFromTop(8);
+        auto clipNameRow = bounds.removeFromTop(36);
+        clipNameLabel_.setBounds(clipNameRow.removeFromLeft(108));
+        clipNameRow.removeFromLeft(10);
+        clipNameEditor_.setBounds(clipNameRow.removeFromLeft(260));
+        clipNameRow.removeFromLeft(12);
+        renameMidiClipButton_.setBounds(clipNameRow.removeFromLeft(120));
 
         bounds.removeFromTop(14);
         auto columns = bounds;
@@ -799,6 +818,26 @@ private:
         refreshFromSession();
     }
 
+    void renameSelectedMidiClip()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再重命名片段。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::renameMidiClipById(
+            session_,
+            selectedMidiClipId_,
+            juceStringToUtf8(clipNameEditor_.getText()));
+        if (feedback.success) {
+            selectedMidiClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void duplicateSelectedMidiClip()
     {
         if (selectedMidiClipId_.empty()) {
@@ -958,6 +997,24 @@ private:
         deleteMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
         duplicateMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         deleteMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
+        renameMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
+        syncClipNameEditorFromSelection(selectedMidiClipId_ != previousSelection);
+    }
+
+    void syncClipNameEditorFromSelection(bool forceUpdate)
+    {
+        clipNameEditor_.setEnabled(!selectedMidiClipId_.empty());
+
+        const auto selectedClip = session_.project().findClipById(selectedMidiClipId_);
+        if (!selectedClip.has_value()) {
+            clipNameEditor_.setText(juce::String{}, false);
+            return;
+        }
+
+        // 播放 Timer 和列表刷新不应覆盖用户正在输入但尚未提交的片段名称。
+        if (forceUpdate || !clipNameEditor_.hasKeyboardFocus(true)) {
+            clipNameEditor_.setText(toJuceString(selectedClip->name), false);
+        }
     }
 
     void refreshRecentProjectSelector(const trackloom::AppRecentProjectsStatus& recentStatus)
@@ -1128,6 +1185,8 @@ private:
     juce::TextEditor trackNameEditor_;
     juce::Label targetMidiClipLabel_;
     juce::ComboBox targetMidiClipBox_;
+    juce::Label clipNameLabel_;
+    juce::TextEditor clipNameEditor_;
     juce::Label trackListTitleLabel_;
     juce::TextEditor trackListText_;
     juce::Label timelineTitleLabel_;
@@ -1158,6 +1217,7 @@ private:
     juce::TextButton deleteMidiNoteButton_;
     juce::TextButton duplicateMidiClipButton_;
     juce::TextButton deleteMidiClipButton_;
+    juce::TextButton renameMidiClipButton_;
 };
 
 class MainWindow final : public juce::DocumentWindow {

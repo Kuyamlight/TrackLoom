@@ -38,6 +38,16 @@ AppMidiClipActionFeedback duplicateSuccessFeedback(const TimelineClip& clip)
     return feedback;
 }
 
+AppMidiClipActionFeedback renameSuccessFeedback(const TimelineClip& clip, const std::string& newName)
+{
+    AppMidiClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已重命名 MIDI 片段：" + clip.name + " -> " + newName + "。";
+    return feedback;
+}
+
 AppMidiClipActionFeedback failureFeedback(
     AppMidiClipActionFeedbackKind kind,
     std::string message)
@@ -73,6 +83,18 @@ std::size_t clipCountForTrack(const Project& project, const std::string& trackId
     }
 
     return count;
+}
+
+std::string trimClipName(std::string name)
+{
+    // 文本框输入可能带入首尾空白；保存前统一清理，避免出现肉眼难以分辨的片段名。
+    const auto first = name.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) {
+        return {};
+    }
+
+    const auto last = name.find_last_not_of(" \t\r\n");
+    return name.substr(first, last - first + 1);
 }
 
 }
@@ -186,6 +208,41 @@ AppMidiClipActionFeedback duplicateMidiClipAfterItself(
     }
 
     return duplicateSuccessFeedback(*duplicate);
+}
+
+AppMidiClipActionFeedback renameMidiClipById(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::string name)
+{
+    const auto trimmedName = trimClipName(std::move(name));
+    if (trimmedName.empty()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::EmptyName,
+            "无法重命名 MIDI 片段：片段名称不能为空。");
+    }
+
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingClip,
+            "无法重命名 MIDI 片段：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleClipType,
+            "无法重命名 MIDI 片段：只能重命名 MIDI 片段。");
+    }
+
+    // 重命名前所有校验都已完成；只有真实修改才允许把会话标记为 dirty。
+    if (!session.editProject().renameClipById(clipId, trimmedName)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::RenameFailed,
+            "无法重命名 MIDI 片段：工程模型拒绝了这次重命名。");
+    }
+
+    return renameSuccessFeedback(*targetClip, trimmedName);
 }
 
 }
