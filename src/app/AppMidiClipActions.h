@@ -20,6 +20,7 @@ enum class AppMidiClipActionFeedbackKind {
     IncompatibleTrackType,
     IncompatibleClipType,
     DeleteFailed,
+    DuplicateFailed,
     CreateFailed
 };
 
@@ -41,6 +42,12 @@ AppMidiClipActionFeedback createDefaultMidiClipOnTrack(
 // deleteMidiClipById 删除一个已存在的 MIDI 片段。
 // 它只接受 MIDI 片段 ID；音频片段和不存在的片段都会在 dirty 之前被拒绝。
 AppMidiClipActionFeedback deleteMidiClipById(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// duplicateMidiClipAfterItself 把目标 MIDI 片段复制到同一轨道、原片段结束位置。
+// 这是首屏复制入口的最小能力；跨轨复制、拖拽定位和冲突处理属于后续时间线编辑器。
+AppMidiClipActionFeedback duplicateMidiClipAfterItself(
     AppProjectSession& session,
     const std::string& clipId);
 

@@ -1327,6 +1327,50 @@ void midiClipActionAppendsAfterExistingTrackClips()
         "second starter MIDI clip should append after the first clip on that track");
 }
 
+void midiClipActionDuplicatesMidiClipAfterItself()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "duplicate-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Duplicate Clip");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto noteFeedback = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(clipFeedback.success && noteFeedback.success,
+        "duplicate MIDI clip test should create a source clip with one note");
+    require(session.saveAs(path).success,
+        "duplicate MIDI clip test should save setup edits before duplication");
+
+    const auto feedback = trackloom::duplicateMidiClipAfterItself(session, clipFeedback.clipId);
+
+    require(feedback.success,
+        "MIDI clip action should duplicate the target MIDI clip");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::Success,
+        "successful MIDI clip duplicate action should expose the stable success kind");
+    require(feedback.clipId != clipFeedback.clipId,
+        "MIDI clip duplicate action should report the new clip id");
+    require(session.project().clips().size() == 2,
+        "MIDI clip duplicate action should add one new clip");
+
+    const auto source = session.project().findClipById(clipFeedback.clipId);
+    const auto duplicate = session.project().findClipById(feedback.clipId);
+    require(source.has_value() && duplicate.has_value(),
+        "MIDI clip duplicate test should find source and duplicate clips");
+    require(duplicate->trackId == source->trackId,
+        "MIDI clip duplicate should stay on the source track");
+    require(duplicate->startTick == source->startTick + source->lengthTick,
+        "MIDI clip duplicate should start at the source clip end");
+    require(duplicate->lengthTick == source->lengthTick,
+        "MIDI clip duplicate should keep the source clip length");
+    require(duplicate->midiNotes.size() == 1,
+        "MIDI clip duplicate should copy source MIDI notes");
+    require(duplicate->midiNotes[0].id != source->midiNotes[0].id,
+        "MIDI clip duplicate should allocate fresh note ids");
+    require(session.isDirty(),
+        "successful MIDI clip duplicate should mark the app session dirty");
+}
+
 void midiClipActionRejectsMissingTrackWithoutDirtyingSession()
 {
     trackloom::AppProjectSession session;
@@ -1365,6 +1409,52 @@ void midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession()
         "incompatible track MIDI clip action should not create clips");
     require(!session.isDirty(),
         "incompatible track MIDI clip action should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsMissingClipDuplicateWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Clip Duplicate");
+
+    const auto feedback = trackloom::duplicateMidiClipAfterItself(session, "missing-clip");
+
+    require(!feedback.success,
+        "MIDI clip duplicate action should reject a missing clip");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::MissingClip,
+        "missing clip duplicate action should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing clip duplicate action should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsAudioClipDuplicateWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "audio-duplicate-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Duplicate");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Vocal clip",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::Project::ticksPerQuarterNote);
+    require(clip.has_value(),
+        "audio clip duplicate test should create an audio clip");
+    require(session.saveAs(path).success,
+        "audio clip duplicate test should save setup edits before validation");
+
+    const auto feedback = trackloom::duplicateMidiClipAfterItself(session, clip->id);
+
+    require(!feedback.success,
+        "MIDI clip duplicate action should reject audio clips");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::IncompatibleClipType,
+        "audio clip duplicate action should expose a stable failure kind");
+    require(session.project().clips().size() == 1 && session.project().clips()[0].id == clip->id,
+        "audio clip duplicate action should keep the audio clip unchanged");
+    require(!session.isDirty(),
+        "audio clip duplicate action should not dirty an unchanged session");
 }
 
 void midiClipActionDeletesMidiClipAndItsNotes()
@@ -1897,8 +1987,11 @@ int main()
     playbackRewindPreparesFreshRuntimeWithoutStartingPlayback();
     midiClipActionCreatesDefaultClipOnInstrumentTrack();
     midiClipActionAppendsAfterExistingTrackClips();
+    midiClipActionDuplicatesMidiClipAfterItself();
     midiClipActionRejectsMissingTrackWithoutDirtyingSession();
     midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
+    midiClipActionRejectsMissingClipDuplicateWithoutDirtyingSession();
+    midiClipActionRejectsAudioClipDuplicateWithoutDirtyingSession();
     midiClipActionDeletesMidiClipAndItsNotes();
     midiClipActionRejectsMissingClipDeleteWithoutDirtyingSession();
     midiClipActionRejectsAudioClipDeleteWithoutDirtyingSession();

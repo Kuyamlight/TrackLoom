@@ -179,6 +179,7 @@ public:
         hideTrackButton_.setButtonText(toJuceString("隐藏"));
         addMidiNoteButton_.setButtonText(toJuceString("添加默认音符"));
         deleteMidiNoteButton_.setButtonText(toJuceString("删除末尾音符"));
+        duplicateMidiClipButton_.setButtonText(toJuceString("复制片段"));
         deleteMidiClipButton_.setButtonText(toJuceString("删除片段"));
         openRecentProjectButton_.setButtonText(toJuceString("打开最近工程"));
 
@@ -205,6 +206,7 @@ public:
         hideTrackButton_.onClick = [this] { toggleSelectedTrackHidden(); };
         addMidiNoteButton_.onClick = [this] { addMidiNoteToSelectedClip(); };
         deleteMidiNoteButton_.onClick = [this] { deleteMidiNoteFromSelectedClip(); };
+        duplicateMidiClipButton_.onClick = [this] { duplicateSelectedMidiClip(); };
         deleteMidiClipButton_.onClick = [this] { deleteSelectedMidiClip(); };
         openRecentProjectButton_.onClick = [this] { openSelectedRecentProject(); };
 
@@ -247,6 +249,7 @@ public:
         addAndMakeVisible(hideTrackButton_);
         addAndMakeVisible(addMidiNoteButton_);
         addAndMakeVisible(deleteMidiNoteButton_);
+        addAndMakeVisible(duplicateMidiClipButton_);
         addAndMakeVisible(deleteMidiClipButton_);
 
         // MainComponent 主动获取键盘焦点后，Space 键才能先交给 keyPressed 处理。
@@ -331,6 +334,8 @@ public:
         addMidiNoteButton_.setBounds(clipRow.removeFromLeft(144));
         clipRow.removeFromLeft(12);
         deleteMidiNoteButton_.setBounds(clipRow.removeFromLeft(144));
+        clipRow.removeFromLeft(12);
+        duplicateMidiClipButton_.setBounds(clipRow.removeFromLeft(112));
         clipRow.removeFromLeft(12);
         deleteMidiClipButton_.setBounds(clipRow.removeFromLeft(112));
 
@@ -794,6 +799,23 @@ private:
         refreshFromSession();
     }
 
+    void duplicateSelectedMidiClip()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再复制片段。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::duplicateMidiClipAfterItself(session_, selectedMidiClipId_);
+        if (feedback.success) {
+            selectedMidiClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void deleteSelectedMidiClip()
     {
         if (selectedMidiClipId_.empty()) {
@@ -934,6 +956,7 @@ private:
         targetMidiClipBox_.setEnabled(!selectableMidiClipIds_.empty());
         addMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
         deleteMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
+        duplicateMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         deleteMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
     }
 
@@ -1133,6 +1156,7 @@ private:
     juce::TextButton hideTrackButton_;
     juce::TextButton addMidiNoteButton_;
     juce::TextButton deleteMidiNoteButton_;
+    juce::TextButton duplicateMidiClipButton_;
     juce::TextButton deleteMidiClipButton_;
 };
 

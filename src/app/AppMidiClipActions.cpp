@@ -28,6 +28,16 @@ AppMidiClipActionFeedback deleteSuccessFeedback(const TimelineClip& clip)
     return feedback;
 }
 
+AppMidiClipActionFeedback duplicateSuccessFeedback(const TimelineClip& clip)
+{
+    AppMidiClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已复制 MIDI 片段：" + clip.name + "。";
+    return feedback;
+}
+
 AppMidiClipActionFeedback failureFeedback(
     AppMidiClipActionFeedbackKind kind,
     std::string message)
@@ -130,6 +140,52 @@ AppMidiClipActionFeedback deleteMidiClipById(
     }
 
     return deleteSuccessFeedback(*targetClip);
+}
+
+AppMidiClipActionFeedback duplicateMidiClipAfterItself(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    const auto sourceClip = session.project().findClipById(clipId);
+    if (!sourceClip.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingClip,
+            "无法复制 MIDI 片段：目标片段不存在。");
+    }
+
+    if (sourceClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleClipType,
+            "无法复制 MIDI 片段：只能复制 MIDI 片段。");
+    }
+
+    const auto targetTrack = session.project().findTrackById(sourceClip->trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingTrack,
+            "无法复制 MIDI 片段：片段所属轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Instrument) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleTrackType,
+            "无法复制 MIDI 片段：MIDI 片段只能复制到乐器轨。");
+    }
+
+    const auto duplicateStartTick = sourceClip->startTick + sourceClip->lengthTick;
+
+    // 复制前所有校验都已完成；只有真实复制才允许把会话标记为 dirty。
+    const auto duplicate = session.editProject().duplicateClipToTrackAtTick(
+        clipId,
+        sourceClip->trackId,
+        duplicateStartTick);
+    if (!duplicate.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::DuplicateFailed,
+            "无法复制 MIDI 片段：工程模型拒绝了这次复制。");
+    }
+
+    return duplicateSuccessFeedback(*duplicate);
 }
 
 }

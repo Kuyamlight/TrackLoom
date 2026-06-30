@@ -480,6 +480,11 @@ TrackLoom 应支持：
   - 根本原因：如果 UI 直接调用 `Project::createClip` 或 `Project::removeClipById`，会把目标轨道/片段校验、默认片段长度、追加位置、dirty 状态和错误文案分散到界面层；后续菜单、快捷键和 AI 工具也会重复这些规则。
   - 采用的解决方式：新增并扩展 `AppMidiClipActions` 负责目标轨道校验、默认 MIDI 片段创建和目标 MIDI 片段删除，新增 `AppTimelineStatus` 负责只读时间线摘要；JUCE 首屏只保存当前选择的内部 track id 和 clip id，不向普通用户暴露这些 id。CTest 覆盖成功创建、追加位置、缺失轨道、非乐器轨拒绝、成功删除、缺失片段删除拒绝、音频片段删除拒绝、空时间线和片段行摘要。
   - 后续规则：后续菜单、快捷键、AI 工具或时间线按钮创建/删除默认 MIDI 片段时，应复用 `AppMidiClipActions` 或等价应用层入口；时间线展示应复用 `AppTimelineStatus`；失败校验不得触碰 `AppProjectSession::editProject()`，避免把未修改工程标脏。
+- 复制桌面 MIDI 片段入口时：
+  - 触发场景：首屏已经能创建、选择和删除 MIDI 片段后，需要给用户一个不用重新录入音符的最小复制能力。
+  - 根本原因：如果 UI 直接调用 `Project::duplicateClipToTrackAtTick`，缺失片段、音频片段、目标轨道类型、dirty 状态和反馈文案会分散到界面层；如果复制 MIDI 音符时复用原 note id，后续命令系统会把源片段和副本里的音符误认为同一对象。
+  - 采用的解决方式：扩展 `AppMidiClipActions`，新增 `duplicateMidiClipAfterItself`，只接受 MIDI 片段，把副本放到同轨道源片段结束位置，并依赖核心复制逻辑为副本音符分配新 ID；JUCE 首屏复制成功后选中新片段。CTest 覆盖成功复制、缺失片段拒绝和音频片段拒绝。
+  - 后续规则：菜单、快捷键、AI 工具、时间线拖拽复制或剪贴板复制 MIDI 片段时，应复用应用层复制入口或等价边界；副本中的音符和未来自动化事件必须拥有新 ID，不得与源片段共享对象身份。
 - 创建桌面默认 MIDI 音符增删入口时：
   - 触发场景：首屏已经能创建空 MIDI 片段后，需要让用户在片段里放入最小可听内容，并让时间线摘要显示音符数量。
   - 根本原因：如果 UI 直接调用 `Project::createMidiNote` 或 `Project::removeMidiNoteById`，会把目标片段校验、默认音高、默认长度、片段空间检查、空片段检查、dirty 状态和错误文案分散到界面层；后续快捷键、AI 工具和钢琴卷帘也会重复这些规则。
