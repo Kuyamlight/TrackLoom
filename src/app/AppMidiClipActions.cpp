@@ -70,6 +70,16 @@ AppMidiClipActionFeedback moveSuccessFeedback(const TimelineClip& clip, const st
     return feedback;
 }
 
+AppMidiClipActionFeedback trimEndSuccessFeedback(const TimelineClip& clip)
+{
+    AppMidiClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已缩短 MIDI 片段片尾：" + clip.name + "。";
+    return feedback;
+}
+
 AppMidiClipActionFeedback failureFeedback(
     AppMidiClipActionFeedbackKind kind,
     std::string message)
@@ -130,6 +140,18 @@ bool midiNotesCanSplitAtOffset(const TimelineClip& clip, std::int64_t splitOffse
 
         // 跨过切点的音符需要后续明确“切断、延长或保持”的规则；当前先拒绝。
         return false;
+    }
+
+    return true;
+}
+
+bool midiNotesFitClipLength(const TimelineClip& clip, std::int64_t lengthTick)
+{
+    for (const auto& note : clip.midiNotes) {
+        // MIDI 音符保存为片段内相对 tick；片尾缩短后，任何超出新长度的音符都会被保留策略阻止。
+        if (note.startTick + note.lengthTick > lengthTick) {
+            return false;
+        }
     }
 
     return true;
@@ -202,6 +224,68 @@ AppMidiClipActionFeedback moveMidiClipByTickOffset(
     }
 
     return moveSuccessFeedback(*targetClip, directionLabel);
+}
+
+AppMidiClipActionFeedback trimMidiClipEndByTickOffset(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::int64_t offsetTick)
+{
+    // 只读快照先完成所有可预见失败校验；这样失败路径不会触碰 editProject()。
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingClip,
+            "无法缩短 MIDI 片段片尾：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleClipType,
+            "无法缩短 MIDI 片段片尾：只能修剪 MIDI 片段。");
+    }
+
+    const auto targetTrack = session.project().findTrackById(targetClip->trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingTrack,
+            "无法缩短 MIDI 片段片尾：片段所属轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Instrument) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleTrackType,
+            "无法缩短 MIDI 片段片尾：MIDI 片段只能停留在乐器轨。");
+    }
+
+    if (targetClip->lengthTick <= offsetTick) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::TrimFailed,
+            "无法缩短 MIDI 片段片尾：片段长度不足一拍。");
+    }
+
+    const auto newLengthTick = targetClip->lengthTick - offsetTick;
+    if (!midiNotesFitClipLength(*targetClip, newLengthTick)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::TrimFailed,
+            "无法缩短 MIDI 片段片尾：缩短后会截掉已有音符。");
+    }
+
+    if (!canAddTickOffset(targetClip->startTick, newLengthTick)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::TrimFailed,
+            "无法缩短 MIDI 片段片尾：目标片尾超出时间线范围。");
+    }
+
+    const auto newEndTick = targetClip->startTick + newLengthTick;
+    // 当前只做右边界向内修剪；不创建素材偏移，也不改变 MIDI 音符相对 tick。
+    if (!session.editProject().trimClipEndToTick(clipId, newEndTick)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::TrimFailed,
+            "无法缩短 MIDI 片段片尾：工程模型拒绝了这次修剪。");
+    }
+
+    return trimEndSuccessFeedback(*targetClip);
 }
 
 }
@@ -424,6 +508,16 @@ AppMidiClipActionFeedback moveMidiClipRightOneBeat(
         clipId,
         Project::ticksPerQuarterNote,
         "右移");
+}
+
+AppMidiClipActionFeedback trimMidiClipEndEarlierOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return trimMidiClipEndByTickOffset(
+        session,
+        clipId,
+        Project::ticksPerQuarterNote);
 }
 
 }

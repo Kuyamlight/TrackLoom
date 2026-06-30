@@ -188,6 +188,7 @@ public:
         splitMidiClipButton_.setButtonText(toJuceString("拆分片段"));
         moveMidiClipLeftButton_.setButtonText(toJuceString("左移片段"));
         moveMidiClipRightButton_.setButtonText(toJuceString("右移片段"));
+        trimMidiClipEndButton_.setButtonText(toJuceString("缩短片尾"));
         deleteMidiClipButton_.setButtonText(toJuceString("删除片段"));
         renameMidiClipButton_.setButtonText(toJuceString("重命名片段"));
         openRecentProjectButton_.setButtonText(toJuceString("打开最近工程"));
@@ -219,6 +220,7 @@ public:
         splitMidiClipButton_.onClick = [this] { splitSelectedMidiClip(); };
         moveMidiClipLeftButton_.onClick = [this] { moveSelectedMidiClipLeft(); };
         moveMidiClipRightButton_.onClick = [this] { moveSelectedMidiClipRight(); };
+        trimMidiClipEndButton_.onClick = [this] { trimSelectedMidiClipEnd(); };
         deleteMidiClipButton_.onClick = [this] { deleteSelectedMidiClip(); };
         renameMidiClipButton_.onClick = [this] { renameSelectedMidiClip(); };
         clipNameEditor_.onReturnKey = [this] { renameSelectedMidiClip(); };
@@ -269,6 +271,7 @@ public:
         addAndMakeVisible(splitMidiClipButton_);
         addAndMakeVisible(moveMidiClipLeftButton_);
         addAndMakeVisible(moveMidiClipRightButton_);
+        addAndMakeVisible(trimMidiClipEndButton_);
         addAndMakeVisible(deleteMidiClipButton_);
         addAndMakeVisible(renameMidiClipButton_);
 
@@ -376,6 +379,8 @@ public:
         moveMidiClipLeftButton_.setBounds(clipMoveRow.removeFromLeft(112));
         clipMoveRow.removeFromLeft(12);
         moveMidiClipRightButton_.setBounds(clipMoveRow.removeFromLeft(112));
+        clipMoveRow.removeFromLeft(12);
+        trimMidiClipEndButton_.setBounds(clipMoveRow.removeFromLeft(112));
 
         bounds.removeFromTop(14);
         auto columns = bounds;
@@ -908,6 +913,23 @@ private:
         refreshFromSession();
     }
 
+    void trimSelectedMidiClipEnd()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再缩短片尾。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::trimMidiClipEndEarlierOneBeat(session_, selectedMidiClipId_);
+        if (feedback.success) {
+            selectedMidiClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void duplicateSelectedMidiClip()
     {
         if (selectedMidiClipId_.empty()) {
@@ -1069,6 +1091,7 @@ private:
         splitMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         moveMidiClipLeftButton_.setEnabled(!selectedMidiClipId_.empty());
         moveMidiClipRightButton_.setEnabled(!selectedMidiClipId_.empty());
+        trimMidiClipEndButton_.setEnabled(!selectedMidiClipId_.empty());
         deleteMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         renameMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         syncClipNameEditorFromSelection(selectedMidiClipId_ != previousSelection);
@@ -1292,6 +1315,7 @@ private:
     juce::TextButton splitMidiClipButton_;
     juce::TextButton moveMidiClipLeftButton_;
     juce::TextButton moveMidiClipRightButton_;
+    juce::TextButton trimMidiClipEndButton_;
     juce::TextButton deleteMidiClipButton_;
     juce::TextButton renameMidiClipButton_;
 };
