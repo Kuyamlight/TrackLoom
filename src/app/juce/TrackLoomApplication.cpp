@@ -190,6 +190,8 @@ public:
         lowerMidiNotePitchButton_.setButtonText(toJuceString("降低音符"));
         increaseMidiNoteVelocityButton_.setButtonText(toJuceString("增强力度"));
         decreaseMidiNoteVelocityButton_.setButtonText(toJuceString("减弱力度"));
+        lengthenMidiNoteButton_.setButtonText(toJuceString("延长音符"));
+        shortenMidiNoteButton_.setButtonText(toJuceString("缩短音符"));
         duplicateMidiClipButton_.setButtonText(toJuceString("复制片段"));
         splitMidiClipButton_.setButtonText(toJuceString("拆分片段"));
         moveMidiClipLeftButton_.setButtonText(toJuceString("左移片段"));
@@ -232,6 +234,8 @@ public:
         lowerMidiNotePitchButton_.onClick = [this] { lowerMidiNotePitchInSelectedClip(); };
         increaseMidiNoteVelocityButton_.onClick = [this] { increaseMidiNoteVelocityInSelectedClip(); };
         decreaseMidiNoteVelocityButton_.onClick = [this] { decreaseMidiNoteVelocityInSelectedClip(); };
+        lengthenMidiNoteButton_.onClick = [this] { lengthenMidiNoteInSelectedClip(); };
+        shortenMidiNoteButton_.onClick = [this] { shortenMidiNoteInSelectedClip(); };
         duplicateMidiClipButton_.onClick = [this] { duplicateSelectedMidiClip(); };
         splitMidiClipButton_.onClick = [this] { splitSelectedMidiClip(); };
         moveMidiClipLeftButton_.onClick = [this] { moveSelectedMidiClipLeft(); };
@@ -293,6 +297,8 @@ public:
         addAndMakeVisible(lowerMidiNotePitchButton_);
         addAndMakeVisible(increaseMidiNoteVelocityButton_);
         addAndMakeVisible(decreaseMidiNoteVelocityButton_);
+        addAndMakeVisible(lengthenMidiNoteButton_);
+        addAndMakeVisible(shortenMidiNoteButton_);
         addAndMakeVisible(duplicateMidiClipButton_);
         addAndMakeVisible(splitMidiClipButton_);
         addAndMakeVisible(moveMidiClipLeftButton_);
@@ -403,6 +409,10 @@ public:
         increaseMidiNoteVelocityButton_.setBounds(noteEditRow.removeFromLeft(96));
         noteEditRow.removeFromLeft(8);
         decreaseMidiNoteVelocityButton_.setBounds(noteEditRow.removeFromLeft(96));
+        noteEditRow.removeFromLeft(12);
+        lengthenMidiNoteButton_.setBounds(noteEditRow.removeFromLeft(96));
+        noteEditRow.removeFromLeft(8);
+        shortenMidiNoteButton_.setBounds(noteEditRow.removeFromLeft(96));
 
         bounds.removeFromTop(8);
         auto clipNameRow = bounds.removeFromTop(36);
@@ -986,6 +996,42 @@ private:
         refreshFromSession();
     }
 
+    void lengthenMidiNoteInSelectedClip()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再延长末尾音符。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto targetClipId = selectedMidiClipId_;
+        const auto feedback = trackloom::lengthenLastMidiNoteInClip(session_, targetClipId);
+        if (feedback.success) {
+            selectedMidiClipId_ = targetClipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void shortenMidiNoteInSelectedClip()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再缩短末尾音符。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto targetClipId = selectedMidiClipId_;
+        const auto feedback = trackloom::shortenLastMidiNoteInClip(session_, targetClipId);
+        if (feedback.success) {
+            selectedMidiClipId_ = targetClipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void renameSelectedMidiClip()
     {
         if (selectedMidiClipId_.empty()) {
@@ -1311,6 +1357,8 @@ private:
         lowerMidiNotePitchButton_.setEnabled(!selectedMidiClipId_.empty());
         increaseMidiNoteVelocityButton_.setEnabled(!selectedMidiClipId_.empty());
         decreaseMidiNoteVelocityButton_.setEnabled(!selectedMidiClipId_.empty());
+        lengthenMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
+        shortenMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
         duplicateMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         splitMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         moveMidiClipLeftButton_.setEnabled(!selectedMidiClipId_.empty());
@@ -1545,6 +1593,8 @@ private:
     juce::TextButton lowerMidiNotePitchButton_;
     juce::TextButton increaseMidiNoteVelocityButton_;
     juce::TextButton decreaseMidiNoteVelocityButton_;
+    juce::TextButton lengthenMidiNoteButton_;
+    juce::TextButton shortenMidiNoteButton_;
     juce::TextButton duplicateMidiClipButton_;
     juce::TextButton splitMidiClipButton_;
     juce::TextButton moveMidiClipLeftButton_;

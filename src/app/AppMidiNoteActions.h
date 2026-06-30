@@ -10,6 +10,7 @@ namespace trackloom {
 // 首屏“添加音符”使用保守的默认 MIDI 音符。
 // C4、四分音符、正常力度和 1 通道适合做入门可听结果；后续钢琴卷帘再提供精细编辑。
 inline constexpr std::int64_t defaultAppMidiNoteLengthTick = Project::ticksPerQuarterNote;
+inline constexpr std::int64_t defaultAppMidiNoteLengthStepTick = Project::ticksPerQuarterNote / 4;
 inline constexpr int defaultAppMidiNoteNumber = 60;
 inline constexpr int defaultAppMidiNoteVelocity = 100;
 inline constexpr int defaultAppMidiNoteVelocityStep = 8;
@@ -25,6 +26,7 @@ enum class AppMidiNoteActionFeedbackKind {
     EmptyClip,
     PitchFailed,
     VelocityFailed,
+    LengthFailed,
     DeleteFailed,
     CreateFailed
 };
@@ -67,6 +69,16 @@ AppMidiNoteActionFeedback increaseLastMidiNoteVelocityInClip(
     const std::string& clipId);
 
 AppMidiNoteActionFeedback decreaseLastMidiNoteVelocityInClip(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// lengthenLastMidiNoteInClip / shortenLastMidiNoteInClip 只调整末尾音符长度。
+// 步长为十六分音符 tick；片段边界和最短长度失败都必须在 editProject() 前拦截。
+AppMidiNoteActionFeedback lengthenLastMidiNoteInClip(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+AppMidiNoteActionFeedback shortenLastMidiNoteInClip(
     AppProjectSession& session,
     const std::string& clipId);
 

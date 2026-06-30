@@ -545,6 +545,11 @@ TrackLoom 应支持：
   - 根本原因：核心 `setMidiNoteVelocity` 能校验单个 note id，但 MIDI velocity 0 通常表示 Note Off，不能作为当前工程保存的发声音符力度；如果 UI 直接加减 velocity，容易把 1-127 边界、末尾音符选择、空片段失败和 dirty 语义分散。
   - 采用的解决方式：扩展 `AppMidiNoteActions`，新增 `increaseLastMidiNoteVelocityInClip` 和 `decreaseLastMidiNoteVelocityInClip`，按 8 步进调整时间位置最后的音符力度，先拒绝缺失片段、音频片段、空片段和越界力度，再调用 `setMidiNoteVelocity`。JUCE 首屏新增“增强力度”和“减弱力度”按钮。CTest 覆盖成功增强、成功减弱、127 上界拒绝、1 下界拒绝、空片段、缺失片段和音频片段拒绝。
   - 后续规则：在正式钢琴卷帘、快捷键或 AI 工具能选择任意音符前，首屏力度调整只允许作用于时间位置最后的音符；保存的发声音符 velocity 必须保持在 1-127，失败路径不得触碰 `editProject()`。
+- 调整桌面末尾 MIDI 音符长度时：
+  - 触发场景：首屏已有末尾音符音高和力度微调后，需要继续补齐最小音符时值修改能力，但仍不能假装已经有钢琴卷帘或任意音符选择。
+  - 根本原因：核心 `setMidiNoteTiming` 会验证音符时间，但 `AppProjectSession::editProject()` 会先标脏；如果 UI 直接调用核心，缩短到无效长度、延长越过片段右边界、空片段和音频片段失败都会把未变工程误标 dirty。
+  - 采用的解决方式：扩展 `AppMidiNoteActions`，新增 `lengthenLastMidiNoteInClip` 和 `shortenLastMidiNoteInClip`，按十六分音符 tick 调整时间位置最后的音符长度，先拒绝缺失片段、音频片段、空片段、短于最小长度和越过片段右边界，再调用 `setMidiNoteTiming`。JUCE 首屏新增“延长音符”和“缩短音符”按钮。CTest 覆盖成功延长、成功缩短、右边界拒绝、最短长度拒绝、空片段、缺失片段和音频片段拒绝。
+  - 后续规则：在正式钢琴卷帘、快捷键或 AI 工具能选择任意音符前，首屏长度调整只允许作用于时间位置最后的音符；长度微调不移动音符起点，不得越过片段边界，失败路径不得触碰 `editProject()`。
 - 整理需求与规划文档时：
   - 触发场景：阶段性开发累计产生 `docs/superpowers/specs/` 和 `docs/superpowers/plans/` 下 93 个需求与计划草稿，后续判断容易分不清哪份文档是当前基线。
   - 根本原因：早期按阶段写设计和计划有利于执行，但长期保留全部草稿会让需求来源分散，并与用户希望“后续所有需求与规划都在一份最终文档上更改”的要求冲突。

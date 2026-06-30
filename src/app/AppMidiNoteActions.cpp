@@ -48,6 +48,16 @@ AppMidiNoteActionFeedback velocitySuccessFeedback(const MidiNoteEvent& note, con
     return feedback;
 }
 
+AppMidiNoteActionFeedback lengthSuccessFeedback(const MidiNoteEvent& note, const std::string& directionLabel)
+{
+    AppMidiNoteActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiNoteActionFeedbackKind::Success;
+    feedback.noteId = note.id;
+    feedback.message = "已" + directionLabel + "末尾 MIDI 音符长度。";
+    return feedback;
+}
+
 AppMidiNoteActionFeedback failureFeedback(
     AppMidiNoteActionFeedbackKind kind,
     std::string message)
@@ -178,6 +188,55 @@ AppMidiNoteActionFeedback adjustLastMidiNoteVelocityInClip(
     return velocitySuccessFeedback(noteToEdit, directionLabel);
 }
 
+AppMidiNoteActionFeedback adjustLastMidiNoteLengthInClip(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::int64_t lengthDeltaTick,
+    const std::string& directionLabel)
+{
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::MissingClip,
+            "无法调整 MIDI 音符长度：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::IncompatibleClipType,
+            "无法调整 MIDI 音符长度：只能编辑 MIDI 片段里的音符。");
+    }
+
+    if (targetClip->midiNotes.empty()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::EmptyClip,
+            "无法调整 MIDI 音符长度：当前片段里还没有音符。");
+    }
+
+    const auto noteToEdit = lastNoteInTimelineOrder(*targetClip);
+    const auto newLengthTick = noteToEdit.lengthTick + lengthDeltaTick;
+    if (newLengthTick < defaultAppMidiNoteLengthStepTick) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::LengthFailed,
+            "无法调整 MIDI 音符长度：音符不能短于十六分音符。");
+    }
+
+    if (noteToEdit.startTick > targetClip->lengthTick - newLengthTick) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::LengthFailed,
+            "无法调整 MIDI 音符长度：音符右边界不能超出片段。");
+    }
+
+    // 长度微调不移动音符起点；边界通过后才进入 editProject()，避免失败误标 dirty。
+    if (!session.editProject().setMidiNoteTiming(noteToEdit.id, noteToEdit.startTick, newLengthTick)) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::LengthFailed,
+            "无法调整 MIDI 音符长度：工程模型拒绝了这次长度修改。");
+    }
+
+    return lengthSuccessFeedback(noteToEdit, directionLabel);
+}
+
 }
 
 AppMidiNoteActionFeedback createDefaultMidiNoteInClip(
@@ -283,6 +342,20 @@ AppMidiNoteActionFeedback decreaseLastMidiNoteVelocityInClip(
     const std::string& clipId)
 {
     return adjustLastMidiNoteVelocityInClip(session, clipId, -defaultAppMidiNoteVelocityStep, "减弱");
+}
+
+AppMidiNoteActionFeedback lengthenLastMidiNoteInClip(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return adjustLastMidiNoteLengthInClip(session, clipId, defaultAppMidiNoteLengthStepTick, "延长");
+}
+
+AppMidiNoteActionFeedback shortenLastMidiNoteInClip(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return adjustLastMidiNoteLengthInClip(session, clipId, -defaultAppMidiNoteLengthStepTick, "缩短");
 }
 
 }

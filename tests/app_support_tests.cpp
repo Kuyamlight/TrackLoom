@@ -3134,6 +3134,233 @@ void midiNoteActionRejectsAudioClipVelocityWithoutDirtyingSession()
         "audio MIDI note velocity action should not dirty an unchanged session");
 }
 
+void midiNoteActionLengthensLastNoteByStep()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "lengthen-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Lengthen Note");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto first = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    const auto second = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(first.success && second.success,
+        "lengthen MIDI note test should create two notes");
+    require(session.saveAs(path).success,
+        "lengthen MIDI note test should save setup edits before changing length");
+
+    const auto feedback = trackloom::lengthenLastMidiNoteInClip(session, clipFeedback.clipId);
+
+    const auto clip = session.project().findClipById(clipFeedback.clipId);
+    require(feedback.success,
+        "MIDI note length action should lengthen the last note");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::Success,
+        "successful MIDI note lengthen should expose the stable success kind");
+    require(feedback.noteId == second.noteId,
+        "MIDI note lengthen should report the changed note id");
+    require(clip.has_value() && clip->midiNotes.size() == 2,
+        "MIDI note lengthen should keep all notes in the clip");
+    require(clip->midiNotes[0].lengthTick == trackloom::defaultAppMidiNoteLengthTick,
+        "MIDI note lengthen should keep earlier notes unchanged");
+    require(clip->midiNotes[1].lengthTick == trackloom::defaultAppMidiNoteLengthTick + trackloom::defaultAppMidiNoteLengthStepTick,
+        "MIDI note lengthen should affect only the last note by the app-level step");
+    require(session.isDirty(),
+        "successful MIDI note lengthen should mark the app session dirty");
+}
+
+void midiNoteActionShortensLastNoteByStep()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "shorten-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Shorten Note");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto first = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    const auto second = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(first.success && second.success,
+        "shorten MIDI note test should create two notes");
+    require(session.saveAs(path).success,
+        "shorten MIDI note test should save setup edits before changing length");
+
+    const auto feedback = trackloom::shortenLastMidiNoteInClip(session, clipFeedback.clipId);
+
+    const auto clip = session.project().findClipById(clipFeedback.clipId);
+    require(feedback.success,
+        "MIDI note length action should shorten the last note");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::Success,
+        "successful MIDI note shorten should expose the stable success kind");
+    require(feedback.noteId == second.noteId,
+        "MIDI note shorten should report the changed note id");
+    require(clip.has_value() && clip->midiNotes.size() == 2,
+        "MIDI note shorten should keep all notes in the clip");
+    require(clip->midiNotes[0].lengthTick == trackloom::defaultAppMidiNoteLengthTick,
+        "MIDI note shorten should keep earlier notes unchanged");
+    require(clip->midiNotes[1].lengthTick == trackloom::defaultAppMidiNoteLengthTick - trackloom::defaultAppMidiNoteLengthStepTick,
+        "MIDI note shorten should affect only the last note by the app-level step");
+    require(session.isDirty(),
+        "successful MIDI note shorten should mark the app session dirty");
+}
+
+void midiNoteActionRejectsLengthenBeyondClipWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "lengthen-midi-note-boundary.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Lengthen Boundary");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick);
+    require(clip.has_value(),
+        "lengthen boundary test should create a MIDI clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick,
+        trackloom::defaultAppMidiNoteNumber,
+        trackloom::defaultAppMidiNoteVelocity,
+        trackloom::defaultAppMidiNoteChannel);
+    require(note.has_value(),
+        "lengthen boundary test should create a note ending at the clip boundary");
+    require(session.saveAs(path).success,
+        "lengthen boundary test should save setup edits before validation");
+
+    const auto feedback = trackloom::lengthenLastMidiNoteInClip(session, clip->id);
+
+    const auto sourceClip = session.project().findClipById(clip->id);
+    require(!feedback.success,
+        "MIDI note lengthen should reject note end beyond the clip boundary");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::LengthFailed,
+        "lengthen boundary rejection should expose a stable length-failed kind");
+    require(sourceClip.has_value() && sourceClip->midiNotes[0].lengthTick == trackloom::defaultAppMidiNoteLengthTick,
+        "lengthen boundary rejection should keep the note length unchanged");
+    require(!session.isDirty(),
+        "lengthen boundary rejection should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsShortenBelowMinimumWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "shorten-midi-note-boundary.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Shorten Boundary");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick);
+    require(clip.has_value(),
+        "shorten boundary test should create a MIDI clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::defaultAppMidiNoteLengthStepTick,
+        trackloom::defaultAppMidiNoteNumber,
+        trackloom::defaultAppMidiNoteVelocity,
+        trackloom::defaultAppMidiNoteChannel);
+    require(note.has_value(),
+        "shorten boundary test should create a minimum-length MIDI note");
+    require(session.saveAs(path).success,
+        "shorten boundary test should save setup edits before validation");
+
+    const auto feedback = trackloom::shortenLastMidiNoteInClip(session, clip->id);
+
+    const auto sourceClip = session.project().findClipById(clip->id);
+    require(!feedback.success,
+        "MIDI note shorten should reject lengths below the app minimum");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::LengthFailed,
+        "shorten boundary rejection should expose a stable length-failed kind");
+    require(sourceClip.has_value() && sourceClip->midiNotes[0].lengthTick == trackloom::defaultAppMidiNoteLengthStepTick,
+        "shorten boundary rejection should keep the note length unchanged");
+    require(!session.isDirty(),
+        "shorten boundary rejection should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsEmptyClipLengthWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "empty-length-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Empty Length");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    require(clipFeedback.success,
+        "empty MIDI note length test should create an empty MIDI clip");
+    require(session.saveAs(path).success,
+        "empty MIDI note length test should save setup edits before validation");
+
+    const auto feedback = trackloom::lengthenLastMidiNoteInClip(session, clipFeedback.clipId);
+
+    require(!feedback.success,
+        "MIDI note length action should reject an empty MIDI clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::EmptyClip,
+        "empty MIDI note length action should expose a stable empty-clip failure kind");
+    require(session.project().clips()[0].midiNotes.empty(),
+        "empty MIDI note length action should keep the clip unchanged");
+    require(!session.isDirty(),
+        "empty MIDI note length action should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsMissingClipLengthWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "missing-length-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Length Clip");
+    require(session.saveAs(path).success,
+        "missing MIDI note length test should save setup edits before validation");
+
+    const auto feedback = trackloom::lengthenLastMidiNoteInClip(session, "missing-clip-id");
+
+    require(!feedback.success,
+        "MIDI note length action should reject a missing clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::MissingClip,
+        "missing MIDI note length action should expose a stable missing-clip failure kind");
+    require(!session.isDirty(),
+        "missing MIDI note length action should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsAudioClipLengthWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "audio-length-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Length Clip");
+    const auto audioTrack = session.editProject().createTrack("Audio", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audioTrack.id,
+        "Audio Clip",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick);
+    require(clip.has_value(),
+        "audio MIDI note length test should create an audio clip");
+    require(session.saveAs(path).success,
+        "audio MIDI note length test should save setup edits before validation");
+
+    const auto feedback = trackloom::lengthenLastMidiNoteInClip(session, clip->id);
+
+    require(!feedback.success,
+        "MIDI note length action should reject an audio clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::IncompatibleClipType,
+        "audio MIDI note length action should expose a stable incompatible-clip failure kind");
+    require(!session.isDirty(),
+        "audio MIDI note length action should not dirty an unchanged session");
+}
+
 void midiNoteActionRejectsEmptyClipDeleteWithoutDirtyingSession()
 {
     removeTestWorkspace();
@@ -3459,6 +3686,13 @@ int main()
     midiNoteActionRejectsEmptyClipVelocityWithoutDirtyingSession();
     midiNoteActionRejectsMissingClipVelocityWithoutDirtyingSession();
     midiNoteActionRejectsAudioClipVelocityWithoutDirtyingSession();
+    midiNoteActionLengthensLastNoteByStep();
+    midiNoteActionShortensLastNoteByStep();
+    midiNoteActionRejectsLengthenBeyondClipWithoutDirtyingSession();
+    midiNoteActionRejectsShortenBelowMinimumWithoutDirtyingSession();
+    midiNoteActionRejectsEmptyClipLengthWithoutDirtyingSession();
+    midiNoteActionRejectsMissingClipLengthWithoutDirtyingSession();
+    midiNoteActionRejectsAudioClipLengthWithoutDirtyingSession();
     midiNoteActionRejectsEmptyClipDeleteWithoutDirtyingSession();
     midiNoteActionRejectsMissingClipDeleteWithoutDirtyingSession();
     midiNoteActionRejectsAudioClipDeleteWithoutDirtyingSession();
