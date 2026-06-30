@@ -12,6 +12,7 @@ namespace trackloom {
 inline constexpr std::int64_t defaultAppMidiNoteLengthTick = Project::ticksPerQuarterNote;
 inline constexpr int defaultAppMidiNoteNumber = 60;
 inline constexpr int defaultAppMidiNoteVelocity = 100;
+inline constexpr int defaultAppMidiNoteVelocityStep = 8;
 inline constexpr int defaultAppMidiNoteChannel = 1;
 
 // AppMidiNoteActionFeedbackKind 给 UI、快捷键和测试提供稳定失败分类。
@@ -23,6 +24,7 @@ enum class AppMidiNoteActionFeedbackKind {
     ClipFull,
     EmptyClip,
     PitchFailed,
+    VelocityFailed,
     DeleteFailed,
     CreateFailed
 };
@@ -55,6 +57,16 @@ AppMidiNoteActionFeedback raiseLastMidiNotePitchInClip(
     const std::string& clipId);
 
 AppMidiNoteActionFeedback lowerLastMidiNotePitchInClip(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// increaseLastMidiNoteVelocityInClip / decreaseLastMidiNoteVelocityInClip 只调整末尾音符力度。
+// MIDI velocity 0 通常表示 Note Off，因此可保存发声音符保持在 1-127。
+AppMidiNoteActionFeedback increaseLastMidiNoteVelocityInClip(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+AppMidiNoteActionFeedback decreaseLastMidiNoteVelocityInClip(
     AppProjectSession& session,
     const std::string& clipId);
 

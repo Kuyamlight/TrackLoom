@@ -38,6 +38,16 @@ AppMidiNoteActionFeedback pitchSuccessFeedback(const MidiNoteEvent& note, const 
     return feedback;
 }
 
+AppMidiNoteActionFeedback velocitySuccessFeedback(const MidiNoteEvent& note, const std::string& directionLabel)
+{
+    AppMidiNoteActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiNoteActionFeedbackKind::Success;
+    feedback.noteId = note.id;
+    feedback.message = "已" + directionLabel + "末尾 MIDI 音符力度。";
+    return feedback;
+}
+
 AppMidiNoteActionFeedback failureFeedback(
     AppMidiNoteActionFeedbackKind kind,
     std::string message)
@@ -123,6 +133,49 @@ AppMidiNoteActionFeedback transposeLastMidiNotePitchInClip(
     }
 
     return pitchSuccessFeedback(noteToEdit, directionLabel);
+}
+
+AppMidiNoteActionFeedback adjustLastMidiNoteVelocityInClip(
+    AppProjectSession& session,
+    const std::string& clipId,
+    int velocityDelta,
+    const std::string& directionLabel)
+{
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::MissingClip,
+            "无法调整 MIDI 音符力度：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::IncompatibleClipType,
+            "无法调整 MIDI 音符力度：只能编辑 MIDI 片段里的音符。");
+    }
+
+    if (targetClip->midiNotes.empty()) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::EmptyClip,
+            "无法调整 MIDI 音符力度：当前片段里还没有音符。");
+    }
+
+    const auto noteToEdit = lastNoteInTimelineOrder(*targetClip);
+    const auto newVelocity = noteToEdit.velocity + velocityDelta;
+    if (newVelocity < 1 || newVelocity > 127) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::VelocityFailed,
+            "无法调整 MIDI 音符力度：目标力度超出 MIDI 1-127 范围。");
+    }
+
+    // velocity 0 不保存为发声音符；边界通过后才进入 editProject()，避免失败误标 dirty。
+    if (!session.editProject().setMidiNoteVelocity(noteToEdit.id, newVelocity)) {
+        return failureFeedback(
+            AppMidiNoteActionFeedbackKind::VelocityFailed,
+            "无法调整 MIDI 音符力度：工程模型拒绝了这次力度修改。");
+    }
+
+    return velocitySuccessFeedback(noteToEdit, directionLabel);
 }
 
 }
@@ -216,6 +269,20 @@ AppMidiNoteActionFeedback lowerLastMidiNotePitchInClip(
     const std::string& clipId)
 {
     return transposeLastMidiNotePitchInClip(session, clipId, -1, "降低");
+}
+
+AppMidiNoteActionFeedback increaseLastMidiNoteVelocityInClip(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return adjustLastMidiNoteVelocityInClip(session, clipId, defaultAppMidiNoteVelocityStep, "增强");
+}
+
+AppMidiNoteActionFeedback decreaseLastMidiNoteVelocityInClip(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return adjustLastMidiNoteVelocityInClip(session, clipId, -defaultAppMidiNoteVelocityStep, "减弱");
 }
 
 }

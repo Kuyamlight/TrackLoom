@@ -2907,6 +2907,233 @@ void midiNoteActionRejectsEmptyClipPitchWithoutDirtyingSession()
         "empty MIDI note pitch action should not dirty an unchanged session");
 }
 
+void midiNoteActionIncreasesLastNoteVelocityByStep()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "increase-midi-note-velocity-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Increase Note Velocity");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto first = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    const auto second = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(first.success && second.success,
+        "increase MIDI note velocity test should create two notes");
+    require(session.saveAs(path).success,
+        "increase MIDI note velocity test should save setup edits before changing velocity");
+
+    const auto feedback = trackloom::increaseLastMidiNoteVelocityInClip(session, clipFeedback.clipId);
+
+    const auto clip = session.project().findClipById(clipFeedback.clipId);
+    require(feedback.success,
+        "MIDI note velocity action should increase the last note velocity");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::Success,
+        "successful MIDI note velocity increase should expose the stable success kind");
+    require(feedback.noteId == second.noteId,
+        "MIDI note velocity increase should report the changed note id");
+    require(clip.has_value() && clip->midiNotes.size() == 2,
+        "MIDI note velocity increase should keep all notes in the clip");
+    require(clip->midiNotes[0].velocity == trackloom::defaultAppMidiNoteVelocity,
+        "MIDI note velocity increase should keep earlier notes unchanged");
+    require(clip->midiNotes[1].velocity == trackloom::defaultAppMidiNoteVelocity + trackloom::defaultAppMidiNoteVelocityStep,
+        "MIDI note velocity increase should affect only the last note by the app-level step");
+    require(session.isDirty(),
+        "successful MIDI note velocity increase should mark the app session dirty");
+}
+
+void midiNoteActionDecreasesLastNoteVelocityByStep()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "decrease-midi-note-velocity-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Decrease Note Velocity");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto first = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    const auto second = trackloom::createDefaultMidiNoteInClip(session, clipFeedback.clipId);
+    require(first.success && second.success,
+        "decrease MIDI note velocity test should create two notes");
+    require(session.saveAs(path).success,
+        "decrease MIDI note velocity test should save setup edits before changing velocity");
+
+    const auto feedback = trackloom::decreaseLastMidiNoteVelocityInClip(session, clipFeedback.clipId);
+
+    const auto clip = session.project().findClipById(clipFeedback.clipId);
+    require(feedback.success,
+        "MIDI note velocity action should decrease the last note velocity");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::Success,
+        "successful MIDI note velocity decrease should expose the stable success kind");
+    require(feedback.noteId == second.noteId,
+        "MIDI note velocity decrease should report the changed note id");
+    require(clip.has_value() && clip->midiNotes.size() == 2,
+        "MIDI note velocity decrease should keep all notes in the clip");
+    require(clip->midiNotes[0].velocity == trackloom::defaultAppMidiNoteVelocity,
+        "MIDI note velocity decrease should keep earlier notes unchanged");
+    require(clip->midiNotes[1].velocity == trackloom::defaultAppMidiNoteVelocity - trackloom::defaultAppMidiNoteVelocityStep,
+        "MIDI note velocity decrease should affect only the last note by the app-level step");
+    require(session.isDirty(),
+        "successful MIDI note velocity decrease should mark the app session dirty");
+}
+
+void midiNoteActionRejectsVelocityIncreaseAboveMidiRangeWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "increase-midi-note-velocity-boundary.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Increase Velocity Boundary");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick);
+    require(clip.has_value(),
+        "increase velocity boundary test should create a MIDI clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick,
+        trackloom::defaultAppMidiNoteNumber,
+        127,
+        trackloom::defaultAppMidiNoteChannel);
+    require(note.has_value(),
+        "increase velocity boundary test should create a top-velocity MIDI note");
+    require(session.saveAs(path).success,
+        "increase velocity boundary test should save setup edits before validation");
+
+    const auto feedback = trackloom::increaseLastMidiNoteVelocityInClip(session, clip->id);
+
+    const auto sourceClip = session.project().findClipById(clip->id);
+    require(!feedback.success,
+        "MIDI note velocity increase should reject velocities above 127");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::VelocityFailed,
+        "top-range velocity increase should expose a stable velocity-failed kind");
+    require(sourceClip.has_value() && sourceClip->midiNotes[0].velocity == 127,
+        "top-range velocity increase should keep the note velocity unchanged");
+    require(!session.isDirty(),
+        "top-range velocity increase should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsVelocityDecreaseBelowMidiRangeWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "decrease-midi-note-velocity-boundary.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Decrease Velocity Boundary");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick);
+    require(clip.has_value(),
+        "decrease velocity boundary test should create a MIDI clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick,
+        trackloom::defaultAppMidiNoteNumber,
+        1,
+        trackloom::defaultAppMidiNoteChannel);
+    require(note.has_value(),
+        "decrease velocity boundary test should create a bottom-velocity MIDI note");
+    require(session.saveAs(path).success,
+        "decrease velocity boundary test should save setup edits before validation");
+
+    const auto feedback = trackloom::decreaseLastMidiNoteVelocityInClip(session, clip->id);
+
+    const auto sourceClip = session.project().findClipById(clip->id);
+    require(!feedback.success,
+        "MIDI note velocity decrease should reject velocities below 1");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::VelocityFailed,
+        "bottom-range velocity decrease should expose a stable velocity-failed kind");
+    require(sourceClip.has_value() && sourceClip->midiNotes[0].velocity == 1,
+        "bottom-range velocity decrease should keep the note velocity unchanged");
+    require(!session.isDirty(),
+        "bottom-range velocity decrease should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsEmptyClipVelocityWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "empty-velocity-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Empty Velocity");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    require(clipFeedback.success,
+        "empty MIDI note velocity test should create an empty MIDI clip");
+    require(session.saveAs(path).success,
+        "empty MIDI note velocity test should save setup edits before validation");
+
+    const auto feedback = trackloom::increaseLastMidiNoteVelocityInClip(session, clipFeedback.clipId);
+
+    require(!feedback.success,
+        "MIDI note velocity action should reject an empty MIDI clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::EmptyClip,
+        "empty MIDI note velocity action should expose a stable empty-clip failure kind");
+    require(session.project().clips()[0].midiNotes.empty(),
+        "empty MIDI note velocity action should keep the clip unchanged");
+    require(!session.isDirty(),
+        "empty MIDI note velocity action should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsMissingClipVelocityWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "missing-velocity-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Velocity Clip");
+    require(session.saveAs(path).success,
+        "missing MIDI note velocity test should save setup edits before validation");
+
+    const auto feedback = trackloom::increaseLastMidiNoteVelocityInClip(session, "missing-clip-id");
+
+    require(!feedback.success,
+        "MIDI note velocity action should reject a missing clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::MissingClip,
+        "missing MIDI note velocity action should expose a stable missing-clip failure kind");
+    require(!session.isDirty(),
+        "missing MIDI note velocity action should not dirty an unchanged session");
+}
+
+void midiNoteActionRejectsAudioClipVelocityWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "audio-velocity-midi-note-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Velocity Clip");
+    const auto audioTrack = session.editProject().createTrack("Audio", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audioTrack.id,
+        "Audio Clip",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick);
+    require(clip.has_value(),
+        "audio MIDI note velocity test should create an audio clip");
+    require(session.saveAs(path).success,
+        "audio MIDI note velocity test should save setup edits before validation");
+
+    const auto feedback = trackloom::increaseLastMidiNoteVelocityInClip(session, clip->id);
+
+    require(!feedback.success,
+        "MIDI note velocity action should reject an audio clip");
+    require(feedback.kind == trackloom::AppMidiNoteActionFeedbackKind::IncompatibleClipType,
+        "audio MIDI note velocity action should expose a stable incompatible-clip failure kind");
+    require(!session.isDirty(),
+        "audio MIDI note velocity action should not dirty an unchanged session");
+}
+
 void midiNoteActionRejectsEmptyClipDeleteWithoutDirtyingSession()
 {
     removeTestWorkspace();
@@ -3225,6 +3452,13 @@ int main()
     midiNoteActionRejectsPitchRaiseAboveMidiRangeWithoutDirtyingSession();
     midiNoteActionRejectsPitchLowerBelowMidiRangeWithoutDirtyingSession();
     midiNoteActionRejectsEmptyClipPitchWithoutDirtyingSession();
+    midiNoteActionIncreasesLastNoteVelocityByStep();
+    midiNoteActionDecreasesLastNoteVelocityByStep();
+    midiNoteActionRejectsVelocityIncreaseAboveMidiRangeWithoutDirtyingSession();
+    midiNoteActionRejectsVelocityDecreaseBelowMidiRangeWithoutDirtyingSession();
+    midiNoteActionRejectsEmptyClipVelocityWithoutDirtyingSession();
+    midiNoteActionRejectsMissingClipVelocityWithoutDirtyingSession();
+    midiNoteActionRejectsAudioClipVelocityWithoutDirtyingSession();
     midiNoteActionRejectsEmptyClipDeleteWithoutDirtyingSession();
     midiNoteActionRejectsMissingClipDeleteWithoutDirtyingSession();
     midiNoteActionRejectsAudioClipDeleteWithoutDirtyingSession();
