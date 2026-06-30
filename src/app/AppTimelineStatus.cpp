@@ -1,5 +1,6 @@
 #include "AppTimelineStatus.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -37,9 +38,54 @@ std::string rowSummary(const AppTimelineClipRow& row)
 
     if (row.typeLabel == "MIDI") {
         summary += " - " + std::to_string(row.noteCount) + " 个音符";
+        if (row.hasLastMidiNote) {
+            summary += " - 末尾音符：音符起点 " + std::to_string(row.lastMidiNoteStartTick)
+                + " tick，长度 " + std::to_string(row.lastMidiNoteLengthTick)
+                + " tick，音高 " + std::to_string(row.lastMidiNoteNumber)
+                + "，力度 " + std::to_string(row.lastMidiNoteVelocity);
+        }
     }
 
     return summary;
+}
+
+const MidiNoteEvent* lastNoteInTimelineOrder(const TimelineClip& clip)
+{
+    if (clip.midiNotes.empty()) {
+        return nullptr;
+    }
+
+    // 首屏编辑入口也用这个顺序选择“末尾音符”；摘要必须和编辑目标一致。
+    return &*std::max_element(
+        clip.midiNotes.begin(),
+        clip.midiNotes.end(),
+        [](const MidiNoteEvent& left, const MidiNoteEvent& right) {
+            const auto leftEndTick = left.startTick + left.lengthTick;
+            const auto rightEndTick = right.startTick + right.lengthTick;
+            if (leftEndTick != rightEndTick) {
+                return leftEndTick < rightEndTick;
+            }
+
+            return left.startTick < right.startTick;
+        });
+}
+
+void fillLastMidiNoteDetails(AppTimelineClipRow& row, const TimelineClip& clip)
+{
+    if (clip.type != ClipType::Midi) {
+        return;
+    }
+
+    const auto* lastNote = lastNoteInTimelineOrder(clip);
+    if (lastNote == nullptr) {
+        return;
+    }
+
+    row.hasLastMidiNote = true;
+    row.lastMidiNoteStartTick = lastNote->startTick;
+    row.lastMidiNoteLengthTick = lastNote->lengthTick;
+    row.lastMidiNoteNumber = lastNote->noteNumber;
+    row.lastMidiNoteVelocity = lastNote->velocity;
 }
 
 }
@@ -66,6 +112,7 @@ AppTimelineStatus describeAppTimeline(const Project& project)
         row.startTick = clip.startTick;
         row.lengthTick = clip.lengthTick;
         row.noteCount = clip.midiNotes.size();
+        fillLastMidiNoteDetails(row, clip);
         row.summary = rowSummary(row);
         status.rows.push_back(std::move(row));
     }

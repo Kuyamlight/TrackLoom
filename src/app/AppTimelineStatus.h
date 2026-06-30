@@ -22,6 +22,13 @@ struct AppTimelineClipRow {
     std::int64_t startTick = 0;
     std::int64_t lengthTick = 0;
     std::size_t noteCount = 0;
+    // 空 MIDI 片段没有“末尾音符”，UI 必须先看这个开关再显示下面的字段。
+    bool hasLastMidiNote = false;
+    // 下面四个字段描述当前按钮式音符编辑入口会操作的那个末尾音符。
+    std::int64_t lastMidiNoteStartTick = 0;
+    std::int64_t lastMidiNoteLengthTick = 0;
+    int lastMidiNoteNumber = 0;
+    int lastMidiNoteVelocity = 0;
     std::string summary;
 };
 

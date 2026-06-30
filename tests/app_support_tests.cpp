@@ -3896,6 +3896,86 @@ void timelineStatusDescribesClipRowsWithTrackNames()
         "timeline row summary should include the clip length");
 }
 
+void timelineStatusDescribesLastMidiNoteDetails()
+{
+    trackloom::Project project("Timeline Note Details");
+    const auto instrument = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(
+        instrument.id,
+        "Lead MIDI 1",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::Project::ticksPerQuarterNote * 4);
+
+    require(clip.has_value(),
+        "timeline last-note status test should create a MIDI clip");
+    require(project.createMidiNote(
+                clip->id,
+                0,
+                trackloom::Project::ticksPerQuarterNote,
+                60,
+                90,
+                1)
+            .has_value(),
+        "timeline last-note status test should create the first MIDI note");
+    require(project.createMidiNote(
+                clip->id,
+                trackloom::Project::ticksPerQuarterNote,
+                trackloom::Project::ticksPerQuarterNote / 2,
+                67,
+                88,
+                1)
+            .has_value(),
+        "timeline last-note status test should create the final MIDI note");
+
+    const auto status = trackloom::describeAppTimeline(project);
+
+    require(status.rows.size() == 1,
+        "timeline last-note status should expose the MIDI clip row");
+    require(status.rows[0].hasLastMidiNote,
+        "timeline MIDI row should mark that it has last-note details");
+    require(status.rows[0].lastMidiNoteStartTick == trackloom::Project::ticksPerQuarterNote,
+        "timeline MIDI row should expose the last note start tick");
+    require(status.rows[0].lastMidiNoteLengthTick == trackloom::Project::ticksPerQuarterNote / 2,
+        "timeline MIDI row should expose the last note length tick");
+    require(status.rows[0].lastMidiNoteNumber == 67,
+        "timeline MIDI row should expose the last note pitch");
+    require(status.rows[0].lastMidiNoteVelocity == 88,
+        "timeline MIDI row should expose the last note velocity");
+    require(status.rows[0].summary.find("末尾音符") != std::string::npos,
+        "timeline MIDI row summary should include a last-note label");
+    require(status.rows[0].summary.find("音符起点 960") != std::string::npos,
+        "timeline MIDI row summary should include the last note start tick");
+    require(status.rows[0].summary.find("音高 67") != std::string::npos,
+        "timeline MIDI row summary should include the last note pitch");
+    require(status.rows[0].summary.find("力度 88") != std::string::npos,
+        "timeline MIDI row summary should include the last note velocity");
+}
+
+void timelineStatusOmitsLastMidiNoteDetailsForEmptyMidiClips()
+{
+    trackloom::Project project("Empty MIDI Details");
+    const auto instrument = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(
+        instrument.id,
+        "Empty MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::Project::ticksPerQuarterNote);
+
+    require(clip.has_value(),
+        "empty MIDI detail status test should create a MIDI clip");
+
+    const auto status = trackloom::describeAppTimeline(project);
+
+    require(status.rows.size() == 1,
+        "empty MIDI detail status should expose the MIDI clip row");
+    require(!status.rows[0].hasLastMidiNote,
+        "empty MIDI row should not expose last-note details");
+    require(status.rows[0].summary.find("末尾音符") == std::string::npos,
+        "empty MIDI row summary should not claim a last note exists");
+}
+
 void trackListStatusDescribesEmptyProject()
 {
     const trackloom::Project project("Empty");
@@ -4116,6 +4196,8 @@ int main()
     midiNoteActionRejectsAudioClipDeleteWithoutDirtyingSession();
     timelineStatusDescribesEmptyProject();
     timelineStatusDescribesClipRowsWithTrackNames();
+    timelineStatusDescribesLastMidiNoteDetails();
+    timelineStatusOmitsLastMidiNoteDetailsForEmptyMidiClips();
     trackListStatusDescribesEmptyProject();
     trackListStatusDescribesTrackRowsInProjectOrder();
     trackListStatusDescribesTrackPlaybackAndViewFlags();
