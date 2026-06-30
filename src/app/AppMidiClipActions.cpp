@@ -48,6 +48,16 @@ AppMidiClipActionFeedback renameSuccessFeedback(const TimelineClip& clip, const 
     return feedback;
 }
 
+AppMidiClipActionFeedback splitSuccessFeedback(const TimelineClip& rightClip)
+{
+    AppMidiClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppMidiClipActionFeedbackKind::Success;
+    feedback.clipId = rightClip.id;
+    feedback.message = "已拆分 MIDI 片段：" + rightClip.name + "。";
+    return feedback;
+}
+
 AppMidiClipActionFeedback failureFeedback(
     AppMidiClipActionFeedbackKind kind,
     std::string message)
@@ -97,6 +107,22 @@ std::string trimClipName(std::string name)
     return name.substr(first, last - first + 1);
 }
 
+bool midiNotesCanSplitAtOffset(const TimelineClip& clip, std::int64_t splitOffset)
+{
+    for (const auto& note : clip.midiNotes) {
+        const auto noteEndTick = note.startTick + note.lengthTick;
+        // splitOffset 是片段内部的相对 tick；完全落在左侧或右侧的音符可以原样保留或移动。
+        if (noteEndTick <= splitOffset || note.startTick >= splitOffset) {
+            continue;
+        }
+
+        // 跨过切点的音符需要后续明确“切断、延长或保持”的规则；当前先拒绝。
+        return false;
+    }
+
+    return true;
+}
+
 }
 
 AppMidiClipActionFeedback createDefaultMidiClipOnTrack(
@@ -141,6 +167,7 @@ AppMidiClipActionFeedback deleteMidiClipById(
     AppProjectSession& session,
     const std::string& clipId)
 {
+    // 先读取只读快照做应用层校验，避免失败路径调用 editProject() 后误标 dirty。
     const auto targetClip = session.project().findClipById(clipId);
     if (!targetClip.has_value()) {
         return failureFeedback(
@@ -243,6 +270,57 @@ AppMidiClipActionFeedback renameMidiClipById(
     }
 
     return renameSuccessFeedback(*targetClip, trimmedName);
+}
+
+AppMidiClipActionFeedback splitMidiClipAtMidpoint(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    // 先读取只读快照做应用层校验，避免失败路径调用 editProject() 后误标 dirty。
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::MissingClip,
+            "无法拆分 MIDI 片段：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Midi) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::IncompatibleClipType,
+            "无法拆分 MIDI 片段：只能拆分 MIDI 片段。");
+    }
+
+    // 长度为 0 或 1 tick 时没有合法内部中点，不能拆出两个有效片段。
+    if (targetClip->lengthTick <= 1) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::SplitFailed,
+            "无法拆分 MIDI 片段：片段太短，没有可用的中点。");
+    }
+
+    const auto splitOffset = targetClip->lengthTick / 2;
+    const auto splitTick = targetClip->startTick + splitOffset;
+    // 这里再次防御整数边界，确保传给核心模型的是片段内部切点。
+    if (splitOffset <= 0 || splitTick <= targetClip->startTick) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::SplitFailed,
+            "无法拆分 MIDI 片段：片段中点不在有效范围内。");
+    }
+
+    if (!midiNotesCanSplitAtOffset(*targetClip, splitOffset)) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::SplitFailed,
+            "无法拆分 MIDI 片段：存在跨越中点的音符，当前版本不会自动切断音符。");
+    }
+
+    // 拆分前所有可预见校验都已完成；只有真实拆分才允许把会话标记为 dirty。
+    const auto rightClip = session.editProject().splitClipAtTick(clipId, splitTick);
+    if (!rightClip.has_value()) {
+        return failureFeedback(
+            AppMidiClipActionFeedbackKind::SplitFailed,
+            "无法拆分 MIDI 片段：工程模型拒绝了这次拆分。");
+    }
+
+    return splitSuccessFeedback(*rightClip);
 }
 
 }

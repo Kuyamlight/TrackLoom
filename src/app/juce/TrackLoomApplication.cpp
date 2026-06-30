@@ -185,6 +185,7 @@ public:
         addMidiNoteButton_.setButtonText(toJuceString("添加默认音符"));
         deleteMidiNoteButton_.setButtonText(toJuceString("删除末尾音符"));
         duplicateMidiClipButton_.setButtonText(toJuceString("复制片段"));
+        splitMidiClipButton_.setButtonText(toJuceString("拆分片段"));
         deleteMidiClipButton_.setButtonText(toJuceString("删除片段"));
         renameMidiClipButton_.setButtonText(toJuceString("重命名片段"));
         openRecentProjectButton_.setButtonText(toJuceString("打开最近工程"));
@@ -213,6 +214,7 @@ public:
         addMidiNoteButton_.onClick = [this] { addMidiNoteToSelectedClip(); };
         deleteMidiNoteButton_.onClick = [this] { deleteMidiNoteFromSelectedClip(); };
         duplicateMidiClipButton_.onClick = [this] { duplicateSelectedMidiClip(); };
+        splitMidiClipButton_.onClick = [this] { splitSelectedMidiClip(); };
         deleteMidiClipButton_.onClick = [this] { deleteSelectedMidiClip(); };
         renameMidiClipButton_.onClick = [this] { renameSelectedMidiClip(); };
         clipNameEditor_.onReturnKey = [this] { renameSelectedMidiClip(); };
@@ -260,6 +262,7 @@ public:
         addAndMakeVisible(addMidiNoteButton_);
         addAndMakeVisible(deleteMidiNoteButton_);
         addAndMakeVisible(duplicateMidiClipButton_);
+        addAndMakeVisible(splitMidiClipButton_);
         addAndMakeVisible(deleteMidiClipButton_);
         addAndMakeVisible(renameMidiClipButton_);
 
@@ -345,10 +348,6 @@ public:
         addMidiNoteButton_.setBounds(clipRow.removeFromLeft(144));
         clipRow.removeFromLeft(12);
         deleteMidiNoteButton_.setBounds(clipRow.removeFromLeft(144));
-        clipRow.removeFromLeft(12);
-        duplicateMidiClipButton_.setBounds(clipRow.removeFromLeft(112));
-        clipRow.removeFromLeft(12);
-        deleteMidiClipButton_.setBounds(clipRow.removeFromLeft(112));
 
         bounds.removeFromTop(8);
         auto clipNameRow = bounds.removeFromTop(36);
@@ -357,6 +356,12 @@ public:
         clipNameEditor_.setBounds(clipNameRow.removeFromLeft(260));
         clipNameRow.removeFromLeft(12);
         renameMidiClipButton_.setBounds(clipNameRow.removeFromLeft(120));
+        clipNameRow.removeFromLeft(12);
+        duplicateMidiClipButton_.setBounds(clipNameRow.removeFromLeft(112));
+        clipNameRow.removeFromLeft(12);
+        splitMidiClipButton_.setBounds(clipNameRow.removeFromLeft(112));
+        clipNameRow.removeFromLeft(12);
+        deleteMidiClipButton_.setBounds(clipNameRow.removeFromLeft(112));
 
         bounds.removeFromTop(14);
         auto columns = bounds;
@@ -838,6 +843,23 @@ private:
         refreshFromSession();
     }
 
+    void splitSelectedMidiClip()
+    {
+        if (selectedMidiClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个 MIDI 片段，再拆分片段。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::splitMidiClipAtMidpoint(session_, selectedMidiClipId_);
+        if (feedback.success) {
+            selectedMidiClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
     void duplicateSelectedMidiClip()
     {
         if (selectedMidiClipId_.empty()) {
@@ -996,6 +1018,7 @@ private:
         addMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
         deleteMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
         duplicateMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
+        splitMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         deleteMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         renameMidiClipButton_.setEnabled(!selectedMidiClipId_.empty());
         syncClipNameEditorFromSelection(selectedMidiClipId_ != previousSelection);
@@ -1216,6 +1239,7 @@ private:
     juce::TextButton addMidiNoteButton_;
     juce::TextButton deleteMidiNoteButton_;
     juce::TextButton duplicateMidiClipButton_;
+    juce::TextButton splitMidiClipButton_;
     juce::TextButton deleteMidiClipButton_;
     juce::TextButton renameMidiClipButton_;
 };

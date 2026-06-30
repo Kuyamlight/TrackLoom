@@ -1403,6 +1403,58 @@ void midiClipActionRenamesMidiClipAndMarksSessionDirty()
         "timeline status should expose the renamed MIDI clip name");
 }
 
+void midiClipActionSplitsMidiClipAtMidpoint()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "split-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Split Clip");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto rightNote = session.editProject().createMidiNote(
+        clipFeedback.clipId,
+        trackloom::defaultAppMidiClipLengthTick / 2,
+        trackloom::Project::ticksPerQuarterNote,
+        67,
+        100,
+        1);
+    require(clipFeedback.success && rightNote.has_value(),
+        "split MIDI clip test should create a source clip with a right-side note");
+    require(session.saveAs(path).success,
+        "split MIDI clip test should save setup edits before splitting");
+
+    const auto feedback = trackloom::splitMidiClipAtMidpoint(session, clipFeedback.clipId);
+
+    require(feedback.success,
+        "MIDI clip action should split the target clip at its midpoint");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::Success,
+        "successful MIDI clip split action should expose the stable success kind");
+    require(feedback.clipId != clipFeedback.clipId,
+        "MIDI clip split action should report the right-side clip id");
+    require(session.project().clips().size() == 2,
+        "MIDI clip split action should create one right-side clip");
+
+    const auto left = session.project().findClipById(clipFeedback.clipId);
+    const auto right = session.project().findClipById(feedback.clipId);
+    require(left.has_value() && right.has_value(),
+        "MIDI clip split test should find left and right clips");
+    require(left->lengthTick == trackloom::defaultAppMidiClipLengthTick / 2,
+        "MIDI clip split should shorten the original left clip");
+    require(right->startTick == left->startTick + left->lengthTick,
+        "MIDI clip split should place the right clip at the split tick");
+    require(right->lengthTick == trackloom::defaultAppMidiClipLengthTick - left->lengthTick,
+        "MIDI clip split should keep the remaining right-side length");
+    require(right->midiNotes.size() == 1,
+        "MIDI clip split should move right-side notes into the right clip");
+    require(right->midiNotes[0].id == rightNote->id,
+        "MIDI clip split should keep moved MIDI note ids stable");
+    require(right->midiNotes[0].startTick == 0,
+        "MIDI clip split should make moved note start relative to the right clip");
+    require(session.isDirty(),
+        "successful MIDI clip split should mark the app session dirty");
+}
+
 void midiClipActionRejectsEmptyClipNameWithoutDirtyingSession()
 {
     removeTestWorkspace();
@@ -1559,6 +1611,118 @@ void midiClipActionRejectsAudioClipRenameWithoutDirtyingSession()
         "audio clip rename should keep the audio clip name unchanged");
     require(!session.isDirty(),
         "audio clip rename should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsMissingClipSplitWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Clip Split");
+
+    const auto feedback = trackloom::splitMidiClipAtMidpoint(session, "missing-clip");
+
+    require(!feedback.success,
+        "MIDI clip split action should reject a missing clip");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::MissingClip,
+        "missing clip split should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing clip split should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsAudioClipSplitWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "audio-split-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Split");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Vocal clip",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::Project::ticksPerQuarterNote);
+    require(clip.has_value(),
+        "audio clip split test should create an audio clip");
+    require(session.saveAs(path).success,
+        "audio clip split test should save setup edits before validation");
+
+    const auto feedback = trackloom::splitMidiClipAtMidpoint(session, clip->id);
+
+    require(!feedback.success,
+        "MIDI clip split action should reject audio clips");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::IncompatibleClipType,
+        "audio clip split should expose a stable failure kind");
+    require(session.project().clips().size() == 1 && session.project().clips()[0].id == clip->id,
+        "audio clip split should keep the audio clip unchanged");
+    require(!session.isDirty(),
+        "audio clip split should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsTooShortMidiClipSplitWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "short-split-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Short Clip Split");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Short clip",
+        trackloom::ClipType::Midi,
+        0,
+        1);
+    require(clip.has_value(),
+        "too-short MIDI clip split test should create a one-tick MIDI clip");
+    require(session.saveAs(path).success,
+        "too-short MIDI clip split test should save setup edits before validation");
+
+    const auto feedback = trackloom::splitMidiClipAtMidpoint(session, clip->id);
+
+    require(!feedback.success,
+        "MIDI clip split action should reject a clip without a valid midpoint");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::SplitFailed,
+        "too-short MIDI clip split should expose the stable split-failed kind");
+    require(session.project().clips().size() == 1 && session.project().clips()[0].lengthTick == 1,
+        "too-short MIDI clip split should keep the source clip unchanged");
+    require(!session.isDirty(),
+        "too-short MIDI clip split should not dirty an unchanged session");
+}
+
+void midiClipActionRejectsCrossingNoteSplitWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "crossing-note-split-midi-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Crossing Note Split");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clipFeedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto crossingNote = session.editProject().createMidiNote(
+        clipFeedback.clipId,
+        trackloom::defaultAppMidiClipLengthTick / 2 - 120,
+        240,
+        64,
+        100,
+        1);
+    require(clipFeedback.success && crossingNote.has_value(),
+        "crossing note split test should create a note that crosses the midpoint");
+    require(session.saveAs(path).success,
+        "crossing note split test should save setup edits before validation");
+
+    const auto feedback = trackloom::splitMidiClipAtMidpoint(session, clipFeedback.clipId);
+
+    require(!feedback.success,
+        "MIDI clip split action should reject notes crossing the split midpoint");
+    require(feedback.kind == trackloom::AppMidiClipActionFeedbackKind::SplitFailed,
+        "crossing note split should expose a stable split-failed kind");
+    require(session.project().clips().size() == 1,
+        "crossing note split should not add a right-side clip");
+    require(session.project().findClipById(clipFeedback.clipId)->lengthTick == trackloom::defaultAppMidiClipLengthTick,
+        "crossing note split should keep the source clip length unchanged");
+    require(!session.isDirty(),
+        "crossing note split should not dirty an unchanged session");
 }
 
 void midiClipActionDeletesMidiClipAndItsNotes()
@@ -2093,6 +2257,7 @@ int main()
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionDuplicatesMidiClipAfterItself();
     midiClipActionRenamesMidiClipAndMarksSessionDirty();
+    midiClipActionSplitsMidiClipAtMidpoint();
     midiClipActionRejectsEmptyClipNameWithoutDirtyingSession();
     midiClipActionRejectsMissingTrackWithoutDirtyingSession();
     midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
@@ -2100,6 +2265,10 @@ int main()
     midiClipActionRejectsAudioClipDuplicateWithoutDirtyingSession();
     midiClipActionRejectsMissingClipRenameWithoutDirtyingSession();
     midiClipActionRejectsAudioClipRenameWithoutDirtyingSession();
+    midiClipActionRejectsMissingClipSplitWithoutDirtyingSession();
+    midiClipActionRejectsAudioClipSplitWithoutDirtyingSession();
+    midiClipActionRejectsTooShortMidiClipSplitWithoutDirtyingSession();
+    midiClipActionRejectsCrossingNoteSplitWithoutDirtyingSession();
     midiClipActionDeletesMidiClipAndItsNotes();
     midiClipActionRejectsMissingClipDeleteWithoutDirtyingSession();
     midiClipActionRejectsAudioClipDeleteWithoutDirtyingSession();
