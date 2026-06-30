@@ -1,4 +1,5 @@
 add_library(trackloom_app_support STATIC
+    AppAudioClipActions.cpp
     AppMidiClipActions.cpp
     AppMidiNoteActions.cpp
     AppPlaybackActions.cpp

@@ -1,3 +1,4 @@
+#include "AppAudioClipActions.h"
 #include "AppProjectFileActions.h"
 #include "AppRecentProjects.h"
 #include "AppMidiClipActions.h"
@@ -1407,6 +1408,102 @@ void midiClipActionCreatesDefaultClipOnInstrumentTrack()
         "default MIDI clip should use the app-level starter length");
     require(feedback.message.find("MIDI 片段") != std::string::npos,
         "successful MIDI clip feedback should describe the created MIDI clip");
+}
+
+void audioClipActionCreatesDefaultClipOnAudioTrack()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "audio-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Action");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    require(session.saveAs(path).success,
+        "audio clip action test should save the setup project before editing");
+
+    const auto feedback = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+
+    require(feedback.success,
+        "audio clip action should create a clip on an audio track");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::Success,
+        "successful audio clip action should expose a stable success kind");
+    require(!feedback.clipId.empty(),
+        "successful audio clip action should expose the created clip id");
+    require(session.project().clips().size() == 1,
+        "audio clip action should add exactly one clip");
+    require(session.isDirty(),
+        "audio clip action should mark the app session dirty");
+
+    const auto clip = session.project().clips()[0];
+    require(clip.id == feedback.clipId,
+        "audio clip action feedback should point to the created clip");
+    require(clip.trackId == audio.id,
+        "audio clip action should keep the clip on the requested track");
+    require(clip.type == trackloom::ClipType::Audio,
+        "audio clip action should create audio clips only");
+    require(clip.startTick == 0,
+        "first default audio clip should start at the beginning of the track");
+    require(clip.lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "default audio clip should use the app-level starter length");
+    require(feedback.message.find("音频片段") != std::string::npos,
+        "successful audio clip feedback should describe the created audio clip");
+}
+
+void audioClipActionAppendsAfterExistingTrackClips()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Append Audio Clips");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+
+    const auto first = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+    const auto second = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+
+    require(first.success && second.success,
+        "audio clip action should create repeated default audio clips");
+    require(session.project().clips().size() == 2,
+        "audio clip action should keep both created clips");
+    require(session.project().clips()[1].startTick == trackloom::defaultAppAudioClipLengthTick,
+        "second default audio clip should append after the first audio clip");
+}
+
+void audioClipActionRejectsMissingTrackWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Audio Track");
+
+    const auto feedback = trackloom::createDefaultAudioClipOnTrack(session, "missing-track");
+
+    require(!feedback.success,
+        "audio clip action should reject a missing target track");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::MissingTrack,
+        "missing audio track action should expose a stable failure kind");
+    require(session.project().clips().empty(),
+        "missing audio track action should not create clips");
+    require(!session.isDirty(),
+        "missing audio track action should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsIncompatibleTrackWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "incompatible-audio-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Incompatible Audio Track");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    require(session.saveAs(path).success,
+        "incompatible audio clip action test should save setup edits before validation");
+
+    const auto feedback = trackloom::createDefaultAudioClipOnTrack(session, instrument.id);
+
+    require(!feedback.success,
+        "audio clip action should reject non-audio tracks");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::IncompatibleTrackType,
+        "incompatible track audio clip action should expose a stable failure kind");
+    require(session.project().clips().empty(),
+        "incompatible track audio clip action should not create clips");
+    require(!session.isDirty(),
+        "incompatible track audio clip action should not dirty an unchanged session");
 }
 
 void midiClipActionAppendsAfterExistingTrackClips()
@@ -3847,8 +3944,8 @@ void timelineStatusDescribesEmptyProject()
 
     require(status.rows.empty(),
         "empty timeline status should not expose phantom clip rows");
-    require(status.emptyMessage.find("暂无 MIDI 片段") != std::string::npos,
-        "empty timeline status should guide the user to create MIDI clips");
+    require(status.emptyMessage.find("暂无片段") != std::string::npos,
+        "empty timeline status should guide the user to create timeline clips");
 }
 
 void timelineStatusDescribesClipRowsWithTrackNames()
@@ -4114,6 +4211,10 @@ int main()
     playbackRewindReturnsPlayingTransportToStartWithoutDirtyingProject();
     playbackRewindReturnsStoppedTransportToStartWithoutDirtyingProject();
     playbackRewindPreparesFreshRuntimeWithoutStartingPlayback();
+    audioClipActionCreatesDefaultClipOnAudioTrack();
+    audioClipActionAppendsAfterExistingTrackClips();
+    audioClipActionRejectsMissingTrackWithoutDirtyingSession();
+    audioClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
     midiClipActionCreatesDefaultClipOnInstrumentTrack();
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionDuplicatesMidiClipAfterItself();

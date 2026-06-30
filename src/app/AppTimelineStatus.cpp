@@ -93,7 +93,7 @@ void fillLastMidiNoteDetails(AppTimelineClipRow& row, const TimelineClip& clip)
 AppTimelineStatus describeAppTimeline(const Project& project)
 {
     AppTimelineStatus status;
-    status.emptyMessage = "时间线：暂无 MIDI 片段。请选择乐器轨并点击“创建 MIDI 片段”。";
+    status.emptyMessage = "时间线：暂无片段。请选择乐器轨创建 MIDI 片段，或选择音频轨创建音频片段。";
 
     const auto& clips = project.clips();
     status.rows.reserve(clips.size());
