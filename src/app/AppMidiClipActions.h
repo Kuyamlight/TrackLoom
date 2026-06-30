@@ -26,6 +26,7 @@ enum class AppMidiClipActionFeedbackKind {
     SplitFailed,
     MoveFailed,
     TrimFailed,
+    ExtendFailed,
     CreateFailed
 };
 
@@ -82,6 +83,12 @@ AppMidiClipActionFeedback moveMidiClipRightOneBeat(
 // trimMidiClipEndEarlierOneBeat 把目标 MIDI 片段右边界向左缩短一拍。
 // 当前只做向内修剪；向外扩展、左边界修剪和素材偏移属于后续时间线编辑器。
 AppMidiClipActionFeedback trimMidiClipEndEarlierOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// extendMidiClipEndLaterOneBeat 把目标 MIDI 片段右边界向右延长一拍。
+// 它只增加片段外壳长度，不移动起点，也不改 MIDI 音符在片段内部的相对 tick。
+AppMidiClipActionFeedback extendMidiClipEndLaterOneBeat(
     AppProjectSession& session,
     const std::string& clipId);
 
