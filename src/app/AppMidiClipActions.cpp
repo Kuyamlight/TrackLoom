@@ -759,13 +759,13 @@ AppMidiClipActionFeedback duplicateMidiClipAfterItself(
     }
 
     const auto duplicateStartTick = sourceClip->startTick + sourceClip->lengthTick;
+    const auto previousClipIds = currentClipIds(session.project());
 
-    // 复制前所有校验都已完成；只有真实复制才允许把会话标记为 dirty。
-    const auto duplicate = session.editProject().duplicateClipToTrackAtTick(
-        clipId,
-        sourceClip->trackId,
-        duplicateStartTick);
-    if (!duplicate.has_value()) {
+    // 复制前所有校验都已完成；真正复制时走核心命令，撤销/重做才能恢复同一个副本 id。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<DuplicateClipCommand>(clipId, sourceClip->trackId, duplicateStartTick));
+    const auto duplicate = findClipCreatedAfterCommand(session.project(), previousClipIds);
+    if (!result.success || !duplicate.has_value()) {
         return failureFeedback(
             AppMidiClipActionFeedbackKind::DuplicateFailed,
             "无法复制 MIDI 片段：工程模型拒绝了这次复制。");

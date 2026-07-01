@@ -3198,6 +3198,60 @@ void midiClipActionDuplicatesMidiClipAfterItself()
         "successful MIDI clip duplicate should mark the app session dirty");
 }
 
+void midiClipActionDuplicateCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Clip Duplicate History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Loop",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "MIDI clip duplicate history test should create a source clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::Project::ticksPerQuarterNote,
+        60,
+        100,
+        1);
+    require(note.has_value(),
+        "MIDI clip duplicate history test should create a note inside the source clip");
+
+    const auto feedback = trackloom::duplicateMidiClipAfterItself(session, clip->id);
+
+    require(feedback.success,
+        "MIDI clip duplicate history test should duplicate the source clip");
+    require(session.project().clips().size() == 2,
+        "MIDI clip duplicate history test should start with source and duplicate clips");
+    const auto duplicatedClip = session.project().findClipById(feedback.clipId);
+    require(duplicatedClip.has_value() && duplicatedClip->midiNotes.size() == 1,
+        "MIDI clip duplicate history test should create a duplicate with copied notes");
+    const auto duplicatedNoteId = duplicatedClip->midiNotes[0].id;
+    require(duplicatedNoteId != note->id,
+        "MIDI clip duplicate history test should allocate a fresh copied note id");
+    require(session.canUndoProjectEdit(),
+        "MIDI clip duplicate action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI clip duplication from the clip action");
+    require(session.project().clips().size() == 1 && session.project().findClipById(clip->id).has_value(),
+        "undoing MIDI clip duplication should remove only the duplicate clip");
+    require(!session.project().findClipById(feedback.clipId).has_value(),
+        "undoing MIDI clip duplication should remove the duplicate id from the project");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI clip duplication should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI clip duplication from the clip action");
+    const auto restoredDuplicate = session.project().findClipById(feedback.clipId);
+    require(restoredDuplicate.has_value(),
+        "redoing MIDI clip duplication should restore the same duplicate clip id");
+    require(restoredDuplicate->midiNotes.size() == 1 && restoredDuplicate->midiNotes[0].id == duplicatedNoteId,
+        "redoing MIDI clip duplication should restore the same copied note id");
+}
+
 void midiClipActionRenamesMidiClipAndMarksSessionDirty()
 {
     removeTestWorkspace();
@@ -5990,6 +6044,7 @@ int main()
     midiClipActionCreateCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionDuplicatesMidiClipAfterItself();
+    midiClipActionDuplicateCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionRenamesMidiClipAndMarksSessionDirty();
     midiClipActionRenameCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionSplitsMidiClipAtMidpoint();
