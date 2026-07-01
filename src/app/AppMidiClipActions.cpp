@@ -851,9 +851,13 @@ AppMidiClipActionFeedback splitMidiClipAtMidpoint(
             "无法拆分 MIDI 片段：存在跨越中点的音符，当前版本不会自动切断音符。");
     }
 
-    // 拆分前所有可预见校验都已完成；只有真实拆分才允许把会话标记为 dirty。
-    const auto rightClip = session.editProject().splitClipAtTick(clipId, splitTick);
-    if (!rightClip.has_value()) {
+    const auto previousClipIds = currentClipIds(session.project());
+
+    // 拆分前所有可预见校验都已完成；真正拆分时走核心命令，撤销/重做才能恢复原片段和右侧片段。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SplitClipCommand>(clipId, splitTick));
+    const auto rightClip = findClipCreatedAfterCommand(session.project(), previousClipIds);
+    if (!result.success || !rightClip.has_value()) {
         return failureFeedback(
             AppMidiClipActionFeedbackKind::SplitFailed,
             "无法拆分 MIDI 片段：工程模型拒绝了这次拆分。");

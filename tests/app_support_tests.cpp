@@ -3370,6 +3370,81 @@ void midiClipActionSplitsMidiClipAtMidpoint()
         "successful MIDI clip split should mark the app session dirty");
 }
 
+void midiClipActionSplitCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Clip Split History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Loop",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "MIDI clip split history test should create a source clip");
+
+    const auto splitOffset = trackloom::defaultAppMidiClipLengthTick / 2;
+    const auto leftNote = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::Project::ticksPerQuarterNote,
+        60,
+        100,
+        1);
+    const auto rightNote = session.editProject().createMidiNote(
+        clip->id,
+        splitOffset,
+        trackloom::Project::ticksPerQuarterNote,
+        67,
+        100,
+        1);
+    require(leftNote.has_value() && rightNote.has_value(),
+        "MIDI clip split history test should create notes on both sides of the split");
+
+    const auto feedback = trackloom::splitMidiClipAtMidpoint(session, clip->id);
+
+    require(feedback.success,
+        "MIDI clip split history test should split the source clip");
+    const auto leftAfterSplit = session.project().findClipById(clip->id);
+    const auto rightAfterSplit = session.project().findClipById(feedback.clipId);
+    require(leftAfterSplit.has_value() && rightAfterSplit.has_value(),
+        "MIDI clip split history test should find both split sides");
+    require(leftAfterSplit->midiNotes.size() == 1 && leftAfterSplit->midiNotes[0].id == leftNote->id,
+        "MIDI clip split history test should keep the left note on the source clip");
+    require(rightAfterSplit->midiNotes.size() == 1 && rightAfterSplit->midiNotes[0].id == rightNote->id,
+        "MIDI clip split history test should move the right note into the new clip");
+    require(rightAfterSplit->midiNotes[0].startTick == 0,
+        "MIDI clip split history test should rewrite right-side note time relative to the right clip");
+    require(session.canUndoProjectEdit(),
+        "MIDI clip split action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI clip splitting from the clip action");
+    const auto restoredOriginal = session.project().findClipById(clip->id);
+    require(session.project().clips().size() == 1 && restoredOriginal.has_value(),
+        "undoing MIDI clip split should restore one original clip");
+    require(!session.project().findClipById(feedback.clipId).has_value(),
+        "undoing MIDI clip split should remove the right-side clip id");
+    require(restoredOriginal->lengthTick == trackloom::defaultAppMidiClipLengthTick,
+        "undoing MIDI clip split should restore the original clip length");
+    require(restoredOriginal->midiNotes.size() == 2,
+        "undoing MIDI clip split should restore both notes to the original clip");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI clip split should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI clip splitting from the clip action");
+    const auto redoLeft = session.project().findClipById(clip->id);
+    const auto redoRight = session.project().findClipById(feedback.clipId);
+    require(redoLeft.has_value() && redoRight.has_value(),
+        "redoing MIDI clip split should restore both split sides");
+    require(redoLeft->midiNotes.size() == 1 && redoLeft->midiNotes[0].id == leftNote->id,
+        "redoing MIDI clip split should restore the left note on the source clip");
+    require(redoRight->midiNotes.size() == 1 && redoRight->midiNotes[0].id == rightNote->id,
+        "redoing MIDI clip split should restore the same moved right note id");
+    require(redoRight->midiNotes[0].startTick == 0,
+        "redoing MIDI clip split should preserve the right note's relative start");
+}
+
 void midiClipActionMovesMidiClipRightOneBeat()
 {
     removeTestWorkspace();
@@ -6048,6 +6123,7 @@ int main()
     midiClipActionRenamesMidiClipAndMarksSessionDirty();
     midiClipActionRenameCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionSplitsMidiClipAtMidpoint();
+    midiClipActionSplitCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionMovesMidiClipRightOneBeat();
     midiClipActionMovesMidiClipLeftOneBeat();
     midiClipActionMovesMidiClipToInstrumentTrack();

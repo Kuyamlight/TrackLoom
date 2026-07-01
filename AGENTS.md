@@ -468,7 +468,7 @@ TrackLoom 应支持：
 - 建立应用层工程命令历史边界时：
   - 触发场景：核心 `CommandStack` 已能撤销/重做，但桌面首屏动作长期通过 `AppProjectSession::editProject()` 直接修改工程；如果直接暴露撤销菜单，可能跳过未记录的片段或音符编辑，误撤更早的轨道操作。
   - 根本原因：命令历史只能理解通过 `Command` 执行的编辑，无法自动知道旧直接编辑入口做过什么；混用两种修改路径时，保留旧历史比没有撤销更危险。
-  - 采用的解决方式：在 `AppProjectSession` 新增 `executeProjectCommand`、`undoProjectEdit`、`redoProjectEdit` 和历史查询入口；成功命令才标脏并进入历史。直接 `editProject()` 会清空旧历史，表示这次修改没有可撤销记录。首批迁移 `AppTrackActions` 的轨道创建、删除、重命名和移动到核心命令执行；随后迁移 `AppTrackStateActions` 的静音、独奏、禁用和隐藏到核心状态命令，并迁移 `AppMidiClipActions` 的默认 MIDI 片段创建、删除、重命名和复制到核心片段命令。CTest 覆盖成功命令撤销/重做、失败命令不标脏不入栈、新建工程清空历史、直接编辑清空历史，以及轨道创建、静音、隐藏、MIDI 片段创建、MIDI 片段删除、MIDI 片段重命名和 MIDI 片段复制可通过会话历史撤销/重做。
+  - 采用的解决方式：在 `AppProjectSession` 新增 `executeProjectCommand`、`undoProjectEdit`、`redoProjectEdit` 和历史查询入口；成功命令才标脏并进入历史。直接 `editProject()` 会清空旧历史，表示这次修改没有可撤销记录。首批迁移 `AppTrackActions` 的轨道创建、删除、重命名和移动到核心命令执行；随后迁移 `AppTrackStateActions` 的静音、独奏、禁用和隐藏到核心状态命令，并迁移 `AppMidiClipActions` 的默认 MIDI 片段创建、删除、重命名、复制和中点拆分到核心片段命令。CTest 覆盖成功命令撤销/重做、失败命令不标脏不入栈、新建工程清空历史、直接编辑清空历史，以及轨道创建、静音、隐藏、MIDI 片段创建、MIDI 片段删除、MIDI 片段重命名、MIDI 片段复制和 MIDI 片段拆分可通过会话历史撤销/重做。
   - 后续规则：新增或迁移编辑入口时优先通过 `executeProjectCommand` 或等价可撤销边界执行；在音频片段、其余 MIDI 片段编辑和音符动作全部迁移前，不应向用户暴露完整 Undo/Redo 菜单或快捷键；任何仍需直接 `editProject()` 的过渡代码必须清空命令历史，避免跨未记录编辑撤销。
 - 展示桌面轨道列表时：
   - 触发场景：JUCE 首屏已有“添加乐器轨”按钮后，需要让用户看到真实轨道行，而不是只看到轨道数量。
@@ -508,7 +508,7 @@ TrackLoom 应支持：
 - 创建和删除桌面 MIDI 片段入口时：
   - 触发场景：JUCE 首屏已有轨道列表后，需要让用户选择乐器轨创建第一个可保存的 MIDI 片段，也需要能从首屏删除目标 MIDI 片段，并同步显示时间线摘要。
   - 根本原因：如果 UI 直接调用 `Project::createClip` 或 `Project::removeClipById`，会把目标轨道/片段校验、默认片段长度、追加位置、dirty 状态和错误文案分散到界面层；后续菜单、快捷键和 AI 工具也会重复这些规则。
-  - 采用的解决方式：新增并扩展 `AppMidiClipActions` 负责目标轨道校验、默认 MIDI 片段创建、目标 MIDI 片段删除、目标 MIDI 片段重命名和目标 MIDI 片段复制，新增 `AppTimelineStatus` 负责只读时间线摘要；JUCE 首屏只保存当前选择的内部 track id 和 clip id，不向普通用户暴露这些 id。2026-07-01 起，默认 MIDI 片段创建通过 `AddClipCommand` 执行，删除通过 `DeleteClipCommand` 执行，重命名通过 `RenameClipCommand` 执行，复制通过 `DuplicateClipCommand` 执行，因此创建、删除、重命名、复制、撤销和重做都能保持稳定 clip id，并能恢复被删片段内的 MIDI 音符、旧名称或复制得到的新 note id。CTest 覆盖成功创建、追加位置、缺失轨道、非乐器轨拒绝、成功删除、缺失片段删除拒绝、音频片段删除拒绝、空时间线、片段行摘要，以及创建/删除/重命名/复制可通过会话历史撤销/重做。
+  - 采用的解决方式：新增并扩展 `AppMidiClipActions` 负责目标轨道校验、默认 MIDI 片段创建、目标 MIDI 片段删除、目标 MIDI 片段重命名、目标 MIDI 片段复制和目标 MIDI 片段中点拆分，新增 `AppTimelineStatus` 负责只读时间线摘要；JUCE 首屏只保存当前选择的内部 track id 和 clip id，不向普通用户暴露这些 id。2026-07-01 起，默认 MIDI 片段创建通过 `AddClipCommand` 执行，删除通过 `DeleteClipCommand` 执行，重命名通过 `RenameClipCommand` 执行，复制通过 `DuplicateClipCommand` 执行，拆分通过 `SplitClipCommand` 执行，因此创建、删除、重命名、复制、拆分、撤销和重做都能保持稳定 clip id，并能恢复被删片段内的 MIDI 音符、旧名称、复制得到的新 note id 或拆分得到的右侧片段与移动后的 MIDI 音符。CTest 覆盖成功创建、追加位置、缺失轨道、非乐器轨拒绝、成功删除、缺失片段删除拒绝、音频片段删除拒绝、空时间线、片段行摘要，以及创建/删除/重命名/复制/拆分可通过会话历史撤销/重做。
   - 后续规则：后续菜单、快捷键、AI 工具或时间线按钮创建/删除默认 MIDI 片段时，应复用 `AppMidiClipActions` 或等价应用层入口；时间线展示应复用 `AppTimelineStatus`；失败校验不得触碰 `AppProjectSession::editProject()`，避免把未修改工程标脏；新增 MIDI 片段编辑能力应优先选用已有核心片段命令并补撤销/重做测试。
 - 创建、重命名、复制、拆分、移动、片头/片尾编辑和删除桌面音频片段外壳时：
   - 触发场景：首屏已经能创建空音频轨后，需要让音频轨在时间线中拥有可保存、可展示、可命名、可复制、可拆分、可移动到另一条音频轨、可移除的最小片段对象，但真实音频文件导入、波形和播放尚未实现。
@@ -543,7 +543,7 @@ TrackLoom 应支持：
 - 拆分桌面 MIDI 片段入口时：
   - 触发场景：首屏已经能选择和复制 MIDI 片段后，需要提供一个不依赖拖拽坐标的最小拆分能力。
   - 根本原因：核心拆分会拒绝跨切点 MIDI 音符；如果应用层直接调用 `editProject().splitClipAtTick` 再让核心失败，工程虽然未变但会被会话误标脏。跨切点音符也不能被界面层静默切断，否则会无提示改写用户演奏。
-  - 采用的解决方式：扩展 `AppMidiClipActions`，新增 `splitMidiClipAtMidpoint`，先验证目标片段存在、类型为 MIDI、片段有有效中点，并预检没有音符跨越中点；所有失败路径都在 `editProject()` 前返回。JUCE 首屏拆分成功后选中新生成的右侧片段。CTest 覆盖成功拆分、右侧音符移动、缺失片段拒绝、音频片段拒绝、过短片段拒绝和跨中点音符拒绝。
+  - 采用的解决方式：扩展 `AppMidiClipActions`，新增 `splitMidiClipAtMidpoint`，先验证目标片段存在、类型为 MIDI、片段有有效中点，并预检没有音符跨越中点；成功拆分通过 `SplitClipCommand` 进入 `AppProjectSession` 命令历史，失败路径仍在 `editProject()` 前返回。JUCE 首屏拆分成功后选中新生成的右侧片段。CTest 覆盖成功拆分、右侧音符移动、缺失片段拒绝、音频片段拒绝、过短片段拒绝、跨中点音符拒绝，以及拆分可通过会话历史撤销/重做。
   - 后续规则：菜单、快捷键、刀片工具、AI 工具或时间线任意切点拆分 MIDI 片段时，必须先预检跨切点音符策略；没有明确拆音、延音或截断规则前，不得静默改写跨切点音符，失败也不得触碰 `editProject()`。
 - 移动桌面 MIDI 片段入口时：
   - 触发场景：首屏已有 MIDI 片段复制、重命名和拆分后，需要提供不依赖拖拽坐标的最小位置调整能力。
