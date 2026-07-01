@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -37,6 +38,16 @@ AppAudioClipActionFeedback renameSuccessFeedback(const TimelineClip& clip)
     feedback.kind = AppAudioClipActionFeedbackKind::Success;
     feedback.clipId = clip.id;
     feedback.message = "已重命名音频片段：" + clip.name + "。";
+    return feedback;
+}
+
+AppAudioClipActionFeedback moveSuccessFeedback(const TimelineClip& clip, const std::string& directionLabel)
+{
+    AppAudioClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppAudioClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已" + directionLabel + "音频片段：" + clip.name + "。";
     return feedback;
 }
 
@@ -91,6 +102,76 @@ std::string trimClipName(std::string name)
     }
 
     return std::string(begin, end);
+}
+
+bool canAddTickOffset(std::int64_t startTick, std::int64_t offsetTick)
+{
+    if (offsetTick > 0) {
+        return startTick <= std::numeric_limits<std::int64_t>::max() - offsetTick;
+    }
+
+    if (offsetTick < 0) {
+        return startTick >= std::numeric_limits<std::int64_t>::min() - offsetTick;
+    }
+
+    return true;
+}
+
+AppAudioClipActionFeedback moveAudioClipByTickOffset(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::int64_t offsetTick,
+    const std::string& directionLabel)
+{
+    // 先用只读快照完成校验；移动失败时不能把未修改工程误标为 dirty。
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingClip,
+            "无法移动音频片段：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleClipType,
+            "无法移动音频片段：只能移动音频片段。");
+    }
+
+    const auto targetTrack = session.project().findTrackById(targetClip->trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingTrack,
+            "无法移动音频片段：片段所属轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleTrackType,
+            "无法移动音频片段：音频片段只能停留在音频轨。");
+    }
+
+    if (!canAddTickOffset(targetClip->startTick, offsetTick)) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MoveFailed,
+            "无法移动音频片段：目标位置超出时间线范围。");
+    }
+
+    const auto newStartTick = targetClip->startTick + offsetTick;
+    if (newStartTick < 0) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MoveFailed,
+            "无法左移音频片段：片段不能移动到时间线起点之前。");
+    }
+
+    // 当前移动只改变空音频片段外壳起点；素材偏移和波形规则等音频导入后再单独实现。
+    if (!session.editProject().setClipTiming(clipId, newStartTick, targetClip->lengthTick)) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MoveFailed,
+            "无法移动音频片段：工程模型拒绝了这次移动。");
+    }
+
+    const auto movedClip = session.project().findClipById(clipId);
+    return moveSuccessFeedback(movedClip.value_or(*targetClip), directionLabel);
 }
 
 }
@@ -196,6 +277,28 @@ AppAudioClipActionFeedback renameAudioClipById(
 
     const auto renamedClip = session.project().findClipById(clipId);
     return renameSuccessFeedback(renamedClip.value_or(*targetClip));
+}
+
+AppAudioClipActionFeedback moveAudioClipLeftOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return moveAudioClipByTickOffset(
+        session,
+        clipId,
+        -Project::ticksPerQuarterNote,
+        "左移");
+}
+
+AppAudioClipActionFeedback moveAudioClipRightOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return moveAudioClipByTickOffset(
+        session,
+        clipId,
+        Project::ticksPerQuarterNote,
+        "右移");
 }
 
 }

@@ -1684,6 +1684,148 @@ void audioClipActionRejectsMidiClipRenameWithoutDirtyingSession()
         "MIDI clip audio rename should not dirty an unchanged session");
 }
 
+void audioClipActionMovesAudioClipRightOneBeat()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "move-audio-clip-right-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Move Audio Clip Right");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clipFeedback = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+    require(clipFeedback.success,
+        "move-right audio clip test should create a source audio clip");
+    require(session.saveAs(path).success,
+        "move-right audio clip test should save setup edits before moving");
+
+    const auto feedback = trackloom::moveAudioClipRightOneBeat(session, clipFeedback.clipId);
+
+    const auto movedClip = session.project().findClipById(clipFeedback.clipId);
+    require(feedback.success,
+        "audio clip action should move the target clip right by one beat");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::Success,
+        "successful audio clip move-right action should expose the stable success kind");
+    require(feedback.clipId == clipFeedback.clipId,
+        "audio clip move-right action should keep reporting the moved clip id");
+    require(movedClip.has_value() && movedClip->startTick == trackloom::Project::ticksPerQuarterNote,
+        "audio clip move-right action should add one quarter-note tick span to the clip start");
+    require(movedClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "audio clip move-right action should keep the clip length unchanged");
+    require(session.isDirty(),
+        "successful audio clip move-right should mark the app session dirty");
+    require(feedback.message.find("右移") != std::string::npos,
+        "successful audio clip move-right feedback should describe the direction");
+}
+
+void audioClipActionMovesAudioClipLeftOneBeat()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "move-audio-clip-left-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Move Audio Clip Left");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Verse Vocal",
+        trackloom::ClipType::Audio,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(clip.has_value(),
+        "move-left audio clip test should create an audio clip after the timeline start");
+    require(session.saveAs(path).success,
+        "move-left audio clip test should save setup edits before moving");
+
+    const auto feedback = trackloom::moveAudioClipLeftOneBeat(session, clip->id);
+
+    const auto movedClip = session.project().findClipById(clip->id);
+    require(feedback.success,
+        "audio clip action should move the target clip left by one beat");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::Success,
+        "successful audio clip move-left action should expose the stable success kind");
+    require(movedClip.has_value() && movedClip->startTick == 0,
+        "audio clip move-left action should subtract one quarter-note tick span from the clip start");
+    require(movedClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "audio clip move-left action should keep the clip length unchanged");
+    require(session.isDirty(),
+        "successful audio clip move-left should mark the app session dirty");
+}
+
+void audioClipActionRejectsLeftMoveBeforeTimelineStartWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "move-audio-clip-before-start.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Move Audio Clip Before Start");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clipFeedback = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+    require(clipFeedback.success,
+        "audio clip boundary test should create a clip at the timeline start");
+    require(session.saveAs(path).success,
+        "audio clip boundary test should save setup edits before validation");
+
+    const auto feedback = trackloom::moveAudioClipLeftOneBeat(session, clipFeedback.clipId);
+
+    const auto unchangedClip = session.project().findClipById(clipFeedback.clipId);
+    require(!feedback.success,
+        "audio clip action should reject moving left before the timeline start");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::MoveFailed,
+        "audio clip left-boundary failure should expose a stable move failure kind");
+    require(unchangedClip.has_value() && unchangedClip->startTick == 0,
+        "audio clip left-boundary failure should keep the clip start unchanged");
+    require(!session.isDirty(),
+        "audio clip left-boundary failure should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMissingClipMoveWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Audio Clip Move");
+
+    const auto feedback = trackloom::moveAudioClipRightOneBeat(session, "missing-clip");
+
+    require(!feedback.success,
+        "audio clip move action should reject a missing clip");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::MissingClip,
+        "missing audio clip move should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing audio clip move should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMidiClipMoveWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "midi-move-audio-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Move As Audio Clip");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto midi = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::Project::ticksPerQuarterNote);
+    require(midi.has_value(),
+        "MIDI-as-audio move test should create a MIDI clip");
+    require(session.saveAs(path).success,
+        "MIDI-as-audio move test should save setup edits before validation");
+
+    const auto feedback = trackloom::moveAudioClipLeftOneBeat(session, midi->id);
+
+    const auto unchangedClip = session.project().findClipById(midi->id);
+    require(!feedback.success,
+        "audio clip move action should reject MIDI clips");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::IncompatibleClipType,
+        "MIDI clip audio move should expose a stable failure kind");
+    require(unchangedClip.has_value()
+            && unchangedClip->startTick == trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip audio move should keep the original clip start");
+    require(!session.isDirty(),
+        "MIDI clip audio move should not dirty an unchanged session");
+}
+
 void midiClipActionAppendsAfterExistingTrackClips()
 {
     trackloom::AppProjectSession session;
@@ -4400,6 +4542,11 @@ int main()
     audioClipActionRejectsEmptyClipNameWithoutDirtyingSession();
     audioClipActionRejectsMissingClipRenameWithoutDirtyingSession();
     audioClipActionRejectsMidiClipRenameWithoutDirtyingSession();
+    audioClipActionMovesAudioClipRightOneBeat();
+    audioClipActionMovesAudioClipLeftOneBeat();
+    audioClipActionRejectsLeftMoveBeforeTimelineStartWithoutDirtyingSession();
+    audioClipActionRejectsMissingClipMoveWithoutDirtyingSession();
+    audioClipActionRejectsMidiClipMoveWithoutDirtyingSession();
     midiClipActionCreatesDefaultClipOnInstrumentTrack();
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionDuplicatesMidiClipAfterItself();

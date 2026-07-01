@@ -22,6 +22,7 @@ enum class AppAudioClipActionFeedbackKind {
     EmptyName,
     RenameFailed,
     DeleteFailed,
+    MoveFailed,
     CreateFailed
 };
 
@@ -52,5 +53,15 @@ AppAudioClipActionFeedback renameAudioClipById(
     AppProjectSession& session,
     const std::string& clipId,
     std::string name);
+
+// moveAudioClipLeftOneBeat / moveAudioClipRightOneBeat 用固定一拍步长移动空音频片段外壳。
+// 它只移动片段起点，不处理素材偏移、波形、重叠冲突或真实音频播放。
+AppAudioClipActionFeedback moveAudioClipLeftOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+AppAudioClipActionFeedback moveAudioClipRightOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId);
 
 }
