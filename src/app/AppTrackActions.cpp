@@ -48,6 +48,16 @@ AppTrackActionFeedback deleteSuccessFeedback(const Track& track)
     return feedback;
 }
 
+AppTrackActionFeedback deleteAudioSuccessFeedback(const Track& track)
+{
+    AppTrackActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppTrackActionFeedbackKind::Success;
+    feedback.trackId = track.id;
+    feedback.message = "已删除音频轨：" + track.name + "。";
+    return feedback;
+}
+
 AppTrackActionFeedback renameSuccessFeedback(const Track& track, const std::string& newName)
 {
     AppTrackActionFeedback feedback;
@@ -241,6 +251,33 @@ AppTrackActionFeedback deleteInstrumentTrackById(
     }
 
     return deleteSuccessFeedback(*targetTrack);
+}
+
+AppTrackActionFeedback deleteAudioTrackById(
+    AppProjectSession& session,
+    const std::string& trackId)
+{
+    const auto targetTrack = session.project().findTrackById(trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppTrackActionFeedbackKind::MissingTrack,
+            "无法删除音频轨：目标轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Audio) {
+        return failureFeedback(
+            AppTrackActionFeedbackKind::IncompatibleTrackType,
+            "无法删除音频轨：当前入口只能删除音频轨。");
+    }
+
+    // 删除前所有校验都已完成；只有真实删除才允许把会话标记为 dirty。
+    if (!session.editProject().removeTrackById(trackId)) {
+        return failureFeedback(
+            AppTrackActionFeedbackKind::DeleteFailed,
+            "无法删除音频轨：工程模型拒绝了这次删除。");
+    }
+
+    return deleteAudioSuccessFeedback(*targetTrack);
 }
 
 AppTrackActionFeedback renameTrackById(

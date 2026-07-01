@@ -199,6 +199,7 @@ public:
         rewindProjectButton_.setButtonText(toJuceString("回到开头"));
         createMidiClipButton_.setButtonText(toJuceString("创建 MIDI 片段"));
         createAudioClipButton_.setButtonText(toJuceString("创建音频片段"));
+        deleteAudioTrackButton_.setButtonText(toJuceString("删除音频轨"));
         deleteAudioClipButton_.setButtonText(toJuceString("删除音频片段"));
         renameAudioClipButton_.setButtonText(toJuceString("重命名音频片段"));
         moveAudioClipLeftButton_.setButtonText(toJuceString("左移音频片段"));
@@ -254,6 +255,7 @@ public:
         addFolderTrackButton_.onClick = [this] { addDefaultFolderTrack(); };
         createMidiClipButton_.onClick = [this] { createMidiClipOnSelectedTrack(); };
         createAudioClipButton_.onClick = [this] { createAudioClipOnSelectedAudioTrack(); };
+        deleteAudioTrackButton_.onClick = [this] { deleteSelectedAudioTrack(); };
         deleteAudioClipButton_.onClick = [this] { deleteSelectedAudioClip(); };
         renameAudioClipButton_.onClick = [this] { renameSelectedAudioClip(); };
         moveAudioClipLeftButton_.onClick = [this] { moveSelectedAudioClipLeft(); };
@@ -334,6 +336,7 @@ public:
         addAndMakeVisible(rewindProjectButton_);
         addAndMakeVisible(createMidiClipButton_);
         addAndMakeVisible(createAudioClipButton_);
+        addAndMakeVisible(deleteAudioTrackButton_);
         addAndMakeVisible(deleteAudioClipButton_);
         addAndMakeVisible(renameAudioClipButton_);
         addAndMakeVisible(moveAudioClipLeftButton_);
@@ -437,6 +440,8 @@ public:
         createAudioClipButton_.setBounds(audioTargetRow.removeFromLeft(136));
         audioTargetRow.removeFromLeft(8);
         addAudioTrackButton_.setBounds(audioTargetRow.removeFromLeft(104));
+        audioTargetRow.removeFromLeft(8);
+        deleteAudioTrackButton_.setBounds(audioTargetRow.removeFromLeft(112));
         audioTargetRow.removeFromLeft(8);
         addFolderTrackButton_.setBounds(audioTargetRow.removeFromLeft(104));
 
@@ -875,6 +880,25 @@ private:
         const auto feedback = trackloom::createDefaultFolderTrack(session_);
 
         // 文件夹轨当前只在只读轨道列表中展示；层级归组和折叠编辑后续单独接入。
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void deleteSelectedAudioTrack()
+    {
+        if (selectedAudioTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条音频轨，再删除音频轨。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto targetTrackId = selectedAudioTrackId_;
+        const auto feedback = trackloom::deleteAudioTrackById(session_, targetTrackId);
+        if (feedback.success && selectedAudioTrackId_ == targetTrackId) {
+            selectedAudioTrackId_.clear();
+            selectedAudioClipId_.clear();
+        }
+
         lastActionMessage_ = feedback.message;
         refreshFromSession();
     }
@@ -1658,6 +1682,7 @@ private:
         targetAudioTrackBox_.setSelectedId(selectedItemId, juce::dontSendNotification);
         targetAudioTrackBox_.setEnabled(!selectableAudioTrackIds_.empty());
         createAudioClipButton_.setEnabled(!selectedAudioTrackId_.empty());
+        deleteAudioTrackButton_.setEnabled(!selectedAudioTrackId_.empty());
     }
 
     void refreshAudioClipTargetSelector(const trackloom::AppTimelineStatus& timelineStatus)
@@ -2016,6 +2041,7 @@ private:
     juce::TextButton rewindProjectButton_;
     juce::TextButton createMidiClipButton_;
     juce::TextButton createAudioClipButton_;
+    juce::TextButton deleteAudioTrackButton_;
     juce::TextButton deleteAudioClipButton_;
     juce::TextButton renameAudioClipButton_;
     juce::TextButton moveAudioClipLeftButton_;

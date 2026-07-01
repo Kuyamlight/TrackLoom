@@ -47,6 +47,12 @@ AppTrackActionFeedback deleteInstrumentTrackById(
     AppProjectSession& session,
     const std::string& trackId);
 
+// deleteAudioTrackById 删除一个已存在的音频轨。
+// 它只接受 Audio 轨道；删除轨道时工程模型会同时移除该轨拥有的片段。
+AppTrackActionFeedback deleteAudioTrackById(
+    AppProjectSession& session,
+    const std::string& trackId);
+
 // renameTrackById 修改目标轨道名称。
 // 名称会先去掉首尾空白；空名称会被拒绝，避免 UI 保存不可见轨道名。
 AppTrackActionFeedback renameTrackById(

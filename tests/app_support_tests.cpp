@@ -628,6 +628,78 @@ void trackActionNamesRepeatedDefaultAudioTracksByProjectOrder()
         "second default audio track should use the next generated name");
 }
 
+void trackActionDeletesAudioTrackAndOwnedClips()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-action-delete-audio.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Delete Audio Track");
+    const auto trackFeedback = trackloom::createDefaultAudioTrack(session);
+    const auto clipFeedback = trackloom::createDefaultAudioClipOnTrack(session, trackFeedback.trackId);
+    require(trackFeedback.success && clipFeedback.success,
+        "audio track delete action test should create an audio track with one audio clip");
+    require(session.saveAs(path).success,
+        "audio track delete action test should save setup edits before deleting");
+
+    const auto feedback = trackloom::deleteAudioTrackById(session, trackFeedback.trackId);
+
+    require(feedback.success,
+        "track action should delete the requested audio track");
+    require(feedback.kind == trackloom::AppTrackActionFeedbackKind::Success,
+        "successful audio track delete action should expose a stable success kind");
+    require(feedback.trackId == trackFeedback.trackId,
+        "audio track delete action should report the deleted track id");
+    require(session.project().tracks().empty(),
+        "audio track delete action should remove the target audio track");
+    require(session.project().clips().empty(),
+        "audio track delete action should remove clips owned by the deleted audio track");
+    require(session.isDirty(),
+        "successful audio track delete should mark the app session dirty");
+    require(feedback.message.find("删除") != std::string::npos,
+        "successful audio track delete feedback should describe the deletion");
+}
+
+void trackActionRejectsMissingAudioTrackDeleteWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Audio Track Delete");
+
+    const auto feedback = trackloom::deleteAudioTrackById(session, "missing-track");
+
+    require(!feedback.success,
+        "audio track delete action should reject a missing track");
+    require(feedback.kind == trackloom::AppTrackActionFeedbackKind::MissingTrack,
+        "missing audio track delete action should expose a stable failure kind");
+    require(session.project().tracks().empty(),
+        "missing audio track delete action should not change tracks");
+    require(!session.isDirty(),
+        "missing audio track delete action should not dirty an unchanged session");
+}
+
+void trackActionRejectsNonAudioTrackDeleteWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "track-action-delete-instrument-as-audio.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Instrument Delete As Audio Track");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    require(session.saveAs(path).success,
+        "non-audio track delete test should save setup edits before validation");
+
+    const auto feedback = trackloom::deleteAudioTrackById(session, instrument.id);
+
+    require(!feedback.success,
+        "audio track delete action should reject instrument tracks");
+    require(feedback.kind == trackloom::AppTrackActionFeedbackKind::IncompatibleTrackType,
+        "non-audio track delete action should expose a stable failure kind");
+    require(session.project().tracks().size() == 1 && session.project().tracks()[0].id == instrument.id,
+        "non-audio track delete action should keep the instrument track unchanged");
+    require(!session.isDirty(),
+        "non-audio track delete action should not dirty an unchanged session");
+}
+
 void trackActionCreatesDefaultFolderTrackAndMarksSessionDirty()
 {
     removeTestWorkspace();
@@ -4691,6 +4763,9 @@ int main()
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
     trackActionCreatesDefaultAudioTrackAndMarksSessionDirty();
     trackActionNamesRepeatedDefaultAudioTracksByProjectOrder();
+    trackActionDeletesAudioTrackAndOwnedClips();
+    trackActionRejectsMissingAudioTrackDeleteWithoutDirtyingSession();
+    trackActionRejectsNonAudioTrackDeleteWithoutDirtyingSession();
     trackActionCreatesDefaultFolderTrackAndMarksSessionDirty();
     trackActionNamesRepeatedDefaultFolderTracksByProjectOrder();
     trackActionDeletesInstrumentTrackAndOwnedClips();
