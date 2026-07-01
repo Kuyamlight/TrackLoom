@@ -465,6 +465,11 @@ TrackLoom 应支持：
   - 根本原因：快捷键组合、平台主修饰键和命令执行是不同层次；如果直接在 JUCE 层判断 `Ctrl+S` 后调用保存函数，后续菜单、快捷键、命令面板和 AI 工具会逐渐分叉。Space 播放/停止是切换语义，不等同于菜单里的“播放”和“停止”两个独立命令，不能硬塞进同一批文件快捷键映射。
   - 采用的解决方式：新增平台无关的 `AppCommandShortcuts`，把 `primaryModifier + N/O/S/Shift+S` 映射到 `AppMainMenuCommand` 的稳定 command id；JUCE 只把 `KeyPress` 转成 `AppShortcutChord`，再交给 `dispatchAppCommand` 执行。CTest 覆盖 `Ctrl+N`、`Ctrl+O`、`Ctrl+S`、`Ctrl+Shift+S` 和无主修饰键、带 Alt、未注册字符的拒绝。
   - 后续规则：新增快捷键时应先扩展平台无关映射并测试，再让 JUCE 或其他前端转换输入事件；不得让快捷键绕过 dirty 保护、文件选择反馈或命令分发器；播放/停止切换继续使用 `toggleAppPlayback`，除非后续明确新增独立 Toggle 命令并补测试。
+- 建立应用层工程命令历史边界时：
+  - 触发场景：核心 `CommandStack` 已能撤销/重做，但桌面首屏动作长期通过 `AppProjectSession::editProject()` 直接修改工程；如果直接暴露撤销菜单，可能跳过未记录的片段或音符编辑，误撤更早的轨道操作。
+  - 根本原因：命令历史只能理解通过 `Command` 执行的编辑，无法自动知道旧直接编辑入口做过什么；混用两种修改路径时，保留旧历史比没有撤销更危险。
+  - 采用的解决方式：在 `AppProjectSession` 新增 `executeProjectCommand`、`undoProjectEdit`、`redoProjectEdit` 和历史查询入口；成功命令才标脏并进入历史。直接 `editProject()` 会清空旧历史，表示这次修改没有可撤销记录。首批迁移 `AppTrackActions` 的轨道创建、删除、重命名和移动到核心命令执行。CTest 覆盖成功命令撤销/重做、失败命令不标脏不入栈、新建工程清空历史、直接编辑清空历史，以及轨道创建可通过会话历史撤销/重做。
+  - 后续规则：新增或迁移编辑入口时优先通过 `executeProjectCommand` 或等价可撤销边界执行；在音频片段、MIDI 片段和音符动作全部迁移前，不应向用户暴露完整 Undo/Redo 菜单或快捷键；任何仍需直接 `editProject()` 的过渡代码必须清空命令历史，避免跨未记录编辑撤销。
 - 展示桌面轨道列表时：
   - 触发场景：JUCE 首屏已有“添加乐器轨”按钮后，需要让用户看到真实轨道行，而不是只看到轨道数量。
   - 根本原因：如果界面直接遍历 `Project::tracks()` 并自行解释轨道类型、片段数量和状态标签，后续轨道选择、时间线、设备路由、AI 工具和诊断面板容易出现显示规则不一致。

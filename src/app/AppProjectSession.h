@@ -1,9 +1,11 @@
 #pragma once
 
+#include "Command.h"
 #include "Project.h"
 #include "ProjectFile.h"
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -43,6 +45,14 @@ public:
     const std::optional<std::filesystem::path>& currentProjectPath() const;
     bool isDirty() const;
 
+    // 通过核心 Command 执行工程编辑，才能进入撤销/重做历史。
+    // 失败命令不会标脏，也不会进入历史栈。
+    CommandResult executeProjectCommand(std::unique_ptr<Command> command);
+    bool undoProjectEdit();
+    bool redoProjectEdit();
+    bool canUndoProjectEdit() const;
+    bool canRedoProjectEdit() const;
+
     void createNewProject(std::string name = "Untitled");
 
     AppProjectSessionResult save();
@@ -51,6 +61,7 @@ public:
 
 private:
     Project project_;
+    CommandStack commandStack_;
     std::optional<std::filesystem::path> currentProjectPath_;
     bool dirty_ = false;
 };

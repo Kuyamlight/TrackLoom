@@ -13,9 +13,11 @@
 #include "AppTrackActions.h"
 #include "AppTrackListStatus.h"
 #include "AppTrackStateActions.h"
+#include "Command.h"
 #include "TrackLoomAppInfo.h"
 
 #include <filesystem>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -146,6 +148,125 @@ void projectSessionRejectsSaveWithoutPath()
         "failed save without path should not invent a project path");
     require(!session.isDirty(),
         "failed save without path should keep the previous dirty state");
+}
+
+void projectSessionRunsCoreCommandsThroughUndoRedoHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Command History");
+
+    const auto result = session.executeProjectCommand(
+        std::make_unique<trackloom::AddTrackCommand>("Lead", trackloom::TrackType::Instrument));
+
+    require(result.success,
+        "app project session should execute valid core commands");
+    require(session.project().tracks().size() == 1,
+        "executed app command should mutate the current project");
+    require(session.project().tracks()[0].name == "Lead",
+        "executed app command should preserve the command payload");
+    require(session.isDirty(),
+        "successful app command execution should mark the session dirty");
+    require(session.canUndoProjectEdit(),
+        "successful app command execution should create undo history");
+    require(!session.canRedoProjectEdit(),
+        "executing a new command should not create redo history");
+
+    require(session.undoProjectEdit(),
+        "app project session should undo the last executed command");
+    require(session.project().tracks().empty(),
+        "undo should restore the project state before the command");
+    require(!session.canUndoProjectEdit(),
+        "undoing the only command should empty undo history");
+    require(session.canRedoProjectEdit(),
+        "undo should make the command available for redo");
+
+    require(session.redoProjectEdit(),
+        "app project session should redo the last undone command");
+    require(session.project().tracks().size() == 1,
+        "redo should reapply the command to the current project");
+    require(session.project().tracks()[0].name == "Lead",
+        "redo should restore the same command payload");
+    require(session.canUndoProjectEdit(),
+        "redo should put the command back into undo history");
+    require(!session.canRedoProjectEdit(),
+        "redoing the only command should empty redo history");
+}
+
+void projectSessionDoesNotDirtyOrRecordFailedCoreCommands()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Failed Command");
+
+    const auto result = session.executeProjectCommand(
+        std::make_unique<trackloom::RenameTrackCommand>("missing-track", "Renamed"));
+
+    require(!result.success,
+        "app project session should report failed core commands");
+    require(!session.isDirty(),
+        "failed core commands should not mark the session dirty");
+    require(!session.canUndoProjectEdit(),
+        "failed core commands should not create undo history");
+    require(!session.canRedoProjectEdit(),
+        "failed core commands should not create redo history");
+}
+
+void projectSessionRejectsNullCoreCommandWithoutMutation()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Null Command");
+
+    const auto result = session.executeProjectCommand(nullptr);
+
+    require(!result.success,
+        "null commands should fail instead of crashing or executing");
+    require(!session.isDirty(),
+        "null commands should not mark the session dirty");
+    require(!session.canUndoProjectEdit(),
+        "null commands should not create undo history");
+    require(!session.canRedoProjectEdit(),
+        "null commands should not create redo history");
+}
+
+void projectSessionClearsCommandHistoryWhenCreatingNewProject()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Before Reset");
+
+    const auto result = session.executeProjectCommand(
+        std::make_unique<trackloom::AddTrackCommand>("Lead", trackloom::TrackType::Instrument));
+    require(result.success && session.canUndoProjectEdit(),
+        "history reset test should create undoable setup work");
+
+    session.createNewProject("After Reset");
+
+    require(session.project().name() == "After Reset",
+        "creating a new project should replace the current project");
+    require(session.project().tracks().empty(),
+        "creating a new project should not keep old project tracks");
+    require(!session.canUndoProjectEdit(),
+        "creating a new project should clear undo history from the previous project");
+    require(!session.canRedoProjectEdit(),
+        "creating a new project should clear redo history from the previous project");
+}
+
+void projectSessionDirectEditClearsCommandHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Direct Edit Boundary");
+
+    const auto result = session.executeProjectCommand(
+        std::make_unique<trackloom::AddTrackCommand>("Undoable", trackloom::TrackType::Instrument));
+    require(result.success && session.canUndoProjectEdit(),
+        "direct edit boundary test should start with undoable command history");
+
+    session.editProject().createTrack("Legacy Direct Edit", trackloom::TrackType::Audio);
+
+    require(session.project().tracks().size() == 2,
+        "direct edit should still mutate the project");
+    require(!session.canUndoProjectEdit(),
+        "direct edit should clear older undo history so undo cannot skip over untracked edits");
+    require(!session.canRedoProjectEdit(),
+        "direct edit should clear redo history for the same reason");
 }
 
 void projectStatusDescribesUnsavedDirtyProject()
@@ -754,6 +875,31 @@ void trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty()
         "track create action should mark the app session dirty");
     require(feedback.message.find("乐器轨") != std::string::npos,
         "successful track create feedback should describe the created instrument track");
+}
+
+void trackActionCreateCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Track Action History");
+
+    const auto feedback = trackloom::createDefaultInstrumentTrack(session);
+
+    require(feedback.success,
+        "track action history test should create an instrument track");
+    require(session.canUndoProjectEdit(),
+        "track action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo track creation from the track action");
+    require(session.project().tracks().empty(),
+        "undoing track creation should remove the created track");
+    require(session.canRedoProjectEdit(),
+        "undoing track creation should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo track creation from the track action");
+    require(session.project().tracks().size() == 1,
+        "redoing track creation should restore the created track");
+    require(session.project().tracks()[0].id == feedback.trackId,
+        "redoing track creation should preserve the stable track id");
 }
 
 void trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder()
@@ -5562,6 +5708,11 @@ int main()
     projectSessionSavesAndOpensProjectFile();
     projectSessionKeepsCurrentProjectWhenOpenFails();
     projectSessionRejectsSaveWithoutPath();
+    projectSessionRunsCoreCommandsThroughUndoRedoHistory();
+    projectSessionDoesNotDirtyOrRecordFailedCoreCommands();
+    projectSessionRejectsNullCoreCommandWithoutMutation();
+    projectSessionClearsCommandHistoryWhenCreatingNewProject();
+    projectSessionDirectEditClearsCommandHistory();
     projectStatusDescribesUnsavedDirtyProject();
     projectStatusDescribesSavedCleanProject();
     projectFileActionAddsDefaultTrackLoomExtension();
@@ -5587,6 +5738,7 @@ int main()
     commandShortcutsMapCommonFileKeysToMenuCommands();
     commandShortcutsIgnoreUnregisteredOrAmbiguousChords();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
+    trackActionCreateCanBeUndoneAndRedoneThroughSessionHistory();
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
     trackActionCreatesDefaultAudioTrackAndMarksSessionDirty();
     trackActionNamesRepeatedDefaultAudioTracksByProjectOrder();

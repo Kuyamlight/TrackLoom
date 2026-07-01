@@ -1,9 +1,13 @@
 #include "AppTrackActions.h"
 
+#include "Command.h"
+
 #include <cstddef>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace trackloom {
 namespace {
@@ -131,6 +135,41 @@ std::optional<std::size_t> trackIndexById(const Project& project, const std::str
     return std::nullopt;
 }
 
+std::vector<std::string> currentTrackIds(const Project& project)
+{
+    std::vector<std::string> ids;
+    ids.reserve(project.tracks().size());
+    for (const auto& track : project.tracks()) {
+        ids.push_back(track.id);
+    }
+
+    return ids;
+}
+
+bool containsTrackId(const std::vector<std::string>& ids, const std::string& trackId)
+{
+    for (const auto& id : ids) {
+        if (id == trackId) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::optional<Track> findTrackCreatedAfterCommand(
+    const Project& project,
+    const std::vector<std::string>& previousTrackIds)
+{
+    for (const auto& track : project.tracks()) {
+        if (!containsTrackId(previousTrackIds, track.id)) {
+            return track;
+        }
+    }
+
+    return std::nullopt;
+}
+
 AppTrackActionFeedback moveInstrumentTrackByOffset(
     AppProjectSession& session,
     const std::string& trackId,
@@ -169,8 +208,10 @@ AppTrackActionFeedback moveInstrumentTrackByOffset(
         ? *currentIndex - 1
         : *currentIndex + 1;
 
-    // 所有边界都在 editProject() 前完成；真正移动时才把会话标记为 dirty。
-    if (!session.editProject().moveTrackToIndex(trackId, targetIndex)) {
+    // 所有边界都在命令执行前完成；真正移动时才进入撤销历史并标记 dirty。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<MoveTrackCommand>(trackId, targetIndex));
+    if (!result.success) {
         return failureFeedback(
             AppTrackActionFeedbackKind::MoveFailed,
             "无法移动乐器轨：工程模型拒绝了这次顺序调整。");
@@ -184,46 +225,55 @@ AppTrackActionFeedback moveInstrumentTrackByOffset(
 AppTrackActionFeedback createDefaultInstrumentTrack(AppProjectSession& session)
 {
     const auto name = nextDefaultInstrumentTrackName(session.project());
+    const auto previousTrackIds = currentTrackIds(session.project());
 
-    // 创建轨道本身就是修改；这里没有失败前置条件，因此直接进入可编辑工程。
-    const auto createdTrack = session.editProject().createTrack(name, TrackType::Instrument);
-    if (createdTrack.id.empty()) {
+    // 创建轨道本身就是修改；通过核心命令执行，后续撤销/重做才能恢复同一个稳定 ID。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<AddTrackCommand>(name, TrackType::Instrument));
+    const auto createdTrack = findTrackCreatedAfterCommand(session.project(), previousTrackIds);
+    if (!result.success || !createdTrack.has_value()) {
         return failureFeedback(
             AppTrackActionFeedbackKind::CreateFailed,
             "无法添加乐器轨：工程模型没有返回有效轨道 ID。");
     }
 
-    return createSuccessFeedback(createdTrack);
+    return createSuccessFeedback(*createdTrack);
 }
 
 AppTrackActionFeedback createDefaultAudioTrack(AppProjectSession& session)
 {
     const auto name = nextDefaultAudioTrackName(session.project());
+    const auto previousTrackIds = currentTrackIds(session.project());
 
     // 当前只创建空音频轨；音频文件导入、波形和音频片段会在后续阶段单独接入。
-    const auto createdTrack = session.editProject().createTrack(name, TrackType::Audio);
-    if (createdTrack.id.empty()) {
+    const auto result = session.executeProjectCommand(
+        std::make_unique<AddTrackCommand>(name, TrackType::Audio));
+    const auto createdTrack = findTrackCreatedAfterCommand(session.project(), previousTrackIds);
+    if (!result.success || !createdTrack.has_value()) {
         return failureFeedback(
             AppTrackActionFeedbackKind::CreateFailed,
             "无法添加音频轨：工程模型没有返回有效轨道 ID。");
     }
 
-    return createAudioSuccessFeedback(createdTrack);
+    return createAudioSuccessFeedback(*createdTrack);
 }
 
 AppTrackActionFeedback createDefaultFolderTrack(AppProjectSession& session)
 {
     const auto name = nextDefaultFolderTrackName(session.project());
+    const auto previousTrackIds = currentTrackIds(session.project());
 
     // 当前只创建空文件夹轨；层级归组、折叠显示和批量移动后续单独接入。
-    const auto createdTrack = session.editProject().createTrack(name, TrackType::Folder);
-    if (createdTrack.id.empty()) {
+    const auto result = session.executeProjectCommand(
+        std::make_unique<AddTrackCommand>(name, TrackType::Folder));
+    const auto createdTrack = findTrackCreatedAfterCommand(session.project(), previousTrackIds);
+    if (!result.success || !createdTrack.has_value()) {
         return failureFeedback(
             AppTrackActionFeedbackKind::CreateFailed,
             "无法添加文件夹轨：工程模型没有返回有效轨道 ID。");
     }
 
-    return createFolderSuccessFeedback(createdTrack);
+    return createFolderSuccessFeedback(*createdTrack);
 }
 
 AppTrackActionFeedback deleteInstrumentTrackById(
@@ -243,8 +293,10 @@ AppTrackActionFeedback deleteInstrumentTrackById(
             "无法删除乐器轨：当前入口只能删除乐器轨。");
     }
 
-    // 删除前所有校验都已完成；只有真实删除才允许把会话标记为 dirty。
-    if (!session.editProject().removeTrackById(trackId)) {
+    // 删除前所有校验都已完成；只有真实删除才进入撤销历史并标记 dirty。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<DeleteTrackCommand>(trackId));
+    if (!result.success) {
         return failureFeedback(
             AppTrackActionFeedbackKind::DeleteFailed,
             "无法删除乐器轨：工程模型拒绝了这次删除。");
@@ -270,8 +322,10 @@ AppTrackActionFeedback deleteAudioTrackById(
             "无法删除音频轨：当前入口只能删除音频轨。");
     }
 
-    // 删除前所有校验都已完成；只有真实删除才允许把会话标记为 dirty。
-    if (!session.editProject().removeTrackById(trackId)) {
+    // 删除前所有校验都已完成；只有真实删除才进入撤销历史并标记 dirty。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<DeleteTrackCommand>(trackId));
+    if (!result.success) {
         return failureFeedback(
             AppTrackActionFeedbackKind::DeleteFailed,
             "无法删除音频轨：工程模型拒绝了这次删除。");
@@ -299,8 +353,10 @@ AppTrackActionFeedback renameTrackById(
             "无法重命名轨道：目标轨道不存在。");
     }
 
-    // 重命名前所有校验都已完成；只有真实修改才允许把会话标记为 dirty。
-    if (!session.editProject().renameTrackById(trackId, trimmedName)) {
+    // 重命名前所有校验都已完成；只有真实修改才进入撤销历史并标记 dirty。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<RenameTrackCommand>(trackId, trimmedName));
+    if (!result.success) {
         return failureFeedback(
             AppTrackActionFeedbackKind::RenameFailed,
             "无法重命名轨道：工程模型拒绝了这次重命名。");
