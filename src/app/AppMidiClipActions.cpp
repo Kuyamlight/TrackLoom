@@ -440,7 +440,10 @@ AppMidiClipActionFeedback trimMidiClipEndByTickOffset(
 
     const auto newEndTick = targetClip->startTick + newLengthTick;
     // 当前只做右边界向内修剪；不创建素材偏移，也不改变 MIDI 音符相对 tick。
-    if (!session.editProject().trimClipEndToTick(clipId, newEndTick)) {
+    // 真实片尾修剪通过核心命令执行，撤销/重做才能恢复旧片段长度。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<TrimClipEndCommand>(clipId, newEndTick));
+    if (!result.success) {
         return failureFeedback(
             AppMidiClipActionFeedbackKind::TrimFailed,
             "无法缩短 MIDI 片段片尾：工程模型拒绝了这次修剪。");
@@ -495,7 +498,10 @@ AppMidiClipActionFeedback extendMidiClipEndByTickOffset(
     }
 
     // 只移动右边界；MIDI 音符仍然使用原来的片段内相对 tick，声音内容不被平移。
-    if (!session.editProject().setClipTiming(clipId, targetClip->startTick, newLengthTick)) {
+    // 片尾延长复用片段时间命令，作为一次可撤销的用户动作进入历史栈。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetClipTimingCommand>(clipId, targetClip->startTick, newLengthTick));
+    if (!result.success) {
         return failureFeedback(
             AppMidiClipActionFeedbackKind::ExtendFailed,
             "无法延长 MIDI 片段片尾：工程模型拒绝了这次延长。");

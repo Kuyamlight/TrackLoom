@@ -3697,6 +3697,60 @@ void midiClipActionTrimsMidiClipEndEarlierOneBeat()
         "successful MIDI clip trim-end should mark the app session dirty");
 }
 
+void midiClipActionTrimEndCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Clip Trim End History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Loop",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "MIDI clip trim-end history test should create a source clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::Project::ticksPerQuarterNote,
+        60,
+        100,
+        1);
+    require(note.has_value(),
+        "MIDI clip trim-end history test should create a note that remains after trimming");
+
+    const auto feedback = trackloom::trimMidiClipEndEarlierOneBeat(session, clip->id);
+
+    require(feedback.success,
+        "MIDI clip trim-end history test should trim the clip end");
+    const auto trimmedClip = session.project().findClipById(clip->id);
+    require(trimmedClip.has_value()
+            && trimmedClip->lengthTick == trackloom::defaultAppMidiClipLengthTick - trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip trim-end history test should shorten the clip by one beat");
+    require(trimmedClip->midiNotes.size() == 1 && trimmedClip->midiNotes[0].id == note->id,
+        "MIDI clip trim-end history test should preserve the source note id");
+    require(session.canUndoProjectEdit(),
+        "MIDI clip trim-end action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI clip trim-end from the clip action");
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value() && restoredClip->lengthTick == trackloom::defaultAppMidiClipLengthTick,
+        "undoing MIDI clip trim-end should restore the original clip length");
+    require(restoredClip->midiNotes.size() == 1 && restoredClip->midiNotes[0].id == note->id,
+        "undoing MIDI clip trim-end should keep the original note id");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI clip trim-end should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI clip trim-end from the clip action");
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value()
+            && redoneClip->lengthTick == trackloom::defaultAppMidiClipLengthTick - trackloom::Project::ticksPerQuarterNote,
+        "redoing MIDI clip trim-end should restore the trimmed length");
+    require(redoneClip->midiNotes.size() == 1 && redoneClip->midiNotes[0].id == note->id,
+        "redoing MIDI clip trim-end should preserve the same note id");
+}
+
 void midiClipActionExtendsMidiClipEndLaterOneBeat()
 {
     removeTestWorkspace();
@@ -3729,6 +3783,60 @@ void midiClipActionExtendsMidiClipEndLaterOneBeat()
         "MIDI clip extend-end action should keep MIDI notes relative to the same clip");
     require(session.isDirty(),
         "successful MIDI clip extend-end should mark the app session dirty");
+}
+
+void midiClipActionExtendEndCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Clip Extend End History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Loop",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "MIDI clip extend-end history test should create a source clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::Project::ticksPerQuarterNote,
+        60,
+        100,
+        1);
+    require(note.has_value(),
+        "MIDI clip extend-end history test should create a note inside the source clip");
+
+    const auto feedback = trackloom::extendMidiClipEndLaterOneBeat(session, clip->id);
+
+    require(feedback.success,
+        "MIDI clip extend-end history test should extend the clip end");
+    const auto extendedClip = session.project().findClipById(clip->id);
+    require(extendedClip.has_value()
+            && extendedClip->lengthTick == trackloom::defaultAppMidiClipLengthTick + trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip extend-end history test should lengthen the clip by one beat");
+    require(extendedClip->midiNotes.size() == 1 && extendedClip->midiNotes[0].id == note->id,
+        "MIDI clip extend-end history test should preserve the source note id");
+    require(session.canUndoProjectEdit(),
+        "MIDI clip extend-end action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI clip extend-end from the clip action");
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value() && restoredClip->lengthTick == trackloom::defaultAppMidiClipLengthTick,
+        "undoing MIDI clip extend-end should restore the original clip length");
+    require(restoredClip->midiNotes.size() == 1 && restoredClip->midiNotes[0].id == note->id,
+        "undoing MIDI clip extend-end should keep the original note id");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI clip extend-end should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI clip extend-end from the clip action");
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value()
+            && redoneClip->lengthTick == trackloom::defaultAppMidiClipLengthTick + trackloom::Project::ticksPerQuarterNote,
+        "redoing MIDI clip extend-end should restore the extended length");
+    require(redoneClip->midiNotes.size() == 1 && redoneClip->midiNotes[0].id == note->id,
+        "redoing MIDI clip extend-end should preserve the same note id");
 }
 
 void midiClipActionTrimsMidiClipStartLaterOneBeat()
@@ -6245,7 +6353,9 @@ int main()
     midiClipActionMovesMidiClipToInstrumentTrack();
     midiClipActionMoveToTrackCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionTrimsMidiClipEndEarlierOneBeat();
+    midiClipActionTrimEndCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionExtendsMidiClipEndLaterOneBeat();
+    midiClipActionExtendEndCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionTrimsMidiClipStartLaterOneBeat();
     midiClipActionExtendsMidiClipStartEarlierOneBeat();
     midiClipActionRejectsEmptyClipNameWithoutDirtyingSession();
