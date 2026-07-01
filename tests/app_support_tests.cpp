@@ -3479,6 +3479,66 @@ void midiClipActionMovesMidiClipRightOneBeat()
         "successful MIDI clip move-right should mark the app session dirty");
 }
 
+void midiClipActionMoveCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Clip Move History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Loop",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "MIDI clip move history test should create a source clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::Project::ticksPerQuarterNote,
+        60,
+        100,
+        1);
+    require(note.has_value(),
+        "MIDI clip move history test should create a note inside the source clip");
+
+    const auto feedback = trackloom::moveMidiClipRightOneBeat(session, clip->id);
+
+    require(feedback.success,
+        "MIDI clip move history test should move the source clip right");
+    const auto movedClip = session.project().findClipById(clip->id);
+    require(movedClip.has_value() && movedClip->startTick == trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip move history test should move the clip start by one beat");
+    require(movedClip->lengthTick == trackloom::defaultAppMidiClipLengthTick,
+        "MIDI clip move history test should keep clip length unchanged");
+    require(movedClip->midiNotes.size() == 1 && movedClip->midiNotes[0].id == note->id,
+        "MIDI clip move history test should keep the source note id inside the moved clip");
+    require(movedClip->midiNotes[0].startTick == 0,
+        "MIDI clip move history test should keep MIDI note time relative to the moved clip");
+    require(session.canUndoProjectEdit(),
+        "MIDI clip move action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI clip movement from the clip action");
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value() && restoredClip->startTick == 0,
+        "undoing MIDI clip movement should restore the original clip start");
+    require(restoredClip->lengthTick == trackloom::defaultAppMidiClipLengthTick,
+        "undoing MIDI clip movement should keep the original clip length");
+    require(restoredClip->midiNotes.size() == 1 && restoredClip->midiNotes[0].id == note->id,
+        "undoing MIDI clip movement should keep the original note id");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI clip movement should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI clip movement from the clip action");
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value() && redoneClip->startTick == trackloom::Project::ticksPerQuarterNote,
+        "redoing MIDI clip movement should restore the moved start");
+    require(redoneClip->midiNotes.size() == 1 && redoneClip->midiNotes[0].id == note->id,
+        "redoing MIDI clip movement should preserve the same note id");
+    require(redoneClip->midiNotes[0].startTick == 0,
+        "redoing MIDI clip movement should keep note timing relative to the moved clip");
+}
+
 void midiClipActionMovesMidiClipLeftOneBeat()
 {
     removeTestWorkspace();
@@ -6125,6 +6185,7 @@ int main()
     midiClipActionSplitsMidiClipAtMidpoint();
     midiClipActionSplitCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionMovesMidiClipRightOneBeat();
+    midiClipActionMoveCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionMovesMidiClipLeftOneBeat();
     midiClipActionMovesMidiClipToInstrumentTrack();
     midiClipActionTrimsMidiClipEndEarlierOneBeat();

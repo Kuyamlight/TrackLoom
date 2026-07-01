@@ -468,7 +468,7 @@ TrackLoom 应支持：
 - 建立应用层工程命令历史边界时：
   - 触发场景：核心 `CommandStack` 已能撤销/重做，但桌面首屏动作长期通过 `AppProjectSession::editProject()` 直接修改工程；如果直接暴露撤销菜单，可能跳过未记录的片段或音符编辑，误撤更早的轨道操作。
   - 根本原因：命令历史只能理解通过 `Command` 执行的编辑，无法自动知道旧直接编辑入口做过什么；混用两种修改路径时，保留旧历史比没有撤销更危险。
-  - 采用的解决方式：在 `AppProjectSession` 新增 `executeProjectCommand`、`undoProjectEdit`、`redoProjectEdit` 和历史查询入口；成功命令才标脏并进入历史。直接 `editProject()` 会清空旧历史，表示这次修改没有可撤销记录。首批迁移 `AppTrackActions` 的轨道创建、删除、重命名和移动到核心命令执行；随后迁移 `AppTrackStateActions` 的静音、独奏、禁用和隐藏到核心状态命令，并迁移 `AppMidiClipActions` 的默认 MIDI 片段创建、删除、重命名、复制和中点拆分到核心片段命令。CTest 覆盖成功命令撤销/重做、失败命令不标脏不入栈、新建工程清空历史、直接编辑清空历史，以及轨道创建、静音、隐藏、MIDI 片段创建、MIDI 片段删除、MIDI 片段重命名、MIDI 片段复制和 MIDI 片段拆分可通过会话历史撤销/重做。
+  - 采用的解决方式：在 `AppProjectSession` 新增 `executeProjectCommand`、`undoProjectEdit`、`redoProjectEdit` 和历史查询入口；成功命令才标脏并进入历史。直接 `editProject()` 会清空旧历史，表示这次修改没有可撤销记录。首批迁移 `AppTrackActions` 的轨道创建、删除、重命名和移动到核心命令执行；随后迁移 `AppTrackStateActions` 的静音、独奏、禁用和隐藏到核心状态命令，并迁移 `AppMidiClipActions` 的默认 MIDI 片段创建、删除、重命名、复制、中点拆分和一拍左右移动到核心片段命令。CTest 覆盖成功命令撤销/重做、失败命令不标脏不入栈、新建工程清空历史、直接编辑清空历史，以及轨道创建、静音、隐藏、MIDI 片段创建、MIDI 片段删除、MIDI 片段重命名、MIDI 片段复制、MIDI 片段拆分和 MIDI 片段移动可通过会话历史撤销/重做。
   - 后续规则：新增或迁移编辑入口时优先通过 `executeProjectCommand` 或等价可撤销边界执行；在音频片段、其余 MIDI 片段编辑和音符动作全部迁移前，不应向用户暴露完整 Undo/Redo 菜单或快捷键；任何仍需直接 `editProject()` 的过渡代码必须清空命令历史，避免跨未记录编辑撤销。
 - 展示桌面轨道列表时：
   - 触发场景：JUCE 首屏已有“添加乐器轨”按钮后，需要让用户看到真实轨道行，而不是只看到轨道数量。
@@ -548,7 +548,7 @@ TrackLoom 应支持：
 - 移动桌面 MIDI 片段入口时：
   - 触发场景：首屏已有 MIDI 片段复制、重命名和拆分后，需要提供不依赖拖拽坐标的最小位置调整能力。
   - 根本原因：核心 `setClipTiming` 只验证时间合法性和音符是否仍在片段内，不负责应用层的“只移动 MIDI 片段”“一拍步长”“左边界反馈”和 dirty 语义；如果 UI 直接调用可编辑工程，左移越界、缺失片段或音频片段失败会误标 dirty。
-  - 采用的解决方式：扩展 `AppMidiClipActions`，新增 `moveMidiClipLeftOneBeat` 和 `moveMidiClipRightOneBeat`，先用只读工程快照验证目标片段存在、类型为 MIDI、所属轨道仍为乐器轨、目标起点不在 0 之前，再调用 `setClipTiming` 只移动片段起点。JUCE 首屏新增“左移片段”和“右移片段”按钮。CTest 覆盖右移、左移、左边界拒绝、缺失片段拒绝和音频片段拒绝。
+  - 采用的解决方式：扩展 `AppMidiClipActions`，新增 `moveMidiClipLeftOneBeat` 和 `moveMidiClipRightOneBeat`，先用只读工程快照验证目标片段存在、类型为 MIDI、所属轨道仍为乐器轨、目标起点不在 0 之前，再通过 `SetClipTimingCommand` 只移动片段起点并进入命令历史。JUCE 首屏新增“左移片段”和“右移片段”按钮。CTest 覆盖右移、左移、左边界拒绝、缺失片段拒绝、音频片段拒绝和一拍移动撤销/重做。
   - 后续规则：菜单、快捷键、AI 工具、时间线拖拽和吸附移动应复用应用层移动边界或等价校验；移动片段默认不得改写片段内部 MIDI 音符相对 tick；失败路径不得触碰 `editProject()`；重叠冲突、吸附网格和跨轨移动必须作为单独规则测试。
 - 跨轨移动桌面 MIDI 片段入口时：
   - 触发场景：首屏已有片段左右移动后，需要把 MIDI 片段从一条乐器轨移动到另一条乐器轨，补齐最小时间线编辑能力。

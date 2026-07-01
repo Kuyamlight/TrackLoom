@@ -311,7 +311,10 @@ AppMidiClipActionFeedback moveMidiClipByTickOffset(
     }
 
     // 当前移动只改变片段外壳起点，不改片段长度，也不改 MIDI 音符在片段内的相对 tick。
-    if (!session.editProject().setClipTiming(clipId, newStartTick, targetClip->lengthTick)) {
+    // 真实修改通过核心命令执行，撤销/重做才能恢复旧起点和新起点。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetClipTimingCommand>(clipId, newStartTick, targetClip->lengthTick));
+    if (!result.success) {
         return failureFeedback(
             AppMidiClipActionFeedbackKind::MoveFailed,
             "无法移动 MIDI 片段：工程模型拒绝了这次移动。");
