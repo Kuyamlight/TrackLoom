@@ -204,6 +204,7 @@ public:
         renameAudioClipButton_.setButtonText(toJuceString("重命名音频片段"));
         duplicateAudioClipButton_.setButtonText(toJuceString("复制音频片段"));
         splitAudioClipButton_.setButtonText(toJuceString("拆分音频片段"));
+        moveAudioClipToTrackButton_.setButtonText(toJuceString("移到音频轨"));
         moveAudioClipLeftButton_.setButtonText(toJuceString("左移音频片段"));
         moveAudioClipRightButton_.setButtonText(toJuceString("右移音频片段"));
         trimAudioClipEndButton_.setButtonText(toJuceString("缩短音频片尾"));
@@ -262,6 +263,7 @@ public:
         renameAudioClipButton_.onClick = [this] { renameSelectedAudioClip(); };
         duplicateAudioClipButton_.onClick = [this] { duplicateSelectedAudioClip(); };
         splitAudioClipButton_.onClick = [this] { splitSelectedAudioClip(); };
+        moveAudioClipToTrackButton_.onClick = [this] { moveSelectedAudioClipToAudioTrack(); };
         moveAudioClipLeftButton_.onClick = [this] { moveSelectedAudioClipLeft(); };
         moveAudioClipRightButton_.onClick = [this] { moveSelectedAudioClipRight(); };
         trimAudioClipEndButton_.onClick = [this] { trimSelectedAudioClipEnd(); };
@@ -345,6 +347,7 @@ public:
         addAndMakeVisible(renameAudioClipButton_);
         addAndMakeVisible(duplicateAudioClipButton_);
         addAndMakeVisible(splitAudioClipButton_);
+        addAndMakeVisible(moveAudioClipToTrackButton_);
         addAndMakeVisible(moveAudioClipLeftButton_);
         addAndMakeVisible(moveAudioClipRightButton_);
         addAndMakeVisible(trimAudioClipEndButton_);
@@ -482,6 +485,8 @@ public:
         audioClipSplitRow.removeFromLeft(108);
         audioClipSplitRow.removeFromLeft(10);
         splitAudioClipButton_.setBounds(audioClipSplitRow.removeFromLeft(144));
+        audioClipSplitRow.removeFromLeft(8);
+        moveAudioClipToTrackButton_.setBounds(audioClipSplitRow.removeFromLeft(144));
 
         bounds.removeFromTop(8);
         auto trackNameRow = bounds.removeFromTop(36);
@@ -1000,6 +1005,34 @@ private:
 
         const auto feedback = trackloom::splitAudioClipAtMidpoint(session_, selectedAudioClipId_);
         if (feedback.success) {
+            selectedAudioClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void moveSelectedAudioClipToAudioTrack()
+    {
+        if (selectedAudioClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个音频片段，再移动到目标音频轨。";
+            refreshFromSession();
+            return;
+        }
+
+        if (selectedAudioTrackId_.empty()) {
+            lastActionMessage_ = "请先选择目标音频轨，再移动音频片段。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto targetTrackId = selectedAudioTrackId_;
+        const auto feedback = trackloom::moveAudioClipToTrack(
+            session_,
+            selectedAudioClipId_,
+            targetTrackId);
+        if (feedback.success) {
+            selectedAudioTrackId_ = targetTrackId;
             selectedAudioClipId_ = feedback.clipId;
         }
 
@@ -1773,6 +1806,7 @@ private:
         renameAudioClipButton_.setEnabled(!selectedAudioClipId_.empty());
         duplicateAudioClipButton_.setEnabled(!selectedAudioClipId_.empty());
         splitAudioClipButton_.setEnabled(!selectedAudioClipId_.empty());
+        moveAudioClipToTrackButton_.setEnabled(!selectedAudioClipId_.empty() && !selectedAudioTrackId_.empty());
         moveAudioClipLeftButton_.setEnabled(!selectedAudioClipId_.empty());
         moveAudioClipRightButton_.setEnabled(!selectedAudioClipId_.empty());
         trimAudioClipEndButton_.setEnabled(!selectedAudioClipId_.empty());
@@ -2096,6 +2130,7 @@ private:
     juce::TextButton renameAudioClipButton_;
     juce::TextButton duplicateAudioClipButton_;
     juce::TextButton splitAudioClipButton_;
+    juce::TextButton moveAudioClipToTrackButton_;
     juce::TextButton moveAudioClipLeftButton_;
     juce::TextButton moveAudioClipRightButton_;
     juce::TextButton trimAudioClipEndButton_;

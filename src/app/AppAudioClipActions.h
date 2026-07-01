@@ -63,6 +63,13 @@ AppAudioClipActionFeedback splitAudioClipAtMidpoint(
     AppProjectSession& session,
     const std::string& clipId);
 
+// moveAudioClipToTrack 把目标空音频片段移动到另一条音频轨。
+// 它只改变片段所属 trackId；起点、长度、素材引用和波形规则都不在这里处理。
+AppAudioClipActionFeedback moveAudioClipToTrack(
+    AppProjectSession& session,
+    const std::string& clipId,
+    const std::string& targetTrackId);
+
 // renameAudioClipById 修改一个已存在的空音频片段外壳名称。
 // 名称会先去掉首尾空白；空名称、MIDI 片段和不存在的片段会在 dirty 之前被拒绝。
 AppAudioClipActionFeedback renameAudioClipById(

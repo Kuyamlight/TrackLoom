@@ -71,6 +71,16 @@ AppAudioClipActionFeedback moveSuccessFeedback(const TimelineClip& clip, const s
     return feedback;
 }
 
+AppAudioClipActionFeedback moveToTrackSuccessFeedback(const TimelineClip& clip, const Track& targetTrack)
+{
+    AppAudioClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppAudioClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已移动音频片段到目标音频轨：" + targetTrack.name + "。";
+    return feedback;
+}
+
 AppAudioClipActionFeedback trimEndSuccessFeedback(const TimelineClip& clip)
 {
     AppAudioClipActionFeedback feedback;
@@ -500,6 +510,68 @@ AppAudioClipActionFeedback splitAudioClipAtMidpoint(
     }
 
     return splitSuccessFeedback(*rightClip);
+}
+
+AppAudioClipActionFeedback moveAudioClipToTrack(
+    AppProjectSession& session,
+    const std::string& clipId,
+    const std::string& targetTrackId)
+{
+    // 跨轨移动只改空音频片段归属；失败路径必须在 dirty 之前用只读快照拦截。
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingClip,
+            "无法移动音频片段到目标音频轨：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleClipType,
+            "无法移动音频片段到目标音频轨：只能移动音频片段。");
+    }
+
+    const auto sourceTrack = session.project().findTrackById(targetClip->trackId);
+    if (!sourceTrack.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingTrack,
+            "无法移动音频片段到目标音频轨：片段所属轨道不存在。");
+    }
+
+    if (sourceTrack->type != TrackType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleTrackType,
+            "无法移动音频片段到目标音频轨：源轨道不是音频轨。");
+    }
+
+    const auto targetTrack = session.project().findTrackById(targetTrackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingTrack,
+            "无法移动音频片段到目标音频轨：目标轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleTrackType,
+            "无法移动音频片段到目标音频轨：目标轨道必须是音频轨。");
+    }
+
+    if (targetClip->trackId == targetTrackId) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MoveFailed,
+            "无法移动音频片段到目标音频轨：目标轨道与当前轨道相同。");
+    }
+
+    // 当前不处理重叠冲突、素材复制或跨类型转换；这些属于正式时间线编辑器规则。
+    if (!session.editProject().moveClipToTrack(clipId, targetTrackId)) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MoveFailed,
+            "无法移动音频片段到目标音频轨：工程模型拒绝了这次移动。");
+    }
+
+    const auto movedClip = session.project().findClipById(clipId);
+    return moveToTrackSuccessFeedback(movedClip.value_or(*targetClip), *targetTrack);
 }
 
 AppAudioClipActionFeedback renameAudioClipById(
