@@ -1582,6 +1582,108 @@ void audioClipActionRejectsMidiClipDeleteWithoutDirtyingSession()
         "MIDI clip audio delete action should not dirty an unchanged session");
 }
 
+void audioClipActionRenamesAudioClipAndMarksSessionDirty()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "rename-audio-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Rename Audio Clip");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clipFeedback = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+    require(clipFeedback.success,
+        "rename audio clip test should create an audio clip");
+    require(session.saveAs(path).success,
+        "rename audio clip test should save setup edits before renaming");
+
+    const auto feedback = trackloom::renameAudioClipById(session, clipFeedback.clipId, "  Verse Vocal  ");
+
+    require(feedback.success,
+        "audio clip action should rename the target audio clip");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::Success,
+        "successful audio clip rename action should expose the stable success kind");
+    require(feedback.clipId == clipFeedback.clipId,
+        "audio clip rename action should report the renamed clip id");
+    require(session.project().findClipById(clipFeedback.clipId)->name == "Verse Vocal",
+        "audio clip rename action should trim surrounding whitespace before saving the name");
+    require(session.isDirty(),
+        "successful audio clip rename should mark the app session dirty");
+    require(feedback.message.find("重命名") != std::string::npos,
+        "successful audio clip rename feedback should describe the rename");
+}
+
+void audioClipActionRejectsEmptyClipNameWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "rename-audio-clip-empty.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Empty Audio Clip Rename");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clipFeedback = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+    require(clipFeedback.success,
+        "empty audio clip rename test should create a source audio clip");
+    require(session.saveAs(path).success,
+        "empty audio clip rename test should save setup edits before validation");
+
+    const auto feedback = trackloom::renameAudioClipById(session, clipFeedback.clipId, "   ");
+
+    require(!feedback.success,
+        "audio clip rename action should reject a whitespace-only name");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::EmptyName,
+        "empty audio clip rename should expose a stable failure kind");
+    require(session.project().findClipById(clipFeedback.clipId)->name != "   ",
+        "empty audio clip rename should keep the existing clip name");
+    require(!session.isDirty(),
+        "empty audio clip rename should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMissingClipRenameWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Audio Clip Rename");
+
+    const auto feedback = trackloom::renameAudioClipById(session, "missing-clip", "Verse");
+
+    require(!feedback.success,
+        "audio clip rename action should reject a missing clip");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::MissingClip,
+        "missing audio clip rename should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing audio clip rename should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMidiClipRenameWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "midi-rename-audio-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Rename As Audio Clip");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto midi = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::Project::ticksPerQuarterNote);
+    require(midi.has_value(),
+        "MIDI-as-audio rename test should create a MIDI clip");
+    require(session.saveAs(path).success,
+        "MIDI-as-audio rename test should save setup edits before validation");
+
+    const auto feedback = trackloom::renameAudioClipById(session, midi->id, "Verse");
+
+    require(!feedback.success,
+        "audio clip rename action should reject MIDI clips");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::IncompatibleClipType,
+        "MIDI clip audio rename should expose a stable failure kind");
+    require(session.project().findClipById(midi->id)->name == "Lead MIDI",
+        "MIDI clip audio rename should keep the original clip name");
+    require(!session.isDirty(),
+        "MIDI clip audio rename should not dirty an unchanged session");
+}
+
 void midiClipActionAppendsAfterExistingTrackClips()
 {
     trackloom::AppProjectSession session;
@@ -4294,6 +4396,10 @@ int main()
     audioClipActionDeletesAudioClip();
     audioClipActionRejectsMissingClipDeleteWithoutDirtyingSession();
     audioClipActionRejectsMidiClipDeleteWithoutDirtyingSession();
+    audioClipActionRenamesAudioClipAndMarksSessionDirty();
+    audioClipActionRejectsEmptyClipNameWithoutDirtyingSession();
+    audioClipActionRejectsMissingClipRenameWithoutDirtyingSession();
+    audioClipActionRejectsMidiClipRenameWithoutDirtyingSession();
     midiClipActionCreatesDefaultClipOnInstrumentTrack();
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionDuplicatesMidiClipAfterItself();

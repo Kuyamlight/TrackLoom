@@ -1,6 +1,7 @@
 #include "AppAudioClipActions.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -26,6 +27,16 @@ AppAudioClipActionFeedback deleteSuccessFeedback(const TimelineClip& clip)
     feedback.kind = AppAudioClipActionFeedbackKind::Success;
     feedback.clipId = clip.id;
     feedback.message = "已删除音频片段：" + clip.name + "。";
+    return feedback;
+}
+
+AppAudioClipActionFeedback renameSuccessFeedback(const TimelineClip& clip)
+{
+    AppAudioClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppAudioClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已重命名音频片段：" + clip.name + "。";
     return feedback;
 }
 
@@ -64,6 +75,22 @@ std::size_t clipCountForTrack(const Project& project, const std::string& trackId
     }
 
     return count;
+}
+
+std::string trimClipName(std::string name)
+{
+    const auto isNotSpace = [](unsigned char value) {
+        return std::isspace(value) == 0;
+    };
+
+    const auto begin = std::find_if(name.begin(), name.end(), isNotSpace);
+    const auto end = std::find_if(name.rbegin(), name.rend(), isNotSpace).base();
+
+    if (begin >= end) {
+        return {};
+    }
+
+    return std::string(begin, end);
 }
 
 }
@@ -132,6 +159,43 @@ AppAudioClipActionFeedback deleteAudioClipById(
     }
 
     return deleteSuccessFeedback(*targetClip);
+}
+
+AppAudioClipActionFeedback renameAudioClipById(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::string name)
+{
+    const auto trimmedName = trimClipName(std::move(name));
+    if (trimmedName.empty()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::EmptyName,
+            "无法重命名音频片段：名称不能为空。");
+    }
+
+    // 先用只读工程快照校验目标；重命名失败时不能把工程误标为 dirty。
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingClip,
+            "无法重命名音频片段：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleClipType,
+            "无法重命名音频片段：只能重命名音频片段。");
+    }
+
+    // 所有可预见校验都已完成；只有真实重命名才允许把会话标记为 dirty。
+    if (!session.editProject().renameClipById(clipId, trimmedName)) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::RenameFailed,
+            "无法重命名音频片段：工程模型拒绝了这次重命名。");
+    }
+
+    const auto renamedClip = session.project().findClipById(clipId);
+    return renameSuccessFeedback(renamedClip.value_or(*targetClip));
 }
 
 }

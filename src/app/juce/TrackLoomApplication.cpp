@@ -139,6 +139,7 @@ public:
         targetAudioClipBox_.setColour(juce::ComboBox::textColourId, juce::Colour(0xfff2f0e8));
         targetAudioClipBox_.setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff3a463c));
         targetAudioClipBox_.setColour(juce::ComboBox::arrowColourId, juce::Colour(0xff6ccf8d));
+        styleSingleLineTextEditor(audioClipNameEditor_);
 
         trackNameLabel_.setText(toJuceString("轨道名称"), juce::dontSendNotification);
         trackNameLabel_.setFont(juce::FontOptions(15.0f));
@@ -199,6 +200,7 @@ public:
         createMidiClipButton_.setButtonText(toJuceString("创建 MIDI 片段"));
         createAudioClipButton_.setButtonText(toJuceString("创建音频片段"));
         deleteAudioClipButton_.setButtonText(toJuceString("删除音频片段"));
+        renameAudioClipButton_.setButtonText(toJuceString("重命名音频片段"));
         deleteInstrumentTrackButton_.setButtonText(toJuceString("删除乐器轨"));
         moveTrackUpButton_.setButtonText(toJuceString("上移"));
         moveTrackDownButton_.setButtonText(toJuceString("下移"));
@@ -249,6 +251,8 @@ public:
         createMidiClipButton_.onClick = [this] { createMidiClipOnSelectedTrack(); };
         createAudioClipButton_.onClick = [this] { createAudioClipOnSelectedAudioTrack(); };
         deleteAudioClipButton_.onClick = [this] { deleteSelectedAudioClip(); };
+        renameAudioClipButton_.onClick = [this] { renameSelectedAudioClip(); };
+        audioClipNameEditor_.onReturnKey = [this] { renameSelectedAudioClip(); };
         deleteInstrumentTrackButton_.onClick = [this] { deleteSelectedInstrumentTrack(); };
         moveTrackUpButton_.onClick = [this] { moveSelectedTrackUp(); };
         moveTrackDownButton_.onClick = [this] { moveSelectedTrackDown(); };
@@ -294,6 +298,7 @@ public:
         addAndMakeVisible(targetAudioTrackBox_);
         addAndMakeVisible(targetAudioClipLabel_);
         addAndMakeVisible(targetAudioClipBox_);
+        addAndMakeVisible(audioClipNameEditor_);
         addAndMakeVisible(trackNameLabel_);
         addAndMakeVisible(trackNameEditor_);
         addAndMakeVisible(targetMidiClipLabel_);
@@ -322,6 +327,7 @@ public:
         addAndMakeVisible(createMidiClipButton_);
         addAndMakeVisible(createAudioClipButton_);
         addAndMakeVisible(deleteAudioClipButton_);
+        addAndMakeVisible(renameAudioClipButton_);
         addAndMakeVisible(deleteInstrumentTrackButton_);
         addAndMakeVisible(moveTrackUpButton_);
         addAndMakeVisible(moveTrackDownButton_);
@@ -428,6 +434,10 @@ public:
         audioClipRow.removeFromLeft(10);
         targetAudioClipBox_.setBounds(audioClipRow.removeFromLeft(260));
         audioClipRow.removeFromLeft(12);
+        audioClipNameEditor_.setBounds(audioClipRow.removeFromLeft(220));
+        audioClipRow.removeFromLeft(12);
+        renameAudioClipButton_.setBounds(audioClipRow.removeFromLeft(144));
+        audioClipRow.removeFromLeft(8);
         deleteAudioClipButton_.setBounds(audioClipRow.removeFromLeft(144));
 
         bounds.removeFromTop(8);
@@ -735,10 +745,12 @@ private:
         if (selectedId <= 0
             || static_cast<std::size_t>(selectedId) > selectableAudioClipIds_.size()) {
             selectedAudioClipId_.clear();
+            syncAudioClipNameEditorFromSelection(true);
             return;
         }
 
         selectedAudioClipId_ = selectableAudioClipIds_[static_cast<std::size_t>(selectedId - 1)];
+        syncAudioClipNameEditorFromSelection(true);
     }
 
     void updateSelectedMidiClipFromComboBox()
@@ -893,6 +905,26 @@ private:
         const auto feedback = trackloom::deleteAudioClipById(session_, targetClipId);
         if (feedback.success && selectedAudioClipId_ == targetClipId) {
             selectedAudioClipId_.clear();
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void renameSelectedAudioClip()
+    {
+        if (selectedAudioClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个音频片段，再重命名音频片段。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::renameAudioClipById(
+            session_,
+            selectedAudioClipId_,
+            juceStringToUtf8(audioClipNameEditor_.getText()));
+        if (feedback.success) {
+            selectedAudioClipId_ = feedback.clipId;
         }
 
         lastActionMessage_ = feedback.message;
@@ -1573,6 +1605,8 @@ private:
         targetAudioClipBox_.setSelectedId(selectedItemId, juce::dontSendNotification);
         targetAudioClipBox_.setEnabled(!selectableAudioClipIds_.empty());
         deleteAudioClipButton_.setEnabled(!selectedAudioClipId_.empty());
+        renameAudioClipButton_.setEnabled(!selectedAudioClipId_.empty());
+        syncAudioClipNameEditorFromSelection(selectedAudioClipId_ != previousSelection);
     }
 
     void syncTrackNameEditorFromSelection(bool forceUpdate)
@@ -1665,6 +1699,22 @@ private:
         // 播放 Timer 和列表刷新不应覆盖用户正在输入但尚未提交的片段名称。
         if (forceUpdate || !clipNameEditor_.hasKeyboardFocus(true)) {
             clipNameEditor_.setText(toJuceString(selectedClip->name), false);
+        }
+    }
+
+    void syncAudioClipNameEditorFromSelection(bool forceUpdate)
+    {
+        audioClipNameEditor_.setEnabled(!selectedAudioClipId_.empty());
+
+        const auto selectedClip = session_.project().findClipById(selectedAudioClipId_);
+        if (!selectedClip.has_value()) {
+            audioClipNameEditor_.setText(juce::String{}, false);
+            return;
+        }
+
+        // 播放 Timer 和列表刷新不应覆盖用户正在输入但尚未提交的音频片段名称。
+        if (forceUpdate || !audioClipNameEditor_.hasKeyboardFocus(true)) {
+            audioClipNameEditor_.setText(toJuceString(selectedClip->name), false);
         }
     }
 
@@ -1842,6 +1892,7 @@ private:
     juce::ComboBox targetAudioTrackBox_;
     juce::Label targetAudioClipLabel_;
     juce::ComboBox targetAudioClipBox_;
+    juce::TextEditor audioClipNameEditor_;
     juce::Label trackNameLabel_;
     juce::TextEditor trackNameEditor_;
     juce::Label targetMidiClipLabel_;
@@ -1870,6 +1921,7 @@ private:
     juce::TextButton createMidiClipButton_;
     juce::TextButton createAudioClipButton_;
     juce::TextButton deleteAudioClipButton_;
+    juce::TextButton renameAudioClipButton_;
     juce::TextButton deleteInstrumentTrackButton_;
     juce::TextButton moveTrackUpButton_;
     juce::TextButton moveTrackDownButton_;

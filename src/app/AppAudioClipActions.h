@@ -19,6 +19,8 @@ enum class AppAudioClipActionFeedbackKind {
     MissingClip,
     IncompatibleTrackType,
     IncompatibleClipType,
+    EmptyName,
+    RenameFailed,
     DeleteFailed,
     CreateFailed
 };
@@ -43,5 +45,12 @@ AppAudioClipActionFeedback createDefaultAudioClipOnTrack(
 AppAudioClipActionFeedback deleteAudioClipById(
     AppProjectSession& session,
     const std::string& clipId);
+
+// renameAudioClipById 修改一个已存在的空音频片段外壳名称。
+// 名称会先去掉首尾空白；空名称、MIDI 片段和不存在的片段会在 dirty 之前被拒绝。
+AppAudioClipActionFeedback renameAudioClipById(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::string name);
 
 }
