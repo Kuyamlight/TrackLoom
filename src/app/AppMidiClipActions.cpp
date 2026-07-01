@@ -375,7 +375,10 @@ AppMidiClipActionFeedback moveMidiClipToTrackImpl(
     }
 
     // 当前只做轨道归属切换；重叠处理、跨类型转换和批量移动属于后续时间线编辑器。
-    if (!session.editProject().moveClipToTrack(clipId, targetTrackId)) {
+    // 真实归属切换通过核心命令执行，这样撤销/重做能恢复源轨和目标轨。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<MoveClipToTrackCommand>(clipId, targetTrackId));
+    if (!result.success) {
         return failureFeedback(
             AppMidiClipActionFeedbackKind::MoveFailed,
             "无法移动 MIDI 片段到目标轨：工程模型拒绝了这次移动。");

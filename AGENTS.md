@@ -468,7 +468,7 @@ TrackLoom 应支持：
 - 建立应用层工程命令历史边界时：
   - 触发场景：核心 `CommandStack` 已能撤销/重做，但桌面首屏动作长期通过 `AppProjectSession::editProject()` 直接修改工程；如果直接暴露撤销菜单，可能跳过未记录的片段或音符编辑，误撤更早的轨道操作。
   - 根本原因：命令历史只能理解通过 `Command` 执行的编辑，无法自动知道旧直接编辑入口做过什么；混用两种修改路径时，保留旧历史比没有撤销更危险。
-  - 采用的解决方式：在 `AppProjectSession` 新增 `executeProjectCommand`、`undoProjectEdit`、`redoProjectEdit` 和历史查询入口；成功命令才标脏并进入历史。直接 `editProject()` 会清空旧历史，表示这次修改没有可撤销记录。首批迁移 `AppTrackActions` 的轨道创建、删除、重命名和移动到核心命令执行；随后迁移 `AppTrackStateActions` 的静音、独奏、禁用和隐藏到核心状态命令，并迁移 `AppMidiClipActions` 的默认 MIDI 片段创建、删除、重命名、复制、中点拆分和一拍左右移动到核心片段命令。CTest 覆盖成功命令撤销/重做、失败命令不标脏不入栈、新建工程清空历史、直接编辑清空历史，以及轨道创建、静音、隐藏、MIDI 片段创建、MIDI 片段删除、MIDI 片段重命名、MIDI 片段复制、MIDI 片段拆分和 MIDI 片段移动可通过会话历史撤销/重做。
+  - 采用的解决方式：在 `AppProjectSession` 新增 `executeProjectCommand`、`undoProjectEdit`、`redoProjectEdit` 和历史查询入口；成功命令才标脏并进入历史。直接 `editProject()` 会清空旧历史，表示这次修改没有可撤销记录。首批迁移 `AppTrackActions` 的轨道创建、删除、重命名和移动到核心命令执行；随后迁移 `AppTrackStateActions` 的静音、独奏、禁用和隐藏到核心状态命令，并迁移 `AppMidiClipActions` 的默认 MIDI 片段创建、删除、重命名、复制、中点拆分、一拍左右移动和跨轨移动到核心片段命令。CTest 覆盖成功命令撤销/重做、失败命令不标脏不入栈、新建工程清空历史、直接编辑清空历史，以及轨道创建、静音、隐藏、MIDI 片段创建、MIDI 片段删除、MIDI 片段重命名、MIDI 片段复制、MIDI 片段拆分、MIDI 片段一拍移动和 MIDI 片段跨轨移动可通过会话历史撤销/重做。
   - 后续规则：新增或迁移编辑入口时优先通过 `executeProjectCommand` 或等价可撤销边界执行；在音频片段、其余 MIDI 片段编辑和音符动作全部迁移前，不应向用户暴露完整 Undo/Redo 菜单或快捷键；任何仍需直接 `editProject()` 的过渡代码必须清空命令历史，避免跨未记录编辑撤销。
 - 展示桌面轨道列表时：
   - 触发场景：JUCE 首屏已有“添加乐器轨”按钮后，需要让用户看到真实轨道行，而不是只看到轨道数量。
@@ -553,7 +553,7 @@ TrackLoom 应支持：
 - 跨轨移动桌面 MIDI 片段入口时：
   - 触发场景：首屏已有片段左右移动后，需要把 MIDI 片段从一条乐器轨移动到另一条乐器轨，补齐最小时间线编辑能力。
   - 根本原因：核心 `moveClipToTrack` 会验证目标轨能否拥有该片段，但它允许同轨赋值；`AppProjectSession::editProject()` 会先标脏，如果 UI 直接调用，同轨 no-op、缺失目标轨或类型不兼容都会把未变工程误标 dirty。
-  - 采用的解决方式：扩展 `AppMidiClipActions`，新增 `moveMidiClipToTrack`，先验证源片段存在、类型为 MIDI、源轨和目标轨都是乐器轨、目标轨不同于当前轨，再调用 `moveClipToTrack`。JUCE 首屏新增“移到目标轨”按钮，复用已有目标乐器轨和目标 MIDI 片段选择。CTest 覆盖成功跨轨移动、同轨拒绝、缺失目标轨拒绝、音频目标轨拒绝和音频片段拒绝。
+  - 采用的解决方式：扩展 `AppMidiClipActions`，新增 `moveMidiClipToTrack`，先验证源片段存在、类型为 MIDI、源轨和目标轨都是乐器轨、目标轨不同于当前轨，再通过 `MoveClipToTrackCommand` 进入 `AppProjectSession` 命令历史。JUCE 首屏新增“移到目标轨”按钮，复用已有目标乐器轨和目标 MIDI 片段选择。CTest 覆盖成功跨轨移动、同轨拒绝、缺失目标轨拒绝、音频目标轨拒绝、音频片段拒绝和跨轨移动撤销/重做。
   - 后续规则：拖拽跨轨、菜单、快捷键、AI 工具和批量移动必须复用应用层跨轨移动边界或等价校验；同轨移动应视为无效操作且不得标脏；跨轨移动不得改变片段时间范围或内部 MIDI 音符相对 tick；重叠冲突、跨类型转换和批量移动必须另行设计并测试。
 - 修剪桌面 MIDI 片段片尾入口时：
   - 触发场景：首屏已有 MIDI 片段移动后，需要提供一个最小的时间范围缩短能力，为后续拖拽修剪打底。
