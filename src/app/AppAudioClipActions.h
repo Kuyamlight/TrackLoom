@@ -23,6 +23,8 @@ enum class AppAudioClipActionFeedbackKind {
     RenameFailed,
     DeleteFailed,
     MoveFailed,
+    TrimFailed,
+    ExtendFailed,
     CreateFailed
 };
 
@@ -61,6 +63,18 @@ AppAudioClipActionFeedback moveAudioClipLeftOneBeat(
     const std::string& clipId);
 
 AppAudioClipActionFeedback moveAudioClipRightOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// trimAudioClipEndEarlierOneBeat 把空音频片段右边界向左缩短一拍。
+// 当前只改变外壳长度；不会裁剪真实素材，因为素材引用和偏移尚未实现。
+AppAudioClipActionFeedback trimAudioClipEndEarlierOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// extendAudioClipEndLaterOneBeat 把空音频片段右边界向右延长一拍。
+// 它只增加空白时间线长度，不移动片段起点，也不创建音频内容。
+AppAudioClipActionFeedback extendAudioClipEndLaterOneBeat(
     AppProjectSession& session,
     const std::string& clipId);
 

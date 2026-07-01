@@ -203,6 +203,8 @@ public:
         renameAudioClipButton_.setButtonText(toJuceString("重命名音频片段"));
         moveAudioClipLeftButton_.setButtonText(toJuceString("左移音频片段"));
         moveAudioClipRightButton_.setButtonText(toJuceString("右移音频片段"));
+        trimAudioClipEndButton_.setButtonText(toJuceString("缩短音频片尾"));
+        extendAudioClipEndButton_.setButtonText(toJuceString("延长音频片尾"));
         deleteInstrumentTrackButton_.setButtonText(toJuceString("删除乐器轨"));
         moveTrackUpButton_.setButtonText(toJuceString("上移"));
         moveTrackDownButton_.setButtonText(toJuceString("下移"));
@@ -256,6 +258,8 @@ public:
         renameAudioClipButton_.onClick = [this] { renameSelectedAudioClip(); };
         moveAudioClipLeftButton_.onClick = [this] { moveSelectedAudioClipLeft(); };
         moveAudioClipRightButton_.onClick = [this] { moveSelectedAudioClipRight(); };
+        trimAudioClipEndButton_.onClick = [this] { trimSelectedAudioClipEnd(); };
+        extendAudioClipEndButton_.onClick = [this] { extendSelectedAudioClipEnd(); };
         audioClipNameEditor_.onReturnKey = [this] { renameSelectedAudioClip(); };
         deleteInstrumentTrackButton_.onClick = [this] { deleteSelectedInstrumentTrack(); };
         moveTrackUpButton_.onClick = [this] { moveSelectedTrackUp(); };
@@ -334,6 +338,8 @@ public:
         addAndMakeVisible(renameAudioClipButton_);
         addAndMakeVisible(moveAudioClipLeftButton_);
         addAndMakeVisible(moveAudioClipRightButton_);
+        addAndMakeVisible(trimAudioClipEndButton_);
+        addAndMakeVisible(extendAudioClipEndButton_);
         addAndMakeVisible(deleteInstrumentTrackButton_);
         addAndMakeVisible(moveTrackUpButton_);
         addAndMakeVisible(moveTrackDownButton_);
@@ -453,6 +459,10 @@ public:
         moveAudioClipLeftButton_.setBounds(audioClipMoveRow.removeFromLeft(144));
         audioClipMoveRow.removeFromLeft(8);
         moveAudioClipRightButton_.setBounds(audioClipMoveRow.removeFromLeft(144));
+        audioClipMoveRow.removeFromLeft(8);
+        trimAudioClipEndButton_.setBounds(audioClipMoveRow.removeFromLeft(144));
+        audioClipMoveRow.removeFromLeft(8);
+        extendAudioClipEndButton_.setBounds(audioClipMoveRow.removeFromLeft(144));
 
         bounds.removeFromTop(8);
         auto trackNameRow = bounds.removeFromTop(36);
@@ -971,6 +981,40 @@ private:
         }
 
         const auto feedback = trackloom::moveAudioClipRightOneBeat(session_, selectedAudioClipId_);
+        if (feedback.success) {
+            selectedAudioClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void trimSelectedAudioClipEnd()
+    {
+        if (selectedAudioClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个音频片段，再缩短音频片尾。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::trimAudioClipEndEarlierOneBeat(session_, selectedAudioClipId_);
+        if (feedback.success) {
+            selectedAudioClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void extendSelectedAudioClipEnd()
+    {
+        if (selectedAudioClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个音频片段，再延长音频片尾。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::extendAudioClipEndLaterOneBeat(session_, selectedAudioClipId_);
         if (feedback.success) {
             selectedAudioClipId_ = feedback.clipId;
         }
@@ -1656,6 +1700,8 @@ private:
         renameAudioClipButton_.setEnabled(!selectedAudioClipId_.empty());
         moveAudioClipLeftButton_.setEnabled(!selectedAudioClipId_.empty());
         moveAudioClipRightButton_.setEnabled(!selectedAudioClipId_.empty());
+        trimAudioClipEndButton_.setEnabled(!selectedAudioClipId_.empty());
+        extendAudioClipEndButton_.setEnabled(!selectedAudioClipId_.empty());
         syncAudioClipNameEditorFromSelection(selectedAudioClipId_ != previousSelection);
     }
 
@@ -1974,6 +2020,8 @@ private:
     juce::TextButton renameAudioClipButton_;
     juce::TextButton moveAudioClipLeftButton_;
     juce::TextButton moveAudioClipRightButton_;
+    juce::TextButton trimAudioClipEndButton_;
+    juce::TextButton extendAudioClipEndButton_;
     juce::TextButton deleteInstrumentTrackButton_;
     juce::TextButton moveTrackUpButton_;
     juce::TextButton moveTrackDownButton_;
