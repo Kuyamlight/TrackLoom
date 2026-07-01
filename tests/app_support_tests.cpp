@@ -3230,6 +3230,40 @@ void midiClipActionRenamesMidiClipAndMarksSessionDirty()
         "timeline status should expose the renamed MIDI clip name");
 }
 
+void midiClipActionRenameCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Clip Rename History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Loop",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "MIDI clip rename history test should create a source clip");
+
+    const auto feedback = trackloom::renameMidiClipById(session, clip->id, "  Verse Loop  ");
+
+    require(feedback.success,
+        "MIDI clip rename history test should rename the target clip");
+    require(session.project().findClipById(clip->id)->name == "Verse Loop",
+        "MIDI clip rename history test should start from the renamed clip");
+    require(session.canUndoProjectEdit(),
+        "MIDI clip rename action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI clip rename from the clip action");
+    require(session.project().findClipById(clip->id)->name == "Loop",
+        "undoing MIDI clip rename should restore the previous clip name");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI clip rename should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI clip rename from the clip action");
+    require(session.project().findClipById(clip->id)->name == "Verse Loop",
+        "redoing MIDI clip rename should restore the renamed clip name");
+}
+
 void midiClipActionSplitsMidiClipAtMidpoint()
 {
     removeTestWorkspace();
@@ -5957,6 +5991,7 @@ int main()
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionDuplicatesMidiClipAfterItself();
     midiClipActionRenamesMidiClipAndMarksSessionDirty();
+    midiClipActionRenameCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionSplitsMidiClipAtMidpoint();
     midiClipActionMovesMidiClipRightOneBeat();
     midiClipActionMovesMidiClipLeftOneBeat();

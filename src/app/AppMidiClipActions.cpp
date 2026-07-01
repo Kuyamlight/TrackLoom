@@ -799,8 +799,10 @@ AppMidiClipActionFeedback renameMidiClipById(
             "无法重命名 MIDI 片段：只能重命名 MIDI 片段。");
     }
 
-    // 重命名前所有校验都已完成；只有真实修改才允许把会话标记为 dirty。
-    if (!session.editProject().renameClipById(clipId, trimmedName)) {
+    // 重命名前所有校验都已完成；真正修改时走核心命令，撤销/重做才能恢复旧名称。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<RenameClipCommand>(clipId, trimmedName));
+    if (!result.success) {
         return failureFeedback(
             AppMidiClipActionFeedbackKind::RenameFailed,
             "无法重命名 MIDI 片段：工程模型拒绝了这次重命名。");
