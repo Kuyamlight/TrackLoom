@@ -3,6 +3,7 @@
 #include "AppRecentProjects.h"
 #include "AppMidiClipActions.h"
 #include "AppMidiNoteActions.h"
+#include "AppMainMenu.h"
 #include "AppPlaybackActions.h"
 #include "AppProjectSession.h"
 #include "AppProjectStatus.h"
@@ -526,6 +527,96 @@ void recentProjectsOpenByNumberRejectsMissingFileWithoutMutation()
         "missing file recent open should keep the current project");
     require(recent.paths().size() == 1 && recent.paths()[0] == missingPath,
         "missing file recent open should not reorder the recent-project list");
+}
+
+void mainMenuDescribesFileAndPlaybackCommands()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Menu Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+
+    require(menu.groups.size() == 2,
+        "main menu should expose file and playback menu groups");
+    require(menu.groups[0].name == "文件",
+        "first main menu group should be the file menu");
+    require(menu.groups[1].name == "播放",
+        "second main menu group should be the playback menu");
+    require(menu.groups[0].items.size() == 6,
+        "file menu should include project commands, a separator and an empty recent-project row");
+    require(menu.groups[0].items[0].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::NewProject),
+        "file menu should expose a stable command id for new project");
+    require(menu.groups[0].items[2].label == "保存",
+        "file menu should expose the save command label");
+    require(menu.groups[0].items[2].enabled,
+        "save stays enabled because the command can redirect unsaved projects to save-as feedback");
+    require(menu.groups[0].items[4].separator,
+        "file menu should separate regular file commands from recent projects");
+    require(!menu.groups[0].items[5].enabled && menu.groups[0].items[5].commandId == 0,
+        "empty recent-project menu row should be disabled and have no command id");
+    require(menu.groups[1].items[0].label == "播放",
+        "playback menu should expose the play command label");
+    require(menu.groups[1].items[0].enabled,
+        "play command should be enabled while playback is stopped");
+    require(!menu.groups[1].items[1].enabled,
+        "stop command should be disabled while playback is stopped");
+    require(!menu.groups[1].items[2].enabled,
+        "rewind command should be disabled before the playback head moves");
+}
+
+void mainMenuReflectsPlayingTransportState()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Playing Menu Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+
+    require(trackloom::startAppPlayback(playback, session.project()).success,
+        "playing menu test should start playback before describing the menu");
+    require(trackloom::advanceAppPlaybackForUiTick(playback, session.project()).success,
+        "playing menu test should move the playback head before describing rewind state");
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto& playbackItems = menu.groups[1].items;
+
+    require(!playbackItems[0].enabled,
+        "play command should be disabled while playback is already running");
+    require(playbackItems[1].enabled,
+        "stop command should be enabled while playback is running");
+    require(playbackItems[2].enabled,
+        "rewind command should be enabled after the playback head has moved");
+}
+
+void mainMenuListsRecentProjectsWithStableCommandIds()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Recent Menu Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+    const auto first = testWorkspace() / "first-menu.trackloom";
+    const auto second = testWorkspace() / "second-menu.trackloom";
+    recent.record(first);
+    recent.record(second);
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto& fileItems = menu.groups[0].items;
+
+    require(fileItems.size() == 7,
+        "file menu should append one row for each recent project after the separator");
+    require(fileItems[5].label.find("second-menu.trackloom") != std::string::npos,
+        "recent-project menu should keep newest project first");
+    require(fileItems[5].commandId == trackloom::appMainMenuRecentProjectCommandId(1),
+        "first recent-project row should use a stable command id derived from visible number");
+    require(fileItems[6].commandId == trackloom::appMainMenuRecentProjectCommandId(2),
+        "second recent-project row should use a stable command id derived from visible number");
+    require(trackloom::appMainMenuRecentProjectNumberFromCommandId(fileItems[5].commandId).value_or(0) == 1,
+        "recent-project command id should round-trip back to its visible number");
+    require(!trackloom::appMainMenuRecentProjectNumberFromCommandId(
+                trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject)).has_value(),
+        "regular menu command ids should not be mistaken for recent-project ids");
 }
 
 void trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty()
@@ -5382,6 +5473,9 @@ int main()
     recentProjectsOpenByNumberRejectsDirtySessionWithoutMutation();
     recentProjectsOpenByNumberRejectsMissingSelection();
     recentProjectsOpenByNumberRejectsMissingFileWithoutMutation();
+    mainMenuDescribesFileAndPlaybackCommands();
+    mainMenuReflectsPlayingTransportState();
+    mainMenuListsRecentProjectsWithStableCommandIds();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
     trackActionCreatesDefaultAudioTrackAndMarksSessionDirty();

@@ -1,4 +1,5 @@
 #include "AppAudioClipActions.h"
+#include "AppMainMenu.h"
 #include "AppMidiClipActions.h"
 #include "AppMidiNoteActions.h"
 #include "AppPlaybackActions.h"
@@ -87,12 +88,14 @@ void styleSingleLineTextEditor(juce::TextEditor& editor)
 
 class MainComponent final
     : public juce::Component
+    , public juce::MenuBarModel
     , private juce::Timer {
 public:
     explicit MainComponent(std::function<void(std::string)> titleChanged)
         : titleChanged_(std::move(titleChanged))
         , recentProjectsSettingsPath_(appRecentProjectsSettingsPath())
         , recentProjects_(trackloom::loadAppRecentProjects(recentProjectsSettingsPath_))
+        , menuBar_(this)
     {
         // 首屏现在绑定真实 AppProjectSession；后续文件选择器和时间线 UI 继续沿着这个会话入口扩展。
         titleLabel_.setFont(juce::FontOptions(30.0f, juce::Font::bold));
@@ -307,6 +310,7 @@ public:
         clipNameEditor_.onReturnKey = [this] { renameSelectedMidiClip(); };
         openRecentProjectButton_.onClick = [this] { openSelectedRecentProject(); };
 
+        addAndMakeVisible(menuBar_);
         addAndMakeVisible(titleLabel_);
         addAndMakeVisible(statusLabel_);
         addAndMakeVisible(playbackStatusLabel_);
@@ -392,7 +396,7 @@ public:
         // MainComponent 主动获取键盘焦点后，Space 键才能先交给 keyPressed 处理。
         setWantsKeyboardFocus(true);
         refreshFromSession();
-        setSize(1040, 880);
+        setSize(1040, 920);
     }
 
     void paint(juce::Graphics& graphics) override
@@ -406,6 +410,8 @@ public:
     void resized() override
     {
         auto bounds = getLocalBounds().reduced(40);
+        menuBar_.setBounds(bounds.removeFromTop(24));
+        bounds.removeFromTop(10);
         titleLabel_.setBounds(bounds.removeFromTop(48));
         statusLabel_.setBounds(bounds.removeFromTop(36));
         playbackStatusLabel_.setBounds(bounds.removeFromTop(28));
@@ -618,6 +624,70 @@ public:
         }
 
         return false;
+    }
+
+    juce::StringArray getMenuBarNames() override
+    {
+        juce::StringArray names;
+        for (const auto& group : trackloom::describeAppMainMenu(session_, playback_, recentProjects_).groups) {
+            names.add(toJuceString(group.name));
+        }
+
+        return names;
+    }
+
+    juce::PopupMenu getMenuForIndex(int menuIndex, const juce::String&) override
+    {
+        juce::PopupMenu menu;
+        const auto status = trackloom::describeAppMainMenu(session_, playback_, recentProjects_);
+        if (menuIndex < 0 || static_cast<std::size_t>(menuIndex) >= status.groups.size()) {
+            return menu;
+        }
+
+        for (const auto& item : status.groups[static_cast<std::size_t>(menuIndex)].items) {
+            if (item.separator) {
+                menu.addSeparator();
+            } else if (item.commandId == 0) {
+                menu.addItem(toJuceString(item.label), false, false, [] {});
+            } else {
+                menu.addItem(item.commandId, toJuceString(item.label), item.enabled);
+            }
+        }
+
+        return menu;
+    }
+
+    void menuItemSelected(int menuItemID, int) override
+    {
+        if (const auto recentNumber = trackloom::appMainMenuRecentProjectNumberFromCommandId(menuItemID)) {
+            selectedRecentProjectNumber_ = *recentNumber;
+            openSelectedRecentProject();
+            return;
+        }
+
+        switch (static_cast<trackloom::AppMainMenuCommand>(menuItemID)) {
+        case trackloom::AppMainMenuCommand::NewProject:
+            requestNewProject();
+            return;
+        case trackloom::AppMainMenuCommand::OpenProject:
+            chooseProjectToOpen();
+            return;
+        case trackloom::AppMainMenuCommand::SaveProject:
+            saveCurrentProject();
+            return;
+        case trackloom::AppMainMenuCommand::SaveProjectAs:
+            chooseProjectToSaveAs();
+            return;
+        case trackloom::AppMainMenuCommand::PlayProject:
+            startProjectPlayback();
+            return;
+        case trackloom::AppMainMenuCommand::StopProject:
+            stopProjectPlayback();
+            return;
+        case trackloom::AppMainMenuCommand::RewindProject:
+            rewindProjectPlayback();
+            return;
+        }
     }
 
 private:
@@ -2136,6 +2206,7 @@ private:
     std::string selectedAudioClipId_;
     std::string selectedMidiClipId_;
     std::size_t selectedRecentProjectNumber_ = 0;
+    juce::MenuBarComponent menuBar_;
     juce::Label titleLabel_;
     juce::Label statusLabel_;
     juce::Label playbackStatusLabel_;
