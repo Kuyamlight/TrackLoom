@@ -1583,6 +1583,55 @@ void audioClipActionDuplicatesAudioClipAfterItself()
         "successful audio clip duplicate feedback should describe the copy");
 }
 
+void audioClipActionSplitsAudioClipAtMidpoint()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "split-audio-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Split Audio Clip");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clipFeedback = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+    require(clipFeedback.success,
+        "split audio clip test should create a source audio clip");
+    require(session.saveAs(path).success,
+        "split audio clip test should save setup edits before splitting");
+
+    const auto feedback = trackloom::splitAudioClipAtMidpoint(session, clipFeedback.clipId);
+
+    require(feedback.success,
+        "audio clip action should split the target audio clip at its midpoint");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::Success,
+        "successful audio clip split action should expose the stable success kind");
+    require(feedback.clipId != clipFeedback.clipId,
+        "audio clip split action should report the new right-side clip id");
+    require(session.project().clips().size() == 2,
+        "audio clip split action should keep the shortened source and add one right-side clip");
+
+    const auto left = session.project().findClipById(clipFeedback.clipId);
+    const auto right = session.project().findClipById(feedback.clipId);
+    require(left.has_value() && right.has_value(),
+        "audio clip split test should find both split sides");
+    require(left->trackId == audio.id && right->trackId == audio.id,
+        "audio clip split should keep both sides on the source audio track");
+    require(left->type == trackloom::ClipType::Audio && right->type == trackloom::ClipType::Audio,
+        "audio clip split should keep both sides as audio clips");
+    require(left->startTick == 0,
+        "audio clip split should keep the left side at the original start");
+    require(left->lengthTick == trackloom::defaultAppAudioClipLengthTick / 2,
+        "audio clip split should shorten the left side to half the original length");
+    require(right->startTick == trackloom::defaultAppAudioClipLengthTick / 2,
+        "audio clip split should place the right side at the midpoint");
+    require(right->lengthTick == trackloom::defaultAppAudioClipLengthTick - left->lengthTick,
+        "audio clip split should preserve the full original duration across both sides");
+    require(left->midiNotes.empty() && right->midiNotes.empty(),
+        "audio clip split should not invent MIDI notes");
+    require(session.isDirty(),
+        "successful audio clip split should mark the app session dirty");
+    require(feedback.message.find("拆分") != std::string::npos,
+        "successful audio clip split feedback should describe the split");
+}
+
 void audioClipActionRejectsMissingTrackWithoutDirtyingSession()
 {
     trackloom::AppProjectSession session;
@@ -1745,6 +1794,87 @@ void audioClipActionRejectsMidiClipDuplicateWithoutDirtyingSession()
         "MIDI clip audio duplicate should keep only the original clip");
     require(!session.isDirty(),
         "MIDI clip audio duplicate should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMissingClipSplitWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Audio Clip Split");
+
+    const auto feedback = trackloom::splitAudioClipAtMidpoint(session, "missing-clip");
+
+    require(!feedback.success,
+        "audio clip split action should reject a missing clip");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::MissingClip,
+        "missing audio clip split should expose a stable failure kind");
+    require(session.project().clips().empty(),
+        "missing audio clip split should not create clips");
+    require(!session.isDirty(),
+        "missing audio clip split should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMidiClipSplitWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "midi-split-audio-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Split As Audio Clip");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto midi = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(midi.has_value(),
+        "MIDI-as-audio split test should create a MIDI clip");
+    require(session.saveAs(path).success,
+        "MIDI-as-audio split test should save setup edits before validation");
+
+    const auto feedback = trackloom::splitAudioClipAtMidpoint(session, midi->id);
+
+    require(!feedback.success,
+        "audio clip split action should reject MIDI clips");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::IncompatibleClipType,
+        "MIDI clip audio split should expose a stable failure kind");
+    require(session.project().clips().size() == 1,
+        "MIDI clip audio split should keep only the original clip");
+    require(!session.isDirty(),
+        "MIDI clip audio split should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsTooShortClipSplitWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "short-split-audio-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Short Audio Clip Split");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Short audio",
+        trackloom::ClipType::Audio,
+        0,
+        1);
+    require(clip.has_value(),
+        "too-short audio split test should create a one-tick audio clip");
+    require(session.saveAs(path).success,
+        "too-short audio split test should save setup edits before validation");
+
+    const auto feedback = trackloom::splitAudioClipAtMidpoint(session, clip->id);
+
+    require(!feedback.success,
+        "audio clip split action should reject clips without a valid midpoint");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::SplitFailed,
+        "too-short audio clip split should expose the stable split-failed kind");
+    require(session.project().clips().size() == 1,
+        "too-short audio clip split should not add a right-side clip");
+    require(session.project().findClipById(clip->id)->lengthTick == 1,
+        "too-short audio clip split should keep the source length unchanged");
+    require(!session.isDirty(),
+        "too-short audio clip split should not dirty an unchanged session");
 }
 
 void audioClipActionRenamesAudioClipAndMarksSessionDirty()
@@ -4891,6 +5021,7 @@ int main()
     audioClipActionCreatesDefaultClipOnAudioTrack();
     audioClipActionAppendsAfterExistingTrackClips();
     audioClipActionDuplicatesAudioClipAfterItself();
+    audioClipActionSplitsAudioClipAtMidpoint();
     audioClipActionRejectsMissingTrackWithoutDirtyingSession();
     audioClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
     audioClipActionDeletesAudioClip();
@@ -4898,6 +5029,9 @@ int main()
     audioClipActionRejectsMidiClipDeleteWithoutDirtyingSession();
     audioClipActionRejectsMissingClipDuplicateWithoutDirtyingSession();
     audioClipActionRejectsMidiClipDuplicateWithoutDirtyingSession();
+    audioClipActionRejectsMissingClipSplitWithoutDirtyingSession();
+    audioClipActionRejectsMidiClipSplitWithoutDirtyingSession();
+    audioClipActionRejectsTooShortClipSplitWithoutDirtyingSession();
     audioClipActionRenamesAudioClipAndMarksSessionDirty();
     audioClipActionRejectsEmptyClipNameWithoutDirtyingSession();
     audioClipActionRejectsMissingClipRenameWithoutDirtyingSession();

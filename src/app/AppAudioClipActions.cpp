@@ -41,6 +41,16 @@ AppAudioClipActionFeedback duplicateSuccessFeedback(const TimelineClip& clip)
     return feedback;
 }
 
+AppAudioClipActionFeedback splitSuccessFeedback(const TimelineClip& rightClip)
+{
+    AppAudioClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppAudioClipActionFeedbackKind::Success;
+    feedback.clipId = rightClip.id;
+    feedback.message = "已拆分音频片段，右侧片段：" + rightClip.name + "。";
+    return feedback;
+}
+
 AppAudioClipActionFeedback renameSuccessFeedback(const TimelineClip& clip)
 {
     AppAudioClipActionFeedback feedback;
@@ -434,6 +444,62 @@ AppAudioClipActionFeedback duplicateAudioClipAfterItself(
     }
 
     return duplicateSuccessFeedback(*duplicate);
+}
+
+AppAudioClipActionFeedback splitAudioClipAtMidpoint(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    // 先用只读工程快照完成校验；拆分失败时不能把未修改工程误标为 dirty。
+    const auto sourceClip = session.project().findClipById(clipId);
+    if (!sourceClip.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingClip,
+            "无法拆分音频片段：目标片段不存在。");
+    }
+
+    if (sourceClip->type != ClipType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleClipType,
+            "无法拆分音频片段：只能拆分音频片段。");
+    }
+
+    const auto targetTrack = session.project().findTrackById(sourceClip->trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingTrack,
+            "无法拆分音频片段：片段所属轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleTrackType,
+            "无法拆分音频片段：音频片段只能停留在音频轨。");
+    }
+
+    if (sourceClip->lengthTick <= 1) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::SplitFailed,
+            "无法拆分音频片段：片段太短，没有可用的中点。");
+    }
+
+    const auto splitOffset = sourceClip->lengthTick / 2;
+    if (splitOffset <= 0 || !canAddTickOffset(sourceClip->startTick, splitOffset)) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::SplitFailed,
+            "无法拆分音频片段：片段中点不在有效范围内。");
+    }
+
+    const auto splitTick = sourceClip->startTick + splitOffset;
+    // 当前拆分只切开空音频片段外壳；真实素材切点和素材偏移会在音频导入阶段单独设计。
+    const auto rightClip = session.editProject().splitClipAtTick(clipId, splitTick);
+    if (!rightClip.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::SplitFailed,
+            "无法拆分音频片段：工程模型拒绝了这次拆分。");
+    }
+
+    return splitSuccessFeedback(*rightClip);
 }
 
 AppAudioClipActionFeedback renameAudioClipById(

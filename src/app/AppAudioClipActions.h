@@ -23,6 +23,7 @@ enum class AppAudioClipActionFeedbackKind {
     RenameFailed,
     DeleteFailed,
     DuplicateFailed,
+    SplitFailed,
     MoveFailed,
     TrimFailed,
     ExtendFailed,
@@ -53,6 +54,12 @@ AppAudioClipActionFeedback deleteAudioClipById(
 // duplicateAudioClipAfterItself 把目标空音频片段复制到同一轨道、原片段结束位置。
 // 它只复制片段外壳；不复制或创建音频文件、波形、素材引用和素材偏移。
 AppAudioClipActionFeedback duplicateAudioClipAfterItself(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// splitAudioClipAtMidpoint 把目标空音频片段从长度中点拆成左右两段。
+// 它只拆时间线外壳；真实音频切点、交叉淡化和素材偏移属于音频导入后的独立规则。
+AppAudioClipActionFeedback splitAudioClipAtMidpoint(
     AppProjectSession& session,
     const std::string& clipId);
 
