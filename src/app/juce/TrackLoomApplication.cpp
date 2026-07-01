@@ -202,6 +202,7 @@ public:
         deleteAudioTrackButton_.setButtonText(toJuceString("删除音频轨"));
         deleteAudioClipButton_.setButtonText(toJuceString("删除音频片段"));
         renameAudioClipButton_.setButtonText(toJuceString("重命名音频片段"));
+        duplicateAudioClipButton_.setButtonText(toJuceString("复制音频片段"));
         moveAudioClipLeftButton_.setButtonText(toJuceString("左移音频片段"));
         moveAudioClipRightButton_.setButtonText(toJuceString("右移音频片段"));
         trimAudioClipEndButton_.setButtonText(toJuceString("缩短音频片尾"));
@@ -258,6 +259,7 @@ public:
         deleteAudioTrackButton_.onClick = [this] { deleteSelectedAudioTrack(); };
         deleteAudioClipButton_.onClick = [this] { deleteSelectedAudioClip(); };
         renameAudioClipButton_.onClick = [this] { renameSelectedAudioClip(); };
+        duplicateAudioClipButton_.onClick = [this] { duplicateSelectedAudioClip(); };
         moveAudioClipLeftButton_.onClick = [this] { moveSelectedAudioClipLeft(); };
         moveAudioClipRightButton_.onClick = [this] { moveSelectedAudioClipRight(); };
         trimAudioClipEndButton_.onClick = [this] { trimSelectedAudioClipEnd(); };
@@ -339,6 +341,7 @@ public:
         addAndMakeVisible(deleteAudioTrackButton_);
         addAndMakeVisible(deleteAudioClipButton_);
         addAndMakeVisible(renameAudioClipButton_);
+        addAndMakeVisible(duplicateAudioClipButton_);
         addAndMakeVisible(moveAudioClipLeftButton_);
         addAndMakeVisible(moveAudioClipRightButton_);
         addAndMakeVisible(trimAudioClipEndButton_);
@@ -461,6 +464,8 @@ public:
         auto audioClipMoveRow = bounds.removeFromTop(36);
         audioClipMoveRow.removeFromLeft(108);
         audioClipMoveRow.removeFromLeft(10);
+        duplicateAudioClipButton_.setBounds(audioClipMoveRow.removeFromLeft(144));
+        audioClipMoveRow.removeFromLeft(8);
         moveAudioClipLeftButton_.setBounds(audioClipMoveRow.removeFromLeft(144));
         audioClipMoveRow.removeFromLeft(8);
         moveAudioClipRightButton_.setBounds(audioClipMoveRow.removeFromLeft(144));
@@ -953,6 +958,23 @@ private:
         const auto feedback = trackloom::deleteAudioClipById(session_, targetClipId);
         if (feedback.success && selectedAudioClipId_ == targetClipId) {
             selectedAudioClipId_.clear();
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void duplicateSelectedAudioClip()
+    {
+        if (selectedAudioClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个音频片段，再复制音频片段。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::duplicateAudioClipAfterItself(session_, selectedAudioClipId_);
+        if (feedback.success) {
+            selectedAudioClipId_ = feedback.clipId;
         }
 
         lastActionMessage_ = feedback.message;
@@ -1723,6 +1745,7 @@ private:
         targetAudioClipBox_.setEnabled(!selectableAudioClipIds_.empty());
         deleteAudioClipButton_.setEnabled(!selectedAudioClipId_.empty());
         renameAudioClipButton_.setEnabled(!selectedAudioClipId_.empty());
+        duplicateAudioClipButton_.setEnabled(!selectedAudioClipId_.empty());
         moveAudioClipLeftButton_.setEnabled(!selectedAudioClipId_.empty());
         moveAudioClipRightButton_.setEnabled(!selectedAudioClipId_.empty());
         trimAudioClipEndButton_.setEnabled(!selectedAudioClipId_.empty());
@@ -2044,6 +2067,7 @@ private:
     juce::TextButton deleteAudioTrackButton_;
     juce::TextButton deleteAudioClipButton_;
     juce::TextButton renameAudioClipButton_;
+    juce::TextButton duplicateAudioClipButton_;
     juce::TextButton moveAudioClipLeftButton_;
     juce::TextButton moveAudioClipRightButton_;
     juce::TextButton trimAudioClipEndButton_;

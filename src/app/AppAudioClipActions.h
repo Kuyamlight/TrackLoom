@@ -22,6 +22,7 @@ enum class AppAudioClipActionFeedbackKind {
     EmptyName,
     RenameFailed,
     DeleteFailed,
+    DuplicateFailed,
     MoveFailed,
     TrimFailed,
     ExtendFailed,
@@ -46,6 +47,12 @@ AppAudioClipActionFeedback createDefaultAudioClipOnTrack(
 // deleteAudioClipById 删除一个已存在的空音频片段外壳。
 // 它只接受 Audio 片段；MIDI 片段和不存在的片段会在 dirty 之前被拒绝。
 AppAudioClipActionFeedback deleteAudioClipById(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// duplicateAudioClipAfterItself 把目标空音频片段复制到同一轨道、原片段结束位置。
+// 它只复制片段外壳；不复制或创建音频文件、波形、素材引用和素材偏移。
+AppAudioClipActionFeedback duplicateAudioClipAfterItself(
     AppProjectSession& session,
     const std::string& clipId);
 

@@ -1538,6 +1538,51 @@ void audioClipActionAppendsAfterExistingTrackClips()
         "second default audio clip should append after the first audio clip");
 }
 
+void audioClipActionDuplicatesAudioClipAfterItself()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "duplicate-audio-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Duplicate Audio Clip");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clipFeedback = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+    require(clipFeedback.success,
+        "duplicate audio clip test should create a source audio clip");
+    require(session.saveAs(path).success,
+        "duplicate audio clip test should save setup edits before duplication");
+
+    const auto feedback = trackloom::duplicateAudioClipAfterItself(session, clipFeedback.clipId);
+
+    require(feedback.success,
+        "audio clip action should duplicate the target audio clip");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::Success,
+        "successful audio clip duplicate action should expose the stable success kind");
+    require(feedback.clipId != clipFeedback.clipId,
+        "audio clip duplicate action should report the new clip id");
+    require(session.project().clips().size() == 2,
+        "audio clip duplicate action should add one new clip");
+
+    const auto source = session.project().findClipById(clipFeedback.clipId);
+    const auto duplicate = session.project().findClipById(feedback.clipId);
+    require(source.has_value() && duplicate.has_value(),
+        "audio clip duplicate test should find source and duplicate clips");
+    require(duplicate->trackId == source->trackId,
+        "audio clip duplicate should stay on the source audio track");
+    require(duplicate->type == trackloom::ClipType::Audio,
+        "audio clip duplicate should keep the audio clip type");
+    require(duplicate->startTick == source->startTick + source->lengthTick,
+        "audio clip duplicate should start at the source clip end");
+    require(duplicate->lengthTick == source->lengthTick,
+        "audio clip duplicate should keep the source clip length");
+    require(duplicate->midiNotes.empty(),
+        "audio clip duplicate should not invent MIDI notes");
+    require(session.isDirty(),
+        "successful audio clip duplicate should mark the app session dirty");
+    require(feedback.message.find("复制") != std::string::npos,
+        "successful audio clip duplicate feedback should describe the copy");
+}
+
 void audioClipActionRejectsMissingTrackWithoutDirtyingSession()
 {
     trackloom::AppProjectSession session;
@@ -1652,6 +1697,54 @@ void audioClipActionRejectsMidiClipDeleteWithoutDirtyingSession()
         "MIDI clip audio delete action should keep the original clip");
     require(!session.isDirty(),
         "MIDI clip audio delete action should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMissingClipDuplicateWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Audio Clip Duplicate");
+
+    const auto feedback = trackloom::duplicateAudioClipAfterItself(session, "missing-clip");
+
+    require(!feedback.success,
+        "audio clip duplicate action should reject a missing clip");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::MissingClip,
+        "missing audio clip duplicate should expose a stable failure kind");
+    require(session.project().clips().empty(),
+        "missing audio clip duplicate should not create clips");
+    require(!session.isDirty(),
+        "missing audio clip duplicate should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMidiClipDuplicateWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "midi-duplicate-audio-clip-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Duplicate As Audio Clip");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto midi = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::Project::ticksPerQuarterNote);
+    require(midi.has_value(),
+        "MIDI-as-audio duplicate test should create a MIDI clip");
+    require(session.saveAs(path).success,
+        "MIDI-as-audio duplicate test should save setup edits before validation");
+
+    const auto feedback = trackloom::duplicateAudioClipAfterItself(session, midi->id);
+
+    require(!feedback.success,
+        "audio clip duplicate action should reject MIDI clips");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::IncompatibleClipType,
+        "MIDI clip audio duplicate should expose a stable failure kind");
+    require(session.project().clips().size() == 1,
+        "MIDI clip audio duplicate should keep only the original clip");
+    require(!session.isDirty(),
+        "MIDI clip audio duplicate should not dirty an unchanged session");
 }
 
 void audioClipActionRenamesAudioClipAndMarksSessionDirty()
@@ -4797,11 +4890,14 @@ int main()
     playbackRewindPreparesFreshRuntimeWithoutStartingPlayback();
     audioClipActionCreatesDefaultClipOnAudioTrack();
     audioClipActionAppendsAfterExistingTrackClips();
+    audioClipActionDuplicatesAudioClipAfterItself();
     audioClipActionRejectsMissingTrackWithoutDirtyingSession();
     audioClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
     audioClipActionDeletesAudioClip();
     audioClipActionRejectsMissingClipDeleteWithoutDirtyingSession();
     audioClipActionRejectsMidiClipDeleteWithoutDirtyingSession();
+    audioClipActionRejectsMissingClipDuplicateWithoutDirtyingSession();
+    audioClipActionRejectsMidiClipDuplicateWithoutDirtyingSession();
     audioClipActionRenamesAudioClipAndMarksSessionDirty();
     audioClipActionRejectsEmptyClipNameWithoutDirtyingSession();
     audioClipActionRejectsMissingClipRenameWithoutDirtyingSession();

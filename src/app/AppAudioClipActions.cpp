@@ -31,6 +31,16 @@ AppAudioClipActionFeedback deleteSuccessFeedback(const TimelineClip& clip)
     return feedback;
 }
 
+AppAudioClipActionFeedback duplicateSuccessFeedback(const TimelineClip& clip)
+{
+    AppAudioClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppAudioClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已复制音频片段：" + clip.name + "。";
+    return feedback;
+}
+
 AppAudioClipActionFeedback renameSuccessFeedback(const TimelineClip& clip)
 {
     AppAudioClipActionFeedback feedback;
@@ -371,6 +381,59 @@ AppAudioClipActionFeedback deleteAudioClipById(
     }
 
     return deleteSuccessFeedback(*targetClip);
+}
+
+AppAudioClipActionFeedback duplicateAudioClipAfterItself(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    const auto sourceClip = session.project().findClipById(clipId);
+    if (!sourceClip.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingClip,
+            "无法复制音频片段：目标片段不存在。");
+    }
+
+    if (sourceClip->type != ClipType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleClipType,
+            "无法复制音频片段：只能复制音频片段。");
+    }
+
+    const auto targetTrack = session.project().findTrackById(sourceClip->trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingTrack,
+            "无法复制音频片段：片段所属轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleTrackType,
+            "无法复制音频片段：音频片段只能复制到音频轨。");
+    }
+
+    if (!canAddTickOffset(sourceClip->startTick, sourceClip->lengthTick)) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::DuplicateFailed,
+            "无法复制音频片段：目标位置超出时间线范围。");
+    }
+
+    const auto duplicateStartTick = sourceClip->startTick + sourceClip->lengthTick;
+
+    // 当前复制只复制空音频片段外壳；真实素材引用、波形和素材偏移会在音频导入阶段单独设计。
+    const auto duplicate = session.editProject().duplicateClipToTrackAtTick(
+        clipId,
+        sourceClip->trackId,
+        duplicateStartTick);
+
+    if (!duplicate.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::DuplicateFailed,
+            "无法复制音频片段：工程模型拒绝了这次复制。");
+    }
+
+    return duplicateSuccessFeedback(*duplicate);
 }
 
 AppAudioClipActionFeedback renameAudioClipById(
