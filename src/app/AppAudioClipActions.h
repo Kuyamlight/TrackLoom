@@ -99,4 +99,16 @@ AppAudioClipActionFeedback extendAudioClipEndLaterOneBeat(
     AppProjectSession& session,
     const std::string& clipId);
 
+// trimAudioClipStartLaterOneBeat 把空音频片段左边界向右缩短一拍。
+// 当前只编辑时间线外壳；真实音频片头修剪必须等素材引用和素材偏移模型完成后再接入。
+AppAudioClipActionFeedback trimAudioClipStartLaterOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId);
+
+// extendAudioClipStartEarlierOneBeat 把空音频片段左边界向左延长一拍。
+// 它只在片段前方增加空外壳长度，不移动或生成真实音频素材。
+AppAudioClipActionFeedback extendAudioClipStartEarlierOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId);
+
 }

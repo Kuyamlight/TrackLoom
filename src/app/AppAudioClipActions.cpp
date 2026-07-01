@@ -101,6 +101,26 @@ AppAudioClipActionFeedback extendEndSuccessFeedback(const TimelineClip& clip)
     return feedback;
 }
 
+AppAudioClipActionFeedback trimStartSuccessFeedback(const TimelineClip& clip)
+{
+    AppAudioClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppAudioClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已缩短音频片段片头：" + clip.name + "。";
+    return feedback;
+}
+
+AppAudioClipActionFeedback extendStartSuccessFeedback(const TimelineClip& clip)
+{
+    AppAudioClipActionFeedback feedback;
+    feedback.success = true;
+    feedback.kind = AppAudioClipActionFeedbackKind::Success;
+    feedback.clipId = clip.id;
+    feedback.message = "已延长音频片段片头：" + clip.name + "。";
+    return feedback;
+}
+
 AppAudioClipActionFeedback failureFeedback(
     AppAudioClipActionFeedbackKind kind,
     std::string message)
@@ -333,6 +353,119 @@ AppAudioClipActionFeedback extendAudioClipEndByTickOffset(
 
     const auto extendedClip = session.project().findClipById(clipId);
     return extendEndSuccessFeedback(extendedClip.value_or(*targetClip));
+}
+
+AppAudioClipActionFeedback trimAudioClipStartByTickOffset(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::int64_t offsetTick)
+{
+    // 片头缩短只移动空音频片段外壳左边界；不计算素材读取偏移。
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingClip,
+            "无法缩短音频片段片头：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleClipType,
+            "无法缩短音频片段片头：只能修剪音频片段。");
+    }
+
+    const auto targetTrack = session.project().findTrackById(targetClip->trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingTrack,
+            "无法缩短音频片段片头：片段所属轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleTrackType,
+            "无法缩短音频片段片头：音频片段只能停留在音频轨。");
+    }
+
+    if (offsetTick <= 0 || targetClip->lengthTick <= offsetTick) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::TrimFailed,
+            "无法缩短音频片段片头：片段长度不足一拍。");
+    }
+
+    if (!canAddTickOffset(targetClip->startTick, offsetTick)) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::TrimFailed,
+            "无法缩短音频片段片头：目标片头超出时间线范围。");
+    }
+
+    const auto newStartTick = targetClip->startTick + offsetTick;
+    if (!session.editProject().trimClipStartToTick(clipId, newStartTick)) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::TrimFailed,
+            "无法缩短音频片段片头：工程模型拒绝了这次修剪。");
+    }
+
+    const auto trimmedClip = session.project().findClipById(clipId);
+    return trimStartSuccessFeedback(trimmedClip.value_or(*targetClip));
+}
+
+AppAudioClipActionFeedback extendAudioClipStartByTickOffset(
+    AppProjectSession& session,
+    const std::string& clipId,
+    std::int64_t offsetTick)
+{
+    // 片头延长只在外壳左侧增加空白时间；真实素材偏移需要后续独立模型。
+    const auto targetClip = session.project().findClipById(clipId);
+    if (!targetClip.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingClip,
+            "无法延长音频片段片头：目标片段不存在。");
+    }
+
+    if (targetClip->type != ClipType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleClipType,
+            "无法延长音频片段片头：只能延长音频片段。");
+    }
+
+    const auto targetTrack = session.project().findTrackById(targetClip->trackId);
+    if (!targetTrack.has_value()) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::MissingTrack,
+            "无法延长音频片段片头：片段所属轨道不存在。");
+    }
+
+    if (targetTrack->type != TrackType::Audio) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::IncompatibleTrackType,
+            "无法延长音频片段片头：音频片段只能停留在音频轨。");
+    }
+
+    if (offsetTick <= 0
+        || targetClip->startTick < offsetTick
+        || !canAddTickOffset(targetClip->lengthTick, offsetTick)) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::ExtendFailed,
+            "无法延长音频片段片头：目标片头超出时间线范围。");
+    }
+
+    const auto newStartTick = targetClip->startTick - offsetTick;
+    const auto newLengthTick = targetClip->lengthTick + offsetTick;
+    if (!canAddTickOffset(newStartTick, newLengthTick)) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::ExtendFailed,
+            "无法延长音频片段片头：目标片尾超出时间线范围。");
+    }
+
+    if (!session.editProject().setClipTiming(clipId, newStartTick, newLengthTick)) {
+        return failureFeedback(
+            AppAudioClipActionFeedbackKind::ExtendFailed,
+            "无法延长音频片段片头：工程模型拒绝了这次延长。");
+    }
+
+    const auto extendedClip = session.project().findClipById(clipId);
+    return extendStartSuccessFeedback(extendedClip.value_or(*targetClip));
 }
 
 }
@@ -648,6 +781,26 @@ AppAudioClipActionFeedback extendAudioClipEndLaterOneBeat(
     const std::string& clipId)
 {
     return extendAudioClipEndByTickOffset(
+        session,
+        clipId,
+        Project::ticksPerQuarterNote);
+}
+
+AppAudioClipActionFeedback trimAudioClipStartLaterOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return trimAudioClipStartByTickOffset(
+        session,
+        clipId,
+        Project::ticksPerQuarterNote);
+}
+
+AppAudioClipActionFeedback extendAudioClipStartEarlierOneBeat(
+    AppProjectSession& session,
+    const std::string& clipId)
+{
+    return extendAudioClipStartByTickOffset(
         session,
         clipId,
         Project::ticksPerQuarterNote);

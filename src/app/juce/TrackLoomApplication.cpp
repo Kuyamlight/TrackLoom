@@ -209,6 +209,8 @@ public:
         moveAudioClipRightButton_.setButtonText(toJuceString("右移音频片段"));
         trimAudioClipEndButton_.setButtonText(toJuceString("缩短音频片尾"));
         extendAudioClipEndButton_.setButtonText(toJuceString("延长音频片尾"));
+        trimAudioClipStartButton_.setButtonText(toJuceString("缩短音频片头"));
+        extendAudioClipStartButton_.setButtonText(toJuceString("延长音频片头"));
         deleteInstrumentTrackButton_.setButtonText(toJuceString("删除乐器轨"));
         moveTrackUpButton_.setButtonText(toJuceString("上移"));
         moveTrackDownButton_.setButtonText(toJuceString("下移"));
@@ -268,6 +270,8 @@ public:
         moveAudioClipRightButton_.onClick = [this] { moveSelectedAudioClipRight(); };
         trimAudioClipEndButton_.onClick = [this] { trimSelectedAudioClipEnd(); };
         extendAudioClipEndButton_.onClick = [this] { extendSelectedAudioClipEnd(); };
+        trimAudioClipStartButton_.onClick = [this] { trimSelectedAudioClipStart(); };
+        extendAudioClipStartButton_.onClick = [this] { extendSelectedAudioClipStart(); };
         audioClipNameEditor_.onReturnKey = [this] { renameSelectedAudioClip(); };
         deleteInstrumentTrackButton_.onClick = [this] { deleteSelectedInstrumentTrack(); };
         moveTrackUpButton_.onClick = [this] { moveSelectedTrackUp(); };
@@ -352,6 +356,8 @@ public:
         addAndMakeVisible(moveAudioClipRightButton_);
         addAndMakeVisible(trimAudioClipEndButton_);
         addAndMakeVisible(extendAudioClipEndButton_);
+        addAndMakeVisible(trimAudioClipStartButton_);
+        addAndMakeVisible(extendAudioClipStartButton_);
         addAndMakeVisible(deleteInstrumentTrackButton_);
         addAndMakeVisible(moveTrackUpButton_);
         addAndMakeVisible(moveTrackDownButton_);
@@ -386,7 +392,7 @@ public:
         // MainComponent 主动获取键盘焦点后，Space 键才能先交给 keyPressed 处理。
         setWantsKeyboardFocus(true);
         refreshFromSession();
-        setSize(1040, 840);
+        setSize(1040, 880);
     }
 
     void paint(juce::Graphics& graphics) override
@@ -479,6 +485,14 @@ public:
         trimAudioClipEndButton_.setBounds(audioClipMoveRow.removeFromLeft(144));
         audioClipMoveRow.removeFromLeft(8);
         extendAudioClipEndButton_.setBounds(audioClipMoveRow.removeFromLeft(144));
+
+        bounds.removeFromTop(8);
+        auto audioClipStartRow = bounds.removeFromTop(36);
+        audioClipStartRow.removeFromLeft(108);
+        audioClipStartRow.removeFromLeft(10);
+        trimAudioClipStartButton_.setBounds(audioClipStartRow.removeFromLeft(144));
+        audioClipStartRow.removeFromLeft(8);
+        extendAudioClipStartButton_.setBounds(audioClipStartRow.removeFromLeft(144));
 
         bounds.removeFromTop(8);
         auto audioClipSplitRow = bounds.removeFromTop(36);
@@ -1120,6 +1134,40 @@ private:
         }
 
         const auto feedback = trackloom::extendAudioClipEndLaterOneBeat(session_, selectedAudioClipId_);
+        if (feedback.success) {
+            selectedAudioClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void trimSelectedAudioClipStart()
+    {
+        if (selectedAudioClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个音频片段，再缩短音频片头。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::trimAudioClipStartLaterOneBeat(session_, selectedAudioClipId_);
+        if (feedback.success) {
+            selectedAudioClipId_ = feedback.clipId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void extendSelectedAudioClipStart()
+    {
+        if (selectedAudioClipId_.empty()) {
+            lastActionMessage_ = "请先选择一个音频片段，再延长音频片头。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::extendAudioClipStartEarlierOneBeat(session_, selectedAudioClipId_);
         if (feedback.success) {
             selectedAudioClipId_ = feedback.clipId;
         }
@@ -1811,6 +1859,8 @@ private:
         moveAudioClipRightButton_.setEnabled(!selectedAudioClipId_.empty());
         trimAudioClipEndButton_.setEnabled(!selectedAudioClipId_.empty());
         extendAudioClipEndButton_.setEnabled(!selectedAudioClipId_.empty());
+        trimAudioClipStartButton_.setEnabled(!selectedAudioClipId_.empty());
+        extendAudioClipStartButton_.setEnabled(!selectedAudioClipId_.empty());
         syncAudioClipNameEditorFromSelection(selectedAudioClipId_ != previousSelection);
     }
 
@@ -2135,6 +2185,8 @@ private:
     juce::TextButton moveAudioClipRightButton_;
     juce::TextButton trimAudioClipEndButton_;
     juce::TextButton extendAudioClipEndButton_;
+    juce::TextButton trimAudioClipStartButton_;
+    juce::TextButton extendAudioClipStartButton_;
     juce::TextButton deleteInstrumentTrackButton_;
     juce::TextButton moveTrackUpButton_;
     juce::TextButton moveTrackDownButton_;

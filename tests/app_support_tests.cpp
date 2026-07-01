@@ -2360,6 +2360,78 @@ void audioClipActionExtendsAudioClipEndLaterOneBeat()
         "successful audio clip extend-end feedback should describe the action");
 }
 
+void audioClipActionTrimsAudioClipStartLaterOneBeat()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "trim-audio-clip-start-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Trim Audio Clip Start");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clipFeedback = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+    require(clipFeedback.success,
+        "trim-start audio clip test should create a source audio clip");
+    require(session.saveAs(path).success,
+        "trim-start audio clip test should save setup edits before trimming");
+
+    const auto feedback = trackloom::trimAudioClipStartLaterOneBeat(session, clipFeedback.clipId);
+
+    const auto trimmedClip = session.project().findClipById(clipFeedback.clipId);
+    require(feedback.success,
+        "audio clip action should trim the target clip start later by one beat");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::Success,
+        "successful audio clip trim-start action should expose the stable success kind");
+    require(feedback.clipId == clipFeedback.clipId,
+        "audio clip trim-start action should report the trimmed clip id");
+    require(trimmedClip.has_value()
+            && trimmedClip->startTick == trackloom::Project::ticksPerQuarterNote,
+        "audio clip trim-start action should move the empty shell start right by one beat");
+    require(trimmedClip->lengthTick == trackloom::defaultAppAudioClipLengthTick - trackloom::Project::ticksPerQuarterNote,
+        "audio clip trim-start action should keep the old end stable by shortening the shell");
+    require(session.isDirty(),
+        "successful audio clip trim-start should mark the app session dirty");
+    require(feedback.message.find("片头") != std::string::npos,
+        "successful audio clip trim-start feedback should describe the edited boundary");
+}
+
+void audioClipActionExtendsAudioClipStartEarlierOneBeat()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "extend-audio-clip-start-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Extend Audio Clip Start");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Verse Vocal",
+        trackloom::ClipType::Audio,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(clip.has_value(),
+        "extend-start audio clip test should create an audio clip after the timeline start");
+    require(session.saveAs(path).success,
+        "extend-start audio clip test should save setup edits before extending");
+
+    const auto feedback = trackloom::extendAudioClipStartEarlierOneBeat(session, clip->id);
+
+    const auto extendedClip = session.project().findClipById(clip->id);
+    require(feedback.success,
+        "audio clip action should extend the target clip start earlier by one beat");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::Success,
+        "successful audio clip extend-start action should expose the stable success kind");
+    require(feedback.clipId == clip->id,
+        "audio clip extend-start action should report the extended clip id");
+    require(extendedClip.has_value() && extendedClip->startTick == 0,
+        "audio clip extend-start action should move the empty shell start left by one beat");
+    require(extendedClip->lengthTick == trackloom::defaultAppAudioClipLengthTick + trackloom::Project::ticksPerQuarterNote,
+        "audio clip extend-start action should keep the old end stable by lengthening the shell");
+    require(session.isDirty(),
+        "successful audio clip extend-start should mark the app session dirty");
+    require(feedback.message.find("片头") != std::string::npos,
+        "successful audio clip extend-start feedback should describe the edited boundary");
+}
+
 void audioClipActionRejectsTooShortClipEndTrimWithoutDirtyingSession()
 {
     removeTestWorkspace();
@@ -2481,6 +2553,161 @@ void audioClipActionRejectsMidiClipEndExtendWithoutDirtyingSession()
         "MIDI clip audio extend-end should keep the original clip length");
     require(!session.isDirty(),
         "MIDI clip audio extend-end should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsTooShortClipStartTrimWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "short-trim-audio-clip-start-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Short Audio Clip Start Trim");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Short audio",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::Project::ticksPerQuarterNote);
+    require(clip.has_value(),
+        "too-short audio trim-start test should create a one-beat audio clip");
+    require(session.saveAs(path).success,
+        "too-short audio trim-start test should save setup edits before validation");
+
+    const auto feedback = trackloom::trimAudioClipStartLaterOneBeat(session, clip->id);
+
+    const auto unchangedClip = session.project().findClipById(clip->id);
+    require(!feedback.success,
+        "audio clip trim-start action should reject clips that cannot stay positive length");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::TrimFailed,
+        "too-short audio clip trim-start should expose the stable trim-failed kind");
+    require(unchangedClip.has_value()
+            && unchangedClip->startTick == 0
+            && unchangedClip->lengthTick == trackloom::Project::ticksPerQuarterNote,
+        "too-short audio clip trim-start should keep the source clip timing unchanged");
+    require(!session.isDirty(),
+        "too-short audio clip trim-start should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsStartExtendBeforeTimelineStartWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "extend-audio-clip-start-before-zero.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Start Extend Boundary");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clipFeedback = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+    require(clipFeedback.success,
+        "extend-start boundary test should create a clip at the timeline start");
+    require(session.saveAs(path).success,
+        "extend-start boundary test should save setup edits before validation");
+
+    const auto feedback = trackloom::extendAudioClipStartEarlierOneBeat(session, clipFeedback.clipId);
+
+    const auto unchangedClip = session.project().findClipById(clipFeedback.clipId);
+    require(!feedback.success,
+        "audio clip extend-start action should reject moving the shell before the timeline start");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::ExtendFailed,
+        "audio clip extend-start boundary failure should expose a stable extend failure kind");
+    require(unchangedClip.has_value()
+            && unchangedClip->startTick == 0
+            && unchangedClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "audio clip extend-start boundary failure should keep the source clip timing unchanged");
+    require(!session.isDirty(),
+        "audio clip extend-start boundary failure should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMissingClipStartTrimWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Audio Clip Start Trim");
+
+    const auto feedback = trackloom::trimAudioClipStartLaterOneBeat(session, "missing-clip");
+
+    require(!feedback.success,
+        "audio clip trim-start action should reject a missing clip");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::MissingClip,
+        "missing audio clip trim-start should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing audio clip trim-start should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMidiClipStartTrimWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "midi-trim-audio-clip-start-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Clip Start Trim As Audio");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto midi = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(midi.has_value(),
+        "MIDI-as-audio trim-start test should create a MIDI clip");
+    require(session.saveAs(path).success,
+        "MIDI-as-audio trim-start test should save setup edits before validation");
+
+    const auto feedback = trackloom::trimAudioClipStartLaterOneBeat(session, midi->id);
+
+    require(!feedback.success,
+        "audio clip trim-start action should reject MIDI clips");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::IncompatibleClipType,
+        "MIDI clip audio trim-start should expose a stable failure kind");
+    require(session.project().findClipById(midi->id)->startTick == 0,
+        "MIDI clip audio trim-start should keep the original clip start");
+    require(!session.isDirty(),
+        "MIDI clip audio trim-start should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMissingClipStartExtendWithoutDirtyingSession()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Missing Audio Clip Start Extend");
+
+    const auto feedback = trackloom::extendAudioClipStartEarlierOneBeat(session, "missing-clip");
+
+    require(!feedback.success,
+        "audio clip extend-start action should reject a missing clip");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::MissingClip,
+        "missing audio clip extend-start should expose a stable failure kind");
+    require(!session.isDirty(),
+        "missing audio clip extend-start should not dirty an unchanged session");
+}
+
+void audioClipActionRejectsMidiClipStartExtendWithoutDirtyingSession()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "midi-extend-audio-clip-start-action.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Clip Start Extend As Audio");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto midi = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(midi.has_value(),
+        "MIDI-as-audio extend-start test should create a MIDI clip");
+    require(session.saveAs(path).success,
+        "MIDI-as-audio extend-start test should save setup edits before validation");
+
+    const auto feedback = trackloom::extendAudioClipStartEarlierOneBeat(session, midi->id);
+
+    require(!feedback.success,
+        "audio clip extend-start action should reject MIDI clips");
+    require(feedback.kind == trackloom::AppAudioClipActionFeedbackKind::IncompatibleClipType,
+        "MIDI clip audio extend-start should expose a stable failure kind");
+    require(session.project().findClipById(midi->id)->startTick == trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip audio extend-start should keep the original clip start");
+    require(!session.isDirty(),
+        "MIDI clip audio extend-start should not dirty an unchanged session");
 }
 
 void midiClipActionAppendsAfterExistingTrackClips()
@@ -5222,11 +5449,19 @@ int main()
     audioClipActionRejectsMidiClipMoveWithoutDirtyingSession();
     audioClipActionTrimsAudioClipEndEarlierOneBeat();
     audioClipActionExtendsAudioClipEndLaterOneBeat();
+    audioClipActionTrimsAudioClipStartLaterOneBeat();
+    audioClipActionExtendsAudioClipStartEarlierOneBeat();
     audioClipActionRejectsTooShortClipEndTrimWithoutDirtyingSession();
     audioClipActionRejectsMissingClipEndTrimWithoutDirtyingSession();
     audioClipActionRejectsMidiClipEndTrimWithoutDirtyingSession();
     audioClipActionRejectsMissingClipEndExtendWithoutDirtyingSession();
     audioClipActionRejectsMidiClipEndExtendWithoutDirtyingSession();
+    audioClipActionRejectsTooShortClipStartTrimWithoutDirtyingSession();
+    audioClipActionRejectsStartExtendBeforeTimelineStartWithoutDirtyingSession();
+    audioClipActionRejectsMissingClipStartTrimWithoutDirtyingSession();
+    audioClipActionRejectsMidiClipStartTrimWithoutDirtyingSession();
+    audioClipActionRejectsMissingClipStartExtendWithoutDirtyingSession();
+    audioClipActionRejectsMidiClipStartExtendWithoutDirtyingSession();
     midiClipActionCreatesDefaultClipOnInstrumentTrack();
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionDuplicatesMidiClipAfterItself();
