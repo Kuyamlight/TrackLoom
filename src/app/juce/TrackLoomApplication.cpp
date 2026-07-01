@@ -1,4 +1,5 @@
 #include "AppAudioClipActions.h"
+#include "AppCommandDispatcher.h"
 #include "AppMainMenu.h"
 #include "AppMidiClipActions.h"
 #include "AppMidiNoteActions.h"
@@ -659,38 +660,31 @@ public:
 
     void menuItemSelected(int menuItemID, int) override
     {
-        if (const auto recentNumber = trackloom::appMainMenuRecentProjectNumberFromCommandId(menuItemID)) {
-            selectedRecentProjectNumber_ = *recentNumber;
-            openSelectedRecentProject();
-            return;
-        }
-
-        switch (static_cast<trackloom::AppMainMenuCommand>(menuItemID)) {
-        case trackloom::AppMainMenuCommand::NewProject:
-            requestNewProject();
-            return;
-        case trackloom::AppMainMenuCommand::OpenProject:
-            chooseProjectToOpen();
-            return;
-        case trackloom::AppMainMenuCommand::SaveProject:
-            saveCurrentProject();
-            return;
-        case trackloom::AppMainMenuCommand::SaveProjectAs:
-            chooseProjectToSaveAs();
-            return;
-        case trackloom::AppMainMenuCommand::PlayProject:
-            startProjectPlayback();
-            return;
-        case trackloom::AppMainMenuCommand::StopProject:
-            stopProjectPlayback();
-            return;
-        case trackloom::AppMainMenuCommand::RewindProject:
-            rewindProjectPlayback();
-            return;
+        const auto result = trackloom::dispatchAppCommand(menuItemID, makeAppCommandHandlers());
+        if (!result.executed) {
+            lastActionMessage_ = "未能执行菜单命令：命令未注册或缺少处理函数。";
+            refreshFromSession();
         }
     }
 
 private:
+    trackloom::AppCommandHandlers makeAppCommandHandlers()
+    {
+        trackloom::AppCommandHandlers handlers;
+        handlers.newProject = [this] { requestNewProject(); };
+        handlers.openProject = [this] { chooseProjectToOpen(); };
+        handlers.saveProject = [this] { saveCurrentProject(); };
+        handlers.saveProjectAs = [this] { chooseProjectToSaveAs(); };
+        handlers.playProject = [this] { startProjectPlayback(); };
+        handlers.stopProject = [this] { stopProjectPlayback(); };
+        handlers.rewindProject = [this] { rewindProjectPlayback(); };
+        handlers.openRecentProject = [this](std::size_t number) {
+            selectedRecentProjectNumber_ = number;
+            openSelectedRecentProject();
+        };
+        return handlers;
+    }
+
     void timerCallback() override
     {
         const auto feedback = trackloom::advanceAppPlaybackForUiTick(playback_, session_.project());

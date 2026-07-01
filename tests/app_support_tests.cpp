@@ -1,4 +1,5 @@
 #include "AppAudioClipActions.h"
+#include "AppCommandDispatcher.h"
 #include "AppProjectFileActions.h"
 #include "AppRecentProjects.h"
 #include "AppMidiClipActions.h"
@@ -617,6 +618,76 @@ void mainMenuListsRecentProjectsWithStableCommandIds()
     require(!trackloom::appMainMenuRecentProjectNumberFromCommandId(
                 trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject)).has_value(),
         "regular menu command ids should not be mistaken for recent-project ids");
+}
+
+void commandDispatcherRunsOnlyTheSelectedMainMenuCommand()
+{
+    int newProjectCalls = 0;
+    int saveProjectCalls = 0;
+    int playProjectCalls = 0;
+
+    trackloom::AppCommandHandlers handlers;
+    handlers.newProject = [&] { ++newProjectCalls; };
+    handlers.saveProject = [&] { ++saveProjectCalls; };
+    handlers.playProject = [&] { ++playProjectCalls; };
+
+    const auto result = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject),
+        handlers);
+
+    require(result.executed,
+        "command dispatcher should execute a known command when its handler exists");
+    require(result.kind == trackloom::AppCommandDispatchResultKind::Executed,
+        "executed command should expose a stable executed result kind");
+    require(result.command == trackloom::AppCommandKind::SaveProject,
+        "save menu id should resolve to the save project command kind");
+    require(newProjectCalls == 0 && saveProjectCalls == 1 && playProjectCalls == 0,
+        "command dispatcher should run only the selected command handler");
+}
+
+void commandDispatcherPassesRecentProjectNumber()
+{
+    std::size_t openedNumber = 0;
+
+    trackloom::AppCommandHandlers handlers;
+    handlers.openRecentProject = [&](std::size_t number) { openedNumber = number; };
+
+    const auto result = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuRecentProjectCommandId(3),
+        handlers);
+
+    require(result.executed,
+        "recent project command should execute when the recent-project handler exists");
+    require(result.command == trackloom::AppCommandKind::OpenRecentProject,
+        "recent project menu id should resolve to the dynamic recent-project command kind");
+    require(result.recentProjectNumber == 3,
+        "recent project dispatch result should expose the visible recent-project number");
+    require(openedNumber == 3,
+        "recent project handler should receive the visible 1-based recent-project number");
+}
+
+void commandDispatcherRejectsUnknownOrUnboundCommands()
+{
+    bool saveCalled = false;
+
+    trackloom::AppCommandHandlers handlers;
+    handlers.saveProject = [&] { saveCalled = true; };
+
+    const auto unknown = trackloom::dispatchAppCommand(42, handlers);
+    const auto missingHandler = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::StopProject),
+        handlers);
+
+    require(!unknown.executed,
+        "unknown command ids should not execute any handler");
+    require(unknown.kind == trackloom::AppCommandDispatchResultKind::UnknownCommand,
+        "unknown command ids should report a stable unknown-command result");
+    require(!missingHandler.executed,
+        "known command ids without a handler should not be reported as executed");
+    require(missingHandler.kind == trackloom::AppCommandDispatchResultKind::MissingHandler,
+        "known command ids without a callback should report a stable missing-handler result");
+    require(!saveCalled,
+        "rejecting unknown or unbound commands should not run unrelated handlers");
 }
 
 void trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty()
@@ -5476,6 +5547,9 @@ int main()
     mainMenuDescribesFileAndPlaybackCommands();
     mainMenuReflectsPlayingTransportState();
     mainMenuListsRecentProjectsWithStableCommandIds();
+    commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
+    commandDispatcherPassesRecentProjectNumber();
+    commandDispatcherRejectsUnknownOrUnboundCommands();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
     trackActionCreatesDefaultAudioTrackAndMarksSessionDirty();
