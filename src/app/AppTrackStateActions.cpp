@@ -1,5 +1,8 @@
 #include "AppTrackStateActions.h"
 
+#include "Command.h"
+
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -57,7 +60,10 @@ AppTrackStateActionFeedback togglePlaybackState(
     auto nextPlayback = targetTrack->playback;
     nextPlayback.*field = !(nextPlayback.*field);
 
-    if (!session.editProject().setTrackPlaybackState(trackId, nextPlayback)) {
+    // 播放状态是真正的工程编辑；必须走核心命令，后续撤销/重做才能保持一致。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetTrackPlaybackStateCommand>(trackId, nextPlayback));
+    if (!result.success) {
         return failureFeedback(
             target,
             AppTrackStateActionFeedbackKind::UpdateFailed,
@@ -128,7 +134,10 @@ AppTrackStateActionFeedback toggleTrackHidden(AppProjectSession& session, const 
             "无法切换轨道显示状态：新的显示状态不符合轨道类型约束。");
     }
 
-    if (!session.editProject().setTrackViewState(trackId, nextView)) {
+    // 显示状态同样属于工程数据；通过命令执行，避免隐藏操作绕过历史记录。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetTrackViewStateCommand>(trackId, nextView));
+    if (!result.success) {
         return failureFeedback(
             AppTrackStateActionTarget::Hide,
             AppTrackStateActionFeedbackKind::UpdateFailed,

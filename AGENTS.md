@@ -468,7 +468,7 @@ TrackLoom 应支持：
 - 建立应用层工程命令历史边界时：
   - 触发场景：核心 `CommandStack` 已能撤销/重做，但桌面首屏动作长期通过 `AppProjectSession::editProject()` 直接修改工程；如果直接暴露撤销菜单，可能跳过未记录的片段或音符编辑，误撤更早的轨道操作。
   - 根本原因：命令历史只能理解通过 `Command` 执行的编辑，无法自动知道旧直接编辑入口做过什么；混用两种修改路径时，保留旧历史比没有撤销更危险。
-  - 采用的解决方式：在 `AppProjectSession` 新增 `executeProjectCommand`、`undoProjectEdit`、`redoProjectEdit` 和历史查询入口；成功命令才标脏并进入历史。直接 `editProject()` 会清空旧历史，表示这次修改没有可撤销记录。首批迁移 `AppTrackActions` 的轨道创建、删除、重命名和移动到核心命令执行。CTest 覆盖成功命令撤销/重做、失败命令不标脏不入栈、新建工程清空历史、直接编辑清空历史，以及轨道创建可通过会话历史撤销/重做。
+  - 采用的解决方式：在 `AppProjectSession` 新增 `executeProjectCommand`、`undoProjectEdit`、`redoProjectEdit` 和历史查询入口；成功命令才标脏并进入历史。直接 `editProject()` 会清空旧历史，表示这次修改没有可撤销记录。首批迁移 `AppTrackActions` 的轨道创建、删除、重命名和移动到核心命令执行；随后迁移 `AppTrackStateActions` 的静音、独奏、禁用和隐藏到核心状态命令。CTest 覆盖成功命令撤销/重做、失败命令不标脏不入栈、新建工程清空历史、直接编辑清空历史，以及轨道创建、静音和隐藏可通过会话历史撤销/重做。
   - 后续规则：新增或迁移编辑入口时优先通过 `executeProjectCommand` 或等价可撤销边界执行；在音频片段、MIDI 片段和音符动作全部迁移前，不应向用户暴露完整 Undo/Redo 菜单或快捷键；任何仍需直接 `editProject()` 的过渡代码必须清空命令历史，避免跨未记录编辑撤销。
 - 展示桌面轨道列表时：
   - 触发场景：JUCE 首屏已有“添加乐器轨”按钮后，需要让用户看到真实轨道行，而不是只看到轨道数量。
@@ -503,8 +503,8 @@ TrackLoom 应支持：
 - 管理桌面轨道状态切换时：
   - 触发场景：首屏轨道列表已经能展示静音、独奏、禁用和隐藏状态后，需要让用户能从当前选中轨道切换这些状态。
   - 根本原因：如果 UI 直接复制 `TrackPlaybackState` 或 `TrackViewState` 修改规则，静音、独奏、禁用、隐藏会被不同入口互相覆盖；失败校验也容易在没有真实修改时误触发 dirty 状态。
-  - 采用的解决方式：新增 `AppTrackStateActions`，把轨道状态切换收敛成静音、独奏、禁用、隐藏四个应用层入口；每次只翻转一个字段并保留其他状态，JUCE 首屏只负责传入当前选中 track id。CTest 覆盖成功切换标脏、播放状态互不覆盖、隐藏不影响播放状态、缺失轨道不标脏和列表状态摘要。
-  - 后续规则：菜单、快捷键、轨道头、混音器和 AI 工具切换轨道播放/显示状态时，应复用 `AppTrackStateActions` 或等价应用层入口；显示状态不能承担播放语义，隐藏不得隐式静音，失败校验不得触碰 `editProject()`。
+  - 采用的解决方式：新增 `AppTrackStateActions`，把轨道状态切换收敛成静音、独奏、禁用、隐藏四个应用层入口；每次只翻转一个字段并保留其他状态，JUCE 首屏只负责传入当前选中 track id。2026-07-01 起，状态切换通过 `SetTrackPlaybackStateCommand` 和 `SetTrackViewStateCommand` 写入工程，进入 `AppProjectSession` 命令历史。CTest 覆盖成功切换标脏、播放状态互不覆盖、隐藏不影响播放状态、缺失轨道不标脏不入历史、列表状态摘要，以及静音和隐藏可通过会话历史撤销/重做。
+  - 后续规则：菜单、快捷键、轨道头、混音器和 AI 工具切换轨道播放/显示状态时，应复用 `AppTrackStateActions` 或等价应用层入口；显示状态不能承担播放语义，隐藏不得隐式静音，失败校验不得触碰 `editProject()`；新增状态动作应优先选用对应核心 `Command`，不能绕过命令历史。
 - 创建和删除桌面 MIDI 片段入口时：
   - 触发场景：JUCE 首屏已有轨道列表后，需要让用户选择乐器轨创建第一个可保存的 MIDI 片段，也需要能从首屏删除目标 MIDI 片段，并同步显示时间线摘要。
   - 根本原因：如果 UI 直接调用 `Project::createClip` 或 `Project::removeClipById`，会把目标轨道/片段校验、默认片段长度、追加位置、dirty 状态和错误文案分散到界面层；后续菜单、快捷键和 AI 工具也会重复这些规则。

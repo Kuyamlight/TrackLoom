@@ -1362,6 +1362,32 @@ void trackStateActionTogglesMuteAndMarksSessionDirty()
         "mute toggle feedback should describe the visible action");
 }
 
+void trackStateActionMuteCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Mute Track History");
+    const auto track = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto feedback = trackloom::toggleTrackMuted(session, track.id);
+
+    require(feedback.success,
+        "track state history test should mute an existing track");
+    require(session.project().tracks()[0].playback.muted,
+        "mute history test should start from an enabled muted state");
+    require(session.canUndoProjectEdit(),
+        "mute track state action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo mute state changes from the track state action");
+    require(!session.project().tracks()[0].playback.muted,
+        "undoing mute state should restore the previous playback state");
+    require(session.canRedoProjectEdit(),
+        "undoing mute state should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo mute state changes from the track state action");
+    require(session.project().tracks()[0].playback.muted,
+        "redoing mute state should reapply the playback state change");
+}
+
 void trackStateActionTogglesPlaybackFlagsIndependently()
 {
     trackloom::AppProjectSession session;
@@ -1404,6 +1430,32 @@ void trackStateActionTogglesHiddenWithoutAffectingPlayback()
         "hidden toggle should not clear playback mute state");
 }
 
+void trackStateActionHiddenCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Hidden Track History");
+    const auto track = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto feedback = trackloom::toggleTrackHidden(session, track.id);
+
+    require(feedback.success,
+        "track state history test should hide an existing track");
+    require(session.project().tracks()[0].view.hidden,
+        "hidden history test should start from an enabled hidden state");
+    require(session.canUndoProjectEdit(),
+        "hidden track state action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo hidden state changes from the track state action");
+    require(!session.project().tracks()[0].view.hidden,
+        "undoing hidden state should restore the previous view state");
+    require(session.canRedoProjectEdit(),
+        "undoing hidden state should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo hidden state changes from the track state action");
+    require(session.project().tracks()[0].view.hidden,
+        "redoing hidden state should reapply the view state change");
+}
+
 void trackStateActionRejectsMissingTrackWithoutDirtyingSession()
 {
     trackloom::AppProjectSession session;
@@ -1417,6 +1469,10 @@ void trackStateActionRejectsMissingTrackWithoutDirtyingSession()
         "missing track state action should expose a stable failure kind");
     require(!session.isDirty(),
         "missing track state action should not dirty an unchanged session");
+    require(!session.canUndoProjectEdit(),
+        "missing track state action should not create undo history");
+    require(!session.canRedoProjectEdit(),
+        "missing track state action should not create redo history");
 }
 
 void trackStateActionUpdatesTrackListStatusLabels()
@@ -5757,8 +5813,10 @@ int main()
     trackActionRejectsMoveAtBoundariesWithoutDirtyingSession();
     trackActionRejectsInvalidMoveTargetsWithoutDirtyingSession();
     trackStateActionTogglesMuteAndMarksSessionDirty();
+    trackStateActionMuteCanBeUndoneAndRedoneThroughSessionHistory();
     trackStateActionTogglesPlaybackFlagsIndependently();
     trackStateActionTogglesHiddenWithoutAffectingPlayback();
+    trackStateActionHiddenCanBeUndoneAndRedoneThroughSessionHistory();
     trackStateActionRejectsMissingTrackWithoutDirtyingSession();
     trackStateActionUpdatesTrackListStatusLabels();
     playbackActionStartsTransportWithoutDirtyingProject();
