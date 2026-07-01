@@ -1,5 +1,6 @@
 #include "AppAudioClipActions.h"
 #include "AppCommandDispatcher.h"
+#include "AppCommandShortcuts.h"
 #include "AppMainMenu.h"
 #include "AppMidiClipActions.h"
 #include "AppMidiNoteActions.h"
@@ -60,6 +61,24 @@ std::filesystem::path appRecentProjectsSettingsPath()
         .getChildFile(toJuceString("TrackLoom"))
         .getChildFile(toJuceString("recent-projects.txt"));
     return juceFileToPath(settingsFile);
+}
+
+trackloom::AppShortcutChord appShortcutChordFromKeyPress(const juce::KeyPress& key)
+{
+    const auto modifiers = key.getModifiers();
+    const auto keyCode = key.getKeyCode();
+
+    trackloom::AppShortcutChord chord;
+    if ((keyCode >= 'a' && keyCode <= 'z') || (keyCode >= 'A' && keyCode <= 'Z')) {
+        chord.key = static_cast<char>(keyCode);
+    }
+
+    // JUCE 的 command modifier 在 Windows 上等同于 Ctrl，在 macOS 上等同于 Command。
+    // 应用层只关心“主修饰键”，避免每个平台各写一套快捷键规则。
+    chord.primaryModifier = modifiers.isCommandDown();
+    chord.shift = modifiers.isShiftDown();
+    chord.alt = modifiers.isAltDown();
+    return chord;
 }
 
 void styleReadOnlyTextEditor(juce::TextEditor& editor)
@@ -618,7 +637,11 @@ public:
 
     bool keyPressed(const juce::KeyPress& key) override
     {
-        // 当前只实现窗口内 Space 快捷键；全局快捷键和完整菜单属于后续阶段。
+        if (const auto commandId = trackloom::appCommandIdForShortcut(appShortcutChordFromKeyPress(key))) {
+            return dispatchAppCommandFromUi(commandId.value());
+        }
+
+        // Space 仍是播放/停止“切换”语义，和菜单中的“播放”“停止”两个独立命令不同。
         if (key.getKeyCode() == juce::KeyPress::spaceKey) {
             toggleProjectPlayback();
             return true;
@@ -660,14 +683,22 @@ public:
 
     void menuItemSelected(int menuItemID, int) override
     {
-        const auto result = trackloom::dispatchAppCommand(menuItemID, makeAppCommandHandlers());
-        if (!result.executed) {
-            lastActionMessage_ = "未能执行菜单命令：命令未注册或缺少处理函数。";
-            refreshFromSession();
-        }
+        dispatchAppCommandFromUi(menuItemID);
     }
 
 private:
+    bool dispatchAppCommandFromUi(int commandId)
+    {
+        const auto result = trackloom::dispatchAppCommand(commandId, makeAppCommandHandlers());
+        if (result.executed) {
+            return true;
+        }
+
+        lastActionMessage_ = "未能执行命令：命令未注册或缺少处理函数。";
+        refreshFromSession();
+        return false;
+    }
+
     trackloom::AppCommandHandlers makeAppCommandHandlers()
     {
         trackloom::AppCommandHandlers handlers;

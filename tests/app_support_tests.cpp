@@ -1,5 +1,6 @@
 #include "AppAudioClipActions.h"
 #include "AppCommandDispatcher.h"
+#include "AppCommandShortcuts.h"
 #include "AppProjectFileActions.h"
 #include "AppRecentProjects.h"
 #include "AppMidiClipActions.h"
@@ -688,6 +689,39 @@ void commandDispatcherRejectsUnknownOrUnboundCommands()
         "known command ids without a callback should report a stable missing-handler result");
     require(!saveCalled,
         "rejecting unknown or unbound commands should not run unrelated handlers");
+}
+
+void commandShortcutsMapCommonFileKeysToMenuCommands()
+{
+    const auto newProject = trackloom::appCommandIdForShortcut({ 'n', true, false, false });
+    const auto openProject = trackloom::appCommandIdForShortcut({ 'o', true, false, false });
+    const auto saveProject = trackloom::appCommandIdForShortcut({ 's', true, false, false });
+    const auto saveProjectAs = trackloom::appCommandIdForShortcut({ 's', true, true, false });
+
+    require(newProject.has_value()
+            && newProject.value() == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::NewProject),
+        "Ctrl+N should map to the same new-project command id used by the file menu");
+    require(openProject.has_value()
+            && openProject.value() == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenProject),
+        "Ctrl+O should map to the same open-project command id used by the file menu");
+    require(saveProject.has_value()
+            && saveProject.value() == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject),
+        "Ctrl+S should map to the same save command id used by the file menu");
+    require(saveProjectAs.has_value()
+            && saveProjectAs.value() == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProjectAs),
+        "Ctrl+Shift+S should map to the same save-as command id used by the file menu");
+}
+
+void commandShortcutsIgnoreUnregisteredOrAmbiguousChords()
+{
+    require(!trackloom::appCommandIdForShortcut({ 's', false, false, false }).has_value(),
+        "plain S should not trigger save without the primary modifier");
+    require(!trackloom::appCommandIdForShortcut({ 's', true, false, true }).has_value(),
+        "Ctrl+Alt+S should not accidentally trigger save");
+    require(!trackloom::appCommandIdForShortcut({ 'x', true, false, false }).has_value(),
+        "Ctrl+X is not registered in the first shortcut slice");
+    require(!trackloom::appCommandIdForShortcut({ '\0', true, false, false }).has_value(),
+        "empty shortcut characters should not map to commands");
 }
 
 void trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty()
@@ -5550,6 +5584,8 @@ int main()
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
     commandDispatcherPassesRecentProjectNumber();
     commandDispatcherRejectsUnknownOrUnboundCommands();
+    commandShortcutsMapCommonFileKeysToMenuCommands();
+    commandShortcutsIgnoreUnregisteredOrAmbiguousChords();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
     trackActionCreatesDefaultAudioTrackAndMarksSessionDirty();
