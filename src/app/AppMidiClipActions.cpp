@@ -1,9 +1,13 @@
 #include "AppMidiClipActions.h"
 
+#include "Command.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -156,6 +160,41 @@ std::size_t clipCountForTrack(const Project& project, const std::string& trackId
     }
 
     return count;
+}
+
+std::vector<std::string> currentClipIds(const Project& project)
+{
+    std::vector<std::string> ids;
+    ids.reserve(project.clips().size());
+    for (const auto& clip : project.clips()) {
+        ids.push_back(clip.id);
+    }
+
+    return ids;
+}
+
+bool containsClipId(const std::vector<std::string>& ids, const std::string& clipId)
+{
+    for (const auto& id : ids) {
+        if (id == clipId) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::optional<TimelineClip> findClipCreatedAfterCommand(
+    const Project& project,
+    const std::vector<std::string>& previousClipIds)
+{
+    for (const auto& clip : project.clips()) {
+        if (!containsClipId(previousClipIds, clip.id)) {
+            return clip;
+        }
+    }
+
+    return std::nullopt;
 }
 
 std::string trimClipName(std::string name)
@@ -639,16 +678,18 @@ AppMidiClipActionFeedback createDefaultMidiClipOnTrack(
     const auto startTick = nextClipStartTickForTrack(session.project(), trackId);
     const auto clipNumber = clipCountForTrack(session.project(), trackId) + 1;
     const auto clipName = targetTrack->name + " MIDI " + std::to_string(clipNumber);
+    const auto previousClipIds = currentClipIds(session.project());
 
-    // editProject 会立刻标记 dirty；因此上面的校验必须先完成，失败路径不得触碰可编辑工程。
-    auto createdClip = session.editProject().createClip(
-        trackId,
-        clipName,
-        ClipType::Midi,
-        startTick,
-        defaultAppMidiClipLengthTick);
-
-    if (!createdClip.has_value()) {
+    // 片段创建是真正的工程编辑；通过核心命令执行，撤销/重做才能恢复同一个稳定 clip id。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<AddClipCommand>(
+            trackId,
+            clipName,
+            ClipType::Midi,
+            startTick,
+            defaultAppMidiClipLengthTick));
+    const auto createdClip = findClipCreatedAfterCommand(session.project(), previousClipIds);
+    if (!result.success || !createdClip.has_value()) {
         return failureFeedback(
             AppMidiClipActionFeedbackKind::CreateFailed,
             "无法创建 MIDI 片段：工程模型拒绝了这次片段创建。");
@@ -675,8 +716,10 @@ AppMidiClipActionFeedback deleteMidiClipById(
             "无法删除 MIDI 片段：只能删除 MIDI 片段。");
     }
 
-    // 删除前所有校验都已完成；只有真实删除才允许把会话标记为 dirty。
-    if (!session.editProject().removeClipById(clipId)) {
+    // 删除前所有校验都已完成；真正删除时走核心命令，片段和内部音符才能被撤销恢复。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<DeleteClipCommand>(clipId));
+    if (!result.success) {
         return failureFeedback(
             AppMidiClipActionFeedbackKind::DeleteFailed,
             "无法删除 MIDI 片段：工程模型拒绝了这次删除。");

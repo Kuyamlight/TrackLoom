@@ -1880,6 +1880,34 @@ void midiClipActionCreatesDefaultClipOnInstrumentTrack()
         "successful MIDI clip feedback should describe the created MIDI clip");
 }
 
+void midiClipActionCreateCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Clip Create History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto feedback = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+
+    require(feedback.success,
+        "MIDI clip history test should create a default clip");
+    require(session.project().clips().size() == 1,
+        "MIDI clip history test should start with one created clip");
+    require(session.canUndoProjectEdit(),
+        "MIDI clip create action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI clip creation from the clip action");
+    require(session.project().clips().empty(),
+        "undoing MIDI clip creation should remove the created clip");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI clip creation should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI clip creation from the clip action");
+    require(session.project().clips().size() == 1,
+        "redoing MIDI clip creation should restore the created clip");
+    require(session.project().clips()[0].id == feedback.clipId,
+        "redoing MIDI clip creation should preserve the stable clip id");
+}
+
 void audioClipActionCreatesDefaultClipOnAudioTrack()
 {
     removeTestWorkspace();
@@ -4196,6 +4224,54 @@ void midiClipActionDeletesMidiClipAndItsNotes()
         "successful MIDI clip delete feedback should describe the deletion");
 }
 
+void midiClipActionDeleteCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Clip Delete History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Loop",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "MIDI clip delete history test should create a source clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::Project::ticksPerQuarterNote,
+        60,
+        100,
+        1);
+    require(note.has_value(),
+        "MIDI clip delete history test should create a note inside the source clip");
+
+    const auto feedback = trackloom::deleteMidiClipById(session, clip->id);
+
+    require(feedback.success,
+        "MIDI clip delete history test should delete the target clip");
+    require(session.project().clips().empty(),
+        "MIDI clip delete history test should start from a deleted clip state");
+    require(session.canUndoProjectEdit(),
+        "MIDI clip delete action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI clip deletion from the clip action");
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value(),
+        "undoing MIDI clip deletion should restore the deleted clip");
+    require(restoredClip->midiNotes.size() == 1 && restoredClip->midiNotes[0].id == note->id,
+        "undoing MIDI clip deletion should restore notes stored inside the clip");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI clip deletion should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI clip deletion from the clip action");
+    require(session.project().clips().empty(),
+        "redoing MIDI clip deletion should remove the clip again");
+    require(!session.project().findMidiNoteById(note->id).has_value(),
+        "redoing MIDI clip deletion should remove the restored note again");
+}
+
 void midiClipActionRejectsMissingClipDeleteWithoutDirtyingSession()
 {
     trackloom::AppProjectSession session;
@@ -5877,6 +5953,7 @@ int main()
     audioClipActionRejectsMissingClipStartExtendWithoutDirtyingSession();
     audioClipActionRejectsMidiClipStartExtendWithoutDirtyingSession();
     midiClipActionCreatesDefaultClipOnInstrumentTrack();
+    midiClipActionCreateCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionAppendsAfterExistingTrackClips();
     midiClipActionDuplicatesMidiClipAfterItself();
     midiClipActionRenamesMidiClipAndMarksSessionDirty();
@@ -5914,6 +5991,7 @@ int main()
     midiClipActionRejectsMissingClipEndExtendWithoutDirtyingSession();
     midiClipActionRejectsAudioClipEndExtendWithoutDirtyingSession();
     midiClipActionDeletesMidiClipAndItsNotes();
+    midiClipActionDeleteCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionRejectsMissingClipDeleteWithoutDirtyingSession();
     midiClipActionRejectsAudioClipDeleteWithoutDirtyingSession();
     midiNoteActionCreatesDefaultNoteInMidiClip();
