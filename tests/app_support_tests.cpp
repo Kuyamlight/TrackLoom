@@ -2932,6 +2932,53 @@ void audioClipActionMovesAudioClipLeftOneBeat()
         "successful audio clip move-left should mark the app session dirty");
 }
 
+void audioClipActionMoveCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Move History");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Verse Vocal",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(clip.has_value(),
+        "audio clip move history test should create a source clip");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the audio clip move action");
+
+    const auto feedback = trackloom::moveAudioClipRightOneBeat(session, clip->id);
+
+    require(feedback.success,
+        "audio clip move history test should move the clip right");
+    const auto movedClip = session.project().findClipById(clip->id);
+    require(movedClip.has_value()
+            && movedClip->startTick == trackloom::Project::ticksPerQuarterNote
+            && movedClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "audio clip move history test should update only the empty shell start");
+    require(session.canUndoProjectEdit(),
+        "audio clip move action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo audio clip movement from the clip action");
+
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value()
+            && restoredClip->startTick == 0
+            && restoredClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "undoing audio clip movement should restore the original timing");
+    require(session.canRedoProjectEdit(),
+        "undoing audio clip movement should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo audio clip movement from the clip action");
+
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value()
+            && redoneClip->startTick == trackloom::Project::ticksPerQuarterNote
+            && redoneClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "redoing audio clip movement should restore the moved timing");
+}
+
 void audioClipActionRejectsLeftMoveBeforeTimelineStartWithoutDirtyingSession()
 {
     removeTestWorkspace();
@@ -3040,6 +3087,52 @@ void audioClipActionTrimsAudioClipEndEarlierOneBeat()
         "successful audio clip trim-end feedback should describe the action");
 }
 
+void audioClipActionTrimEndCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Trim End History");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Verse Vocal",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(clip.has_value(),
+        "audio clip trim-end history test should create a source clip");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the audio clip trim-end action");
+
+    const auto feedback = trackloom::trimAudioClipEndEarlierOneBeat(session, clip->id);
+
+    require(feedback.success,
+        "audio clip trim-end history test should trim the clip end");
+    const auto trimmedClip = session.project().findClipById(clip->id);
+    require(trimmedClip.has_value()
+            && trimmedClip->startTick == 0
+            && trimmedClip->lengthTick == trackloom::defaultAppAudioClipLengthTick - trackloom::Project::ticksPerQuarterNote,
+        "audio clip trim-end history test should shorten only the empty shell length");
+    require(session.canUndoProjectEdit(),
+        "audio clip trim-end action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo audio clip end trimming from the clip action");
+
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value()
+            && restoredClip->startTick == 0
+            && restoredClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "undoing audio clip end trimming should restore the original timing");
+    require(session.canRedoProjectEdit(),
+        "undoing audio clip end trimming should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo audio clip end trimming from the clip action");
+
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value()
+            && redoneClip->lengthTick == trackloom::defaultAppAudioClipLengthTick - trackloom::Project::ticksPerQuarterNote,
+        "redoing audio clip end trimming should restore the shortened length");
+}
+
 void audioClipActionExtendsAudioClipEndLaterOneBeat()
 {
     removeTestWorkspace();
@@ -3071,6 +3164,52 @@ void audioClipActionExtendsAudioClipEndLaterOneBeat()
         "successful audio clip extend-end should mark the app session dirty");
     require(feedback.message.find("延长") != std::string::npos,
         "successful audio clip extend-end feedback should describe the action");
+}
+
+void audioClipActionExtendEndCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Extend End History");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Verse Vocal",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(clip.has_value(),
+        "audio clip extend-end history test should create a source clip");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the audio clip extend-end action");
+
+    const auto feedback = trackloom::extendAudioClipEndLaterOneBeat(session, clip->id);
+
+    require(feedback.success,
+        "audio clip extend-end history test should extend the clip end");
+    const auto extendedClip = session.project().findClipById(clip->id);
+    require(extendedClip.has_value()
+            && extendedClip->startTick == 0
+            && extendedClip->lengthTick == trackloom::defaultAppAudioClipLengthTick + trackloom::Project::ticksPerQuarterNote,
+        "audio clip extend-end history test should lengthen only the empty shell");
+    require(session.canUndoProjectEdit(),
+        "audio clip extend-end action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo audio clip end extension from the clip action");
+
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value()
+            && restoredClip->startTick == 0
+            && restoredClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "undoing audio clip end extension should restore the original timing");
+    require(session.canRedoProjectEdit(),
+        "undoing audio clip end extension should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo audio clip end extension from the clip action");
+
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value()
+            && redoneClip->lengthTick == trackloom::defaultAppAudioClipLengthTick + trackloom::Project::ticksPerQuarterNote,
+        "redoing audio clip end extension should restore the extended length");
 }
 
 void audioClipActionTrimsAudioClipStartLaterOneBeat()
@@ -3105,6 +3244,53 @@ void audioClipActionTrimsAudioClipStartLaterOneBeat()
         "successful audio clip trim-start should mark the app session dirty");
     require(feedback.message.find("片头") != std::string::npos,
         "successful audio clip trim-start feedback should describe the edited boundary");
+}
+
+void audioClipActionTrimStartCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Trim Start History");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Verse Vocal",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(clip.has_value(),
+        "audio clip trim-start history test should create a source clip");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the audio clip trim-start action");
+
+    const auto feedback = trackloom::trimAudioClipStartLaterOneBeat(session, clip->id);
+
+    require(feedback.success,
+        "audio clip trim-start history test should trim the clip start");
+    const auto trimmedClip = session.project().findClipById(clip->id);
+    require(trimmedClip.has_value()
+            && trimmedClip->startTick == trackloom::Project::ticksPerQuarterNote
+            && trimmedClip->lengthTick == trackloom::defaultAppAudioClipLengthTick - trackloom::Project::ticksPerQuarterNote,
+        "audio clip trim-start history test should move the left boundary and keep the old end stable");
+    require(session.canUndoProjectEdit(),
+        "audio clip trim-start action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo audio clip start trimming from the clip action");
+
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value()
+            && restoredClip->startTick == 0
+            && restoredClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "undoing audio clip start trimming should restore the original timing");
+    require(session.canRedoProjectEdit(),
+        "undoing audio clip start trimming should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo audio clip start trimming from the clip action");
+
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value()
+            && redoneClip->startTick == trackloom::Project::ticksPerQuarterNote
+            && redoneClip->lengthTick == trackloom::defaultAppAudioClipLengthTick - trackloom::Project::ticksPerQuarterNote,
+        "redoing audio clip start trimming should restore the moved left boundary");
 }
 
 void audioClipActionExtendsAudioClipStartEarlierOneBeat()
@@ -3143,6 +3329,53 @@ void audioClipActionExtendsAudioClipStartEarlierOneBeat()
         "successful audio clip extend-start should mark the app session dirty");
     require(feedback.message.find("片头") != std::string::npos,
         "successful audio clip extend-start feedback should describe the edited boundary");
+}
+
+void audioClipActionExtendStartCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Extend Start History");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Verse Vocal",
+        trackloom::ClipType::Audio,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(clip.has_value(),
+        "audio clip extend-start history test should create a source clip after the timeline start");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the audio clip extend-start action");
+
+    const auto feedback = trackloom::extendAudioClipStartEarlierOneBeat(session, clip->id);
+
+    require(feedback.success,
+        "audio clip extend-start history test should extend the clip start");
+    const auto extendedClip = session.project().findClipById(clip->id);
+    require(extendedClip.has_value()
+            && extendedClip->startTick == 0
+            && extendedClip->lengthTick == trackloom::defaultAppAudioClipLengthTick + trackloom::Project::ticksPerQuarterNote,
+        "audio clip extend-start history test should move the left boundary and keep the old end stable");
+    require(session.canUndoProjectEdit(),
+        "audio clip extend-start action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo audio clip start extension from the clip action");
+
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value()
+            && restoredClip->startTick == trackloom::Project::ticksPerQuarterNote
+            && restoredClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "undoing audio clip start extension should restore the original timing");
+    require(session.canRedoProjectEdit(),
+        "undoing audio clip start extension should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo audio clip start extension from the clip action");
+
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value()
+            && redoneClip->startTick == 0
+            && redoneClip->lengthTick == trackloom::defaultAppAudioClipLengthTick + trackloom::Project::ticksPerQuarterNote,
+        "redoing audio clip start extension should restore the extended left boundary");
 }
 
 void audioClipActionRejectsTooShortClipEndTrimWithoutDirtyingSession()
@@ -6747,13 +6980,18 @@ int main()
     audioClipActionRejectsMidiClipRenameWithoutDirtyingSession();
     audioClipActionMovesAudioClipRightOneBeat();
     audioClipActionMovesAudioClipLeftOneBeat();
+    audioClipActionMoveCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionRejectsLeftMoveBeforeTimelineStartWithoutDirtyingSession();
     audioClipActionRejectsMissingClipMoveWithoutDirtyingSession();
     audioClipActionRejectsMidiClipMoveWithoutDirtyingSession();
     audioClipActionTrimsAudioClipEndEarlierOneBeat();
+    audioClipActionTrimEndCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionExtendsAudioClipEndLaterOneBeat();
+    audioClipActionExtendEndCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionTrimsAudioClipStartLaterOneBeat();
+    audioClipActionTrimStartCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionExtendsAudioClipStartEarlierOneBeat();
+    audioClipActionExtendStartCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionRejectsTooShortClipEndTrimWithoutDirtyingSession();
     audioClipActionRejectsMissingClipEndTrimWithoutDirtyingSession();
     audioClipActionRejectsMidiClipEndTrimWithoutDirtyingSession();

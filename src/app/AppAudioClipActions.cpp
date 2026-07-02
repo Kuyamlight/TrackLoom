@@ -274,8 +274,10 @@ AppAudioClipActionFeedback moveAudioClipByTickOffset(
             "无法左移音频片段：片段不能移动到时间线起点之前。");
     }
 
-    // 当前移动只改变空音频片段外壳起点；素材偏移和波形规则等音频导入后再单独实现。
-    if (!session.editProject().setClipTiming(clipId, newStartTick, targetClip->lengthTick)) {
+    // 当前移动只改变空音频片段外壳起点；通过命令历史保留旧起点，方便撤销/重做。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetClipTimingCommand>(clipId, newStartTick, targetClip->lengthTick));
+    if (!result.success) {
         return failureFeedback(
             AppAudioClipActionFeedbackKind::MoveFailed,
             "无法移动音频片段：工程模型拒绝了这次移动。");
@@ -331,7 +333,10 @@ AppAudioClipActionFeedback trimAudioClipEndByTickOffset(
     }
 
     const auto newEndTick = targetClip->startTick + newLengthTick;
-    if (!session.editProject().trimClipEndToTick(clipId, newEndTick)) {
+    // 片尾缩短只向内移动右边界；通过命令历史保留旧长度。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<TrimClipEndCommand>(clipId, newEndTick));
+    if (!result.success) {
         return failureFeedback(
             AppAudioClipActionFeedbackKind::TrimFailed,
             "无法缩短音频片段片尾：工程模型拒绝了这次修剪。");
@@ -386,7 +391,10 @@ AppAudioClipActionFeedback extendAudioClipEndByTickOffset(
             "无法延长音频片段片尾：目标片尾超出时间线范围。");
     }
 
-    if (!session.editProject().setClipTiming(clipId, targetClip->startTick, newLengthTick)) {
+    // 片尾延长只增加空外壳长度；通过命令历史保留旧长度。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetClipTimingCommand>(clipId, targetClip->startTick, newLengthTick));
+    if (!result.success) {
         return failureFeedback(
             AppAudioClipActionFeedbackKind::ExtendFailed,
             "无法延长音频片段片尾：工程模型拒绝了这次延长。");
@@ -441,7 +449,10 @@ AppAudioClipActionFeedback trimAudioClipStartByTickOffset(
     }
 
     const auto newStartTick = targetClip->startTick + offsetTick;
-    if (!session.editProject().trimClipStartToTick(clipId, newStartTick)) {
+    // 片头缩短只移动空外壳左边界；真实素材偏移后续单独设计。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<TrimClipStartCommand>(clipId, newStartTick));
+    if (!result.success) {
         return failureFeedback(
             AppAudioClipActionFeedbackKind::TrimFailed,
             "无法缩短音频片段片头：工程模型拒绝了这次修剪。");
@@ -499,7 +510,10 @@ AppAudioClipActionFeedback extendAudioClipStartByTickOffset(
             "无法延长音频片段片头：目标片尾超出时间线范围。");
     }
 
-    if (!session.editProject().setClipTiming(clipId, newStartTick, newLengthTick)) {
+    // 片头延长只向左扩展空外壳；通过命令历史保留旧左边界和长度。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetClipTimingCommand>(clipId, newStartTick, newLengthTick));
+    if (!result.success) {
         return failureFeedback(
             AppAudioClipActionFeedbackKind::ExtendFailed,
             "无法延长音频片段片头：工程模型拒绝了这次延长。");
