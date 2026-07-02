@@ -54,7 +54,7 @@ struct AppCommandPaletteActivationResult {
 AppCommandPaletteStatus describeAppCommandPalette(const AppMainMenuStatus& menu);
 
 // filterAppCommandPalette 在已展开的命令列表里做轻量搜索。
-// 当前只做标签和菜单组名匹配，后续真正 UI 可以在这个稳定结果上渲染。
+// 当前匹配菜单组名、命令标签和快捷键显示文本，后续真正 UI 可以在这个稳定结果上渲染。
 AppCommandPaletteStatus filterAppCommandPalette(
     const AppCommandPaletteStatus& palette,
     const std::string& query);

@@ -23,6 +23,7 @@
 #endif
 
 #include <filesystem>
+#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -45,6 +46,7 @@ void configureTestFailureOutput()
 void require(bool condition, const std::string& message)
 {
     if (!condition) {
+        std::cerr << message << '\n';
         throw std::runtime_error(message);
     }
 }
@@ -1106,6 +1108,54 @@ void commandPaletteMergesMultipleShortcutLabelsForOneCommand()
 
     require(redoProject != nullptr && redoProject->shortcutLabel == "Ctrl+Y, Ctrl+Shift+Z",
         "command palette should preserve every registered shortcut label for the same command");
+}
+
+void commandPaletteFiltersByShortcutLabel()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Palette Shortcut Search Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto palette = trackloom::addAppCommandPaletteShortcutLabels(
+        trackloom::describeAppCommandPalette(menu),
+        trackloom::defaultAppShortcutBindings());
+
+    const auto saveMatches = trackloom::filterAppCommandPalette(palette, "ctrl+s");
+    const auto undoMatches = trackloom::filterAppCommandPalette(palette, "ctrl+z");
+
+    require(findPaletteItem(
+                saveMatches,
+                trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject)) != nullptr,
+        "command palette search should include enabled commands by displayed shortcut label");
+    require(findPaletteItem(
+                undoMatches,
+                trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::UndoProject)) != nullptr,
+        "command palette search should also include disabled commands by displayed shortcut label");
+}
+
+void commandPaletteFiltersByMergedShortcutLabel()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Palette Merged Shortcut Search Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+    session.executeProjectCommand(
+        std::make_unique<trackloom::AddTrackCommand>("Undo seed", trackloom::TrackType::Instrument));
+    session.undoProjectEdit();
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto palette = trackloom::addAppCommandPaletteShortcutLabels(
+        trackloom::describeAppCommandPalette(menu),
+        trackloom::defaultAppShortcutBindings());
+
+    const auto redoMatches = trackloom::filterAppCommandPalette(palette, "ctrl+shift+z");
+
+    require(redoMatches.items.size() == 1
+            && redoMatches.items.front().commandId == trackloom::appMainMenuCommandId(
+                trackloom::AppMainMenuCommand::RedoProject),
+        "command palette search should match commands by any shortcut inside a merged label");
 }
 
 void commandDispatcherRunsOnlyTheSelectedMainMenuCommand()
@@ -7779,6 +7829,8 @@ int main()
     commandPaletteActivationReportsDispatchFailure();
     commandPaletteAddsShortcutLabelsForVisibleCommands();
     commandPaletteMergesMultipleShortcutLabelsForOneCommand();
+    commandPaletteFiltersByShortcutLabel();
+    commandPaletteFiltersByMergedShortcutLabel();
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
     commandDispatcherRunsRedoMainMenuCommand();
     commandDispatcherRunsTrackCreationMenuCommands();

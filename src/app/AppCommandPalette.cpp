@@ -75,7 +75,7 @@ AppCommandPaletteStatus filterAppCommandPalette(
     AppCommandPaletteStatus status;
 
     for (const auto& item : palette.items) {
-        const auto searchableText = item.groupName + " " + item.label;
+        const auto searchableText = item.groupName + " " + item.label + " " + item.shortcutLabel;
         if (containsSearchText(searchableText, query)) {
             status.items.push_back(item);
         }
