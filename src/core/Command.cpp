@@ -1,6 +1,7 @@
 #include "Command.h"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 namespace trackloom {
@@ -41,6 +42,114 @@ bool midiNoteTimingFitsClip(const TimelineClip& clip, std::int64_t startTick, st
     }
 
     return lengthTick <= clip.lengthTick && startTick <= clip.lengthTick - lengthTick;
+}
+
+struct MidiNoteTimingChange {
+    std::string noteId;
+    std::int64_t startTick = 0;
+    std::int64_t lengthTick = 0;
+};
+
+bool shiftedMidiNoteStart(
+    std::int64_t noteStartTick,
+    std::int64_t clipStartOffset,
+    std::int64_t& shiftedStartTick)
+{
+    if (clipStartOffset > 0) {
+        if (noteStartTick < clipStartOffset) {
+            return false;
+        }
+        shiftedStartTick = noteStartTick - clipStartOffset;
+        return true;
+    }
+
+    if (clipStartOffset < 0) {
+        const auto addedLeftSpace = -clipStartOffset;
+        if (noteStartTick > std::numeric_limits<std::int64_t>::max() - addedLeftSpace) {
+            return false;
+        }
+        shiftedStartTick = noteStartTick + addedLeftSpace;
+        return true;
+    }
+
+    shiftedStartTick = noteStartTick;
+    return true;
+}
+
+std::vector<MidiNoteTimingChange> noteTimingChangesFromNotes(const std::vector<MidiNoteEvent>& notes)
+{
+    std::vector<MidiNoteTimingChange> changes;
+    changes.reserve(notes.size());
+
+    for (const auto& note : notes) {
+        changes.push_back({ note.id, note.startTick, note.lengthTick });
+    }
+
+    return changes;
+}
+
+bool collectMidiClipStartTimingChanges(
+    const TimelineClip& clip,
+    std::int64_t startTick,
+    std::int64_t lengthTick,
+    std::vector<MidiNoteTimingChange>& changes)
+{
+    if (clip.type != ClipType::Midi || !isValidClipTiming(startTick, lengthTick)) {
+        return false;
+    }
+
+    const auto clipStartOffset = startTick - clip.startTick;
+    auto targetClip = clip;
+    targetClip.startTick = startTick;
+    targetClip.lengthTick = lengthTick;
+    changes.clear();
+    changes.reserve(clip.midiNotes.size());
+
+    for (const auto& note : clip.midiNotes) {
+        std::int64_t shiftedStartTick = 0;
+        if (!shiftedMidiNoteStart(note.startTick, clipStartOffset, shiftedStartTick)
+            || !midiNoteTimingFitsClip(targetClip, shiftedStartTick, note.lengthTick)) {
+            return false;
+        }
+
+        changes.push_back({ note.id, shiftedStartTick, note.lengthTick });
+    }
+
+    return true;
+}
+
+bool applyMidiNoteTimingChanges(Project& project, const std::vector<MidiNoteTimingChange>& changes)
+{
+    for (const auto& change : changes) {
+        if (!project.setMidiNoteTiming(change.noteId, change.startTick, change.lengthTick)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool applyClipTimingAndMidiNoteChanges(
+    Project& project,
+    const std::string& clipId,
+    std::int64_t startTick,
+    std::int64_t lengthTick,
+    const std::vector<MidiNoteTimingChange>& changes)
+{
+    const auto clip = project.findClipById(clipId);
+    if (!clip.has_value()) {
+        return false;
+    }
+
+    // 缩短左边界时要先移动音符，否则旧音符可能暂时超出新的较短片段。
+    // 延长左边界时要先扩大片段，否则右移后的音符可能暂时超出旧片段。
+    if (lengthTick > clip->lengthTick) {
+        return project.setClipTiming(clipId, startTick, lengthTick)
+            && applyMidiNoteTimingChanges(project, changes);
+    }
+
+    return applyMidiNoteTimingChanges(project, changes)
+        && project.setClipTiming(clipId, startTick, lengthTick);
 }
 
 }
@@ -791,6 +900,80 @@ void TrimClipStartCommand::undo(Project& project)
     if (oldStartTick_.has_value() && oldLengthTick_.has_value()) {
         project.setClipTiming(clipId_, *oldStartTick_, *oldLengthTick_);
     }
+}
+
+SetMidiClipStartKeepingNoteTimesCommand::SetMidiClipStartKeepingNoteTimesCommand(
+    std::string clipId,
+    std::int64_t startTick,
+    std::int64_t lengthTick)
+    : clipId_(std::move(clipId))
+    , startTick_(startTick)
+    , lengthTick_(lengthTick)
+{
+}
+
+std::string SetMidiClipStartKeepingNoteTimesCommand::name() const
+{
+    return "SetMidiClipStartKeepingNoteTimes";
+}
+
+CommandResult SetMidiClipStartKeepingNoteTimesCommand::validate(const Project& project) const
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    if (clip->type != ClipType::Midi) {
+        return CommandResult::fail("Clip must be a MIDI clip.");
+    }
+
+    std::vector<MidiNoteTimingChange> changes;
+    if (!collectMidiClipStartTimingChanges(*clip, startTick_, lengthTick_, changes)) {
+        return CommandResult::fail("MIDI clip start timing is invalid.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult SetMidiClipStartKeepingNoteTimesCommand::execute(Project& project)
+{
+    const auto clip = project.findClipById(clipId_);
+    if (!clip.has_value()) {
+        return CommandResult::fail("Clip does not exist.");
+    }
+
+    std::vector<MidiNoteTimingChange> newTimings;
+    if (!collectMidiClipStartTimingChanges(*clip, startTick_, lengthTick_, newTimings)) {
+        return CommandResult::fail("MIDI clip start timing is invalid.");
+    }
+
+    if (!oldStartTick_.has_value() || !oldLengthTick_.has_value()) {
+        oldStartTick_ = clip->startTick;
+        oldLengthTick_ = clip->lengthTick;
+        oldMidiNotes_ = clip->midiNotes;
+    }
+
+    const auto currentStartTick = clip->startTick;
+    const auto currentLengthTick = clip->lengthTick;
+    const auto currentTimings = noteTimingChangesFromNotes(clip->midiNotes);
+
+    if (!applyClipTimingAndMidiNoteChanges(project, clipId_, startTick_, lengthTick_, newTimings)) {
+        applyClipTimingAndMidiNoteChanges(project, clipId_, currentStartTick, currentLengthTick, currentTimings);
+        return CommandResult::fail("MIDI clip start could not be changed.");
+    }
+
+    return CommandResult::ok();
+}
+
+void SetMidiClipStartKeepingNoteTimesCommand::undo(Project& project)
+{
+    if (!oldStartTick_.has_value() || !oldLengthTick_.has_value()) {
+        return;
+    }
+
+    const auto oldTimings = noteTimingChangesFromNotes(oldMidiNotes_);
+    applyClipTimingAndMidiNoteChanges(project, clipId_, *oldStartTick_, *oldLengthTick_, oldTimings);
 }
 
 TrimClipEndCommand::TrimClipEndCommand(std::string clipId, std::int64_t endTick)

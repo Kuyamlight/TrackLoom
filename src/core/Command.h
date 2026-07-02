@@ -264,6 +264,29 @@ private:
     std::optional<std::int64_t> oldLengthTick_;
 };
 
+// SetMidiClipStartKeepingNoteTimesCommand 修改 MIDI 片段左边界，并同步平移内部音符相对 tick。
+// 目标是保持保留下来的音符绝对播放时间不变，同时让整个片头动作只占用一次撤销记录。
+class SetMidiClipStartKeepingNoteTimesCommand final : public Command {
+public:
+    SetMidiClipStartKeepingNoteTimesCommand(
+        std::string clipId,
+        std::int64_t startTick,
+        std::int64_t lengthTick);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::string clipId_;
+    std::int64_t startTick_ = 0;
+    std::int64_t lengthTick_ = 0;
+    std::optional<std::int64_t> oldStartTick_;
+    std::optional<std::int64_t> oldLengthTick_;
+    std::vector<MidiNoteEvent> oldMidiNotes_;
+};
+
 // TrimClipEndCommand 向内修剪片段右边界，并保存旧时间范围用于撤销。
 class TrimClipEndCommand final : public Command {
 public:

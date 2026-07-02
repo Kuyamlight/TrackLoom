@@ -3762,6 +3762,119 @@ void trimClipStartCommandSupportsUndoAndRedo()
     require(project.findClipById(clip->id)->lengthTick == 720, "redo should restore trimmed length");
 }
 
+void setMidiClipStartKeepingNoteTimesCommandTrimsStartWithUndoAndRedo()
+{
+    trackloom::Project project("MIDI Clip Start");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Phrase", trackloom::ClipType::Midi, 0, 1920);
+    const auto note = project.createMidiNote(clip->id, 480, 480, 64, 100, 1);
+
+    require(clip.has_value() && note.has_value(),
+        "MIDI clip start trim command test should create a clip and a note after the trim boundary");
+
+    const auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetMidiClipStartKeepingNoteTimesCommand>(clip->id, 480, 1440));
+
+    require(result.success,
+        "MIDI clip start trim command should succeed");
+    require(project.findClipById(clip->id)->startTick == 480,
+        "MIDI clip start trim command should move the clip start right");
+    require(project.findClipById(clip->id)->lengthTick == 1440,
+        "MIDI clip start trim command should preserve the old clip end");
+    require(project.findMidiNoteById(note->id)->startTick == 0,
+        "MIDI clip start trim command should shift the kept note left inside the clip");
+
+    require(commands.undo(project),
+        "MIDI clip start trim command undo should be available");
+    require(project.findClipById(clip->id)->startTick == 0,
+        "undoing MIDI clip start trim should restore the old clip start");
+    require(project.findClipById(clip->id)->lengthTick == 1920,
+        "undoing MIDI clip start trim should restore the old clip length");
+    require(project.findMidiNoteById(note->id)->startTick == 480,
+        "undoing MIDI clip start trim should restore the old note start");
+
+    require(commands.redo(project),
+        "MIDI clip start trim command redo should be available");
+    require(project.findClipById(clip->id)->startTick == 480,
+        "redoing MIDI clip start trim should restore the trimmed clip start");
+    require(project.findClipById(clip->id)->lengthTick == 1440,
+        "redoing MIDI clip start trim should restore the trimmed clip length");
+    require(project.findMidiNoteById(note->id)->startTick == 0,
+        "redoing MIDI clip start trim should restore the shifted note start");
+}
+
+void setMidiClipStartKeepingNoteTimesCommandExtendsStartWithUndoAndRedo()
+{
+    trackloom::Project project("MIDI Clip Start");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Phrase", trackloom::ClipType::Midi, 480, 1440);
+    const auto note = project.createMidiNote(clip->id, 0, 480, 64, 100, 1);
+
+    require(clip.has_value() && note.has_value(),
+        "MIDI clip start extend command test should create a clip and a note at the clip start");
+
+    const auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetMidiClipStartKeepingNoteTimesCommand>(clip->id, 0, 1920));
+
+    require(result.success,
+        "MIDI clip start extend command should succeed");
+    require(project.findClipById(clip->id)->startTick == 0,
+        "MIDI clip start extend command should move the clip start left");
+    require(project.findClipById(clip->id)->lengthTick == 1920,
+        "MIDI clip start extend command should increase the clip length");
+    require(project.findMidiNoteById(note->id)->startTick == 480,
+        "MIDI clip start extend command should shift the kept note right inside the clip");
+
+    require(commands.undo(project),
+        "MIDI clip start extend command undo should be available");
+    require(project.findClipById(clip->id)->startTick == 480,
+        "undoing MIDI clip start extend should restore the old clip start");
+    require(project.findClipById(clip->id)->lengthTick == 1440,
+        "undoing MIDI clip start extend should restore the old clip length");
+    require(project.findMidiNoteById(note->id)->startTick == 0,
+        "undoing MIDI clip start extend should restore the old note start");
+
+    require(commands.redo(project),
+        "MIDI clip start extend command redo should be available");
+    require(project.findClipById(clip->id)->startTick == 0,
+        "redoing MIDI clip start extend should restore the extended clip start");
+    require(project.findClipById(clip->id)->lengthTick == 1920,
+        "redoing MIDI clip start extend should restore the extended clip length");
+    require(project.findMidiNoteById(note->id)->startTick == 480,
+        "redoing MIDI clip start extend should restore the shifted note start");
+}
+
+void invalidSetMidiClipStartKeepingNoteTimesCommandDoesNotModifyProject()
+{
+    trackloom::Project project("MIDI Clip Start");
+    trackloom::CommandStack commands;
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Phrase", trackloom::ClipType::Midi, 0, 1920);
+    const auto note = project.createMidiNote(clip->id, 0, 480, 64, 100, 1);
+
+    require(clip.has_value() && note.has_value(),
+        "invalid MIDI clip start command test should create a note that crosses the trim boundary");
+
+    const auto result = commands.execute(
+        project,
+        std::make_unique<trackloom::SetMidiClipStartKeepingNoteTimesCommand>(clip->id, 480, 1440));
+
+    require(!result.success,
+        "MIDI clip start command should reject trimming that would drop an existing note");
+    require(project.findClipById(clip->id)->startTick == 0,
+        "failed MIDI clip start command should keep the old clip start");
+    require(project.findClipById(clip->id)->lengthTick == 1920,
+        "failed MIDI clip start command should keep the old clip length");
+    require(project.findMidiNoteById(note->id)->startTick == 0,
+        "failed MIDI clip start command should keep the old note start");
+    require(!commands.canUndo(),
+        "failed MIDI clip start command should not enter undo history");
+}
+
 void trimClipEndCommandSupportsUndoAndRedo()
 {
     trackloom::Project project("Clips");
@@ -6971,6 +7084,9 @@ int main()
         splitMidiClipRejectsNotesCrossingSplitTick();
         clipTimingRejectsMidiNotesOutsideClipRange();
         trimClipStartCommandSupportsUndoAndRedo();
+        setMidiClipStartKeepingNoteTimesCommandTrimsStartWithUndoAndRedo();
+        setMidiClipStartKeepingNoteTimesCommandExtendsStartWithUndoAndRedo();
+        invalidSetMidiClipStartKeepingNoteTimesCommandDoesNotModifyProject();
         trimClipEndCommandSupportsUndoAndRedo();
         invalidTrimClipCommandDoesNotModifyProject();
         addMarkerCommandSupportsUndoAndRedo();

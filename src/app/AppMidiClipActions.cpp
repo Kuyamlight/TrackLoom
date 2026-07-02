@@ -237,12 +237,6 @@ bool midiNotesFitClipLength(const TimelineClip& clip, std::int64_t lengthTick)
     return true;
 }
 
-struct MidiNoteTimingUpdate {
-    std::string noteId;
-    std::int64_t startTick = 0;
-    std::int64_t lengthTick = 0;
-};
-
 bool noteTimingFitsLength(std::int64_t startTick, std::int64_t lengthTick, std::int64_t clipLengthTick)
 {
     return startTick >= 0
@@ -550,8 +544,6 @@ AppMidiClipActionFeedback trimMidiClipStartByTickOffset(
 
     const auto newStartTick = targetClip->startTick + offsetTick;
     const auto newLengthTick = targetClip->lengthTick - offsetTick;
-    std::vector<MidiNoteTimingUpdate> noteUpdates;
-    noteUpdates.reserve(targetClip->midiNotes.size());
 
     for (const auto& note : targetClip->midiNotes) {
         if (note.startTick < offsetTick) {
@@ -566,20 +558,12 @@ AppMidiClipActionFeedback trimMidiClipStartByTickOffset(
                 AppMidiClipActionFeedbackKind::TrimFailed,
                 "无法缩短 MIDI 片段片头：音符移动后超出片段范围。");
         }
-
-        noteUpdates.push_back({ note.id, shiftedStartTick, note.lengthTick });
     }
 
-    auto& project = session.editProject();
-    for (const auto& update : noteUpdates) {
-        if (!project.setMidiNoteTiming(update.noteId, update.startTick, update.lengthTick)) {
-            return failureFeedback(
-                AppMidiClipActionFeedbackKind::TrimFailed,
-                "无法缩短 MIDI 片段片头：工程模型拒绝了音符时间调整。");
-        }
-    }
-
-    if (!project.setClipTiming(clipId, newStartTick, newLengthTick)) {
+    // 片头缩短必须同时移动片段左边界和内部音符；核心命令保证这是一次可撤销的原子动作。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetMidiClipStartKeepingNoteTimesCommand>(clipId, newStartTick, newLengthTick));
+    if (!result.success) {
         return failureFeedback(
             AppMidiClipActionFeedbackKind::TrimFailed,
             "无法缩短 MIDI 片段片头：工程模型拒绝了这次修剪。");
@@ -630,8 +614,6 @@ AppMidiClipActionFeedback extendMidiClipStartByTickOffset(
 
     const auto newStartTick = targetClip->startTick - offsetTick;
     const auto newLengthTick = targetClip->lengthTick + offsetTick;
-    std::vector<MidiNoteTimingUpdate> noteUpdates;
-    noteUpdates.reserve(targetClip->midiNotes.size());
 
     for (const auto& note : targetClip->midiNotes) {
         if (!canAddTickOffset(note.startTick, offsetTick)) {
@@ -646,23 +628,15 @@ AppMidiClipActionFeedback extendMidiClipStartByTickOffset(
                 AppMidiClipActionFeedbackKind::ExtendFailed,
                 "无法延长 MIDI 片段片头：音符移动后超出片段范围。");
         }
-
-        noteUpdates.push_back({ note.id, shiftedStartTick, note.lengthTick });
     }
 
-    auto& project = session.editProject();
-    if (!project.setClipTiming(clipId, newStartTick, newLengthTick)) {
+    // 片头延长会增加左侧空白并右移音符相对 tick；核心命令让它作为一次用户动作入栈。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetMidiClipStartKeepingNoteTimesCommand>(clipId, newStartTick, newLengthTick));
+    if (!result.success) {
         return failureFeedback(
             AppMidiClipActionFeedbackKind::ExtendFailed,
             "无法延长 MIDI 片段片头：工程模型拒绝了这次延长。");
-    }
-
-    for (const auto& update : noteUpdates) {
-        if (!project.setMidiNoteTiming(update.noteId, update.startTick, update.lengthTick)) {
-            return failureFeedback(
-                AppMidiClipActionFeedbackKind::ExtendFailed,
-                "无法延长 MIDI 片段片头：工程模型拒绝了音符时间调整。");
-        }
     }
 
     return extendStartSuccessFeedback(*targetClip);

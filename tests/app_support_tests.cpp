@@ -3927,6 +3927,138 @@ void midiClipActionExtendsMidiClipStartEarlierOneBeat()
         "successful MIDI clip extend-start should mark the app session dirty");
 }
 
+void midiClipActionTrimStartCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Clip Trim Start History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Loop",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "MIDI clip trim-start history test should create a source clip");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::Project::ticksPerQuarterNote,
+        64,
+        100,
+        1);
+    require(note.has_value(),
+        "MIDI clip trim-start history test should create a note after the trim boundary");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the trim-start action");
+
+    const auto feedback = trackloom::trimMidiClipStartLaterOneBeat(session, clip->id);
+
+    require(feedback.success,
+        "MIDI clip trim-start history test should trim the clip start");
+    const auto trimmedClip = session.project().findClipById(clip->id);
+    require(trimmedClip.has_value()
+            && trimmedClip->startTick == trackloom::Project::ticksPerQuarterNote
+            && trimmedClip->lengthTick == trackloom::defaultAppMidiClipLengthTick - trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip trim-start history test should move the left edge right by one beat");
+    require(trimmedClip->midiNotes.size() == 1
+            && trimmedClip->midiNotes[0].id == note->id
+            && trimmedClip->midiNotes[0].startTick == 0,
+        "MIDI clip trim-start history test should preserve the note id and shift the note left");
+    require(session.canUndoProjectEdit(),
+        "MIDI clip trim-start action should enter the app session undo history once");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI clip trim-start from the clip action");
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value()
+            && restoredClip->startTick == 0
+            && restoredClip->lengthTick == trackloom::defaultAppMidiClipLengthTick,
+        "undoing MIDI clip trim-start should restore the original clip timing");
+    require(restoredClip->midiNotes.size() == 1
+            && restoredClip->midiNotes[0].id == note->id
+            && restoredClip->midiNotes[0].startTick == trackloom::Project::ticksPerQuarterNote,
+        "undoing MIDI clip trim-start should restore the original note timing");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI clip trim-start should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI clip trim-start from the clip action");
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value()
+            && redoneClip->startTick == trackloom::Project::ticksPerQuarterNote
+            && redoneClip->lengthTick == trackloom::defaultAppMidiClipLengthTick - trackloom::Project::ticksPerQuarterNote,
+        "redoing MIDI clip trim-start should restore the trimmed clip timing");
+    require(redoneClip->midiNotes.size() == 1
+            && redoneClip->midiNotes[0].id == note->id
+            && redoneClip->midiNotes[0].startTick == 0,
+        "redoing MIDI clip trim-start should restore the shifted note timing");
+}
+
+void midiClipActionExtendStartCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Clip Extend Start History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Loop",
+        trackloom::ClipType::Midi,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "MIDI clip extend-start history test should create a source clip after the timeline start");
+    const auto note = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::Project::ticksPerQuarterNote,
+        64,
+        100,
+        1);
+    require(note.has_value(),
+        "MIDI clip extend-start history test should create a note at the clip start");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the extend-start action");
+
+    const auto feedback = trackloom::extendMidiClipStartEarlierOneBeat(session, clip->id);
+
+    require(feedback.success,
+        "MIDI clip extend-start history test should extend the clip start");
+    const auto extendedClip = session.project().findClipById(clip->id);
+    require(extendedClip.has_value()
+            && extendedClip->startTick == 0
+            && extendedClip->lengthTick == trackloom::defaultAppMidiClipLengthTick + trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip extend-start history test should move the left edge left by one beat");
+    require(extendedClip->midiNotes.size() == 1
+            && extendedClip->midiNotes[0].id == note->id
+            && extendedClip->midiNotes[0].startTick == trackloom::Project::ticksPerQuarterNote,
+        "MIDI clip extend-start history test should preserve the note id and shift the note right");
+    require(session.canUndoProjectEdit(),
+        "MIDI clip extend-start action should enter the app session undo history once");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI clip extend-start from the clip action");
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value()
+            && restoredClip->startTick == trackloom::Project::ticksPerQuarterNote
+            && restoredClip->lengthTick == trackloom::defaultAppMidiClipLengthTick,
+        "undoing MIDI clip extend-start should restore the original clip timing");
+    require(restoredClip->midiNotes.size() == 1
+            && restoredClip->midiNotes[0].id == note->id
+            && restoredClip->midiNotes[0].startTick == 0,
+        "undoing MIDI clip extend-start should restore the original note timing");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI clip extend-start should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI clip extend-start from the clip action");
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value()
+            && redoneClip->startTick == 0
+            && redoneClip->lengthTick == trackloom::defaultAppMidiClipLengthTick + trackloom::Project::ticksPerQuarterNote,
+        "redoing MIDI clip extend-start should restore the extended clip timing");
+    require(redoneClip->midiNotes.size() == 1
+            && redoneClip->midiNotes[0].id == note->id
+            && redoneClip->midiNotes[0].startTick == trackloom::Project::ticksPerQuarterNote,
+        "redoing MIDI clip extend-start should restore the shifted note timing");
+}
+
 void midiClipActionRejectsEmptyClipNameWithoutDirtyingSession()
 {
     removeTestWorkspace();
@@ -6358,6 +6490,8 @@ int main()
     midiClipActionExtendEndCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionTrimsMidiClipStartLaterOneBeat();
     midiClipActionExtendsMidiClipStartEarlierOneBeat();
+    midiClipActionTrimStartCanBeUndoneAndRedoneThroughSessionHistory();
+    midiClipActionExtendStartCanBeUndoneAndRedoneThroughSessionHistory();
     midiClipActionRejectsEmptyClipNameWithoutDirtyingSession();
     midiClipActionRejectsMissingTrackWithoutDirtyingSession();
     midiClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
