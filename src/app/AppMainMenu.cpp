@@ -101,6 +101,22 @@ AppMainMenuStatus describeAppMainMenu(
         "重做",
         session.canRedoProjectEdit()));
 
+    AppMainMenuGroup trackMenu;
+    trackMenu.name = "轨道";
+    // 这三个命令不依赖当前选择；依赖目标轨道或片段的编辑命令后续单独接入，避免菜单层读取 UI 私有状态。
+    trackMenu.items.push_back(commandItem(
+        AppMainMenuCommand::AddInstrumentTrack,
+        "添加乐器轨",
+        true));
+    trackMenu.items.push_back(commandItem(
+        AppMainMenuCommand::AddAudioTrack,
+        "添加音频轨",
+        true));
+    trackMenu.items.push_back(commandItem(
+        AppMainMenuCommand::AddFolderTrack,
+        "添加文件夹轨",
+        true));
+
     AppMainMenuGroup playbackMenu;
     playbackMenu.name = "播放";
     playbackMenu.items.push_back(commandItem(
@@ -118,6 +134,7 @@ AppMainMenuStatus describeAppMainMenu(
 
     status.groups.push_back(std::move(fileMenu));
     status.groups.push_back(std::move(editMenu));
+    status.groups.push_back(std::move(trackMenu));
     status.groups.push_back(std::move(playbackMenu));
     return status;
 }

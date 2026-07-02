@@ -679,14 +679,16 @@ void mainMenuDescribesFileAndPlaybackCommands()
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
 
-    require(menu.groups.size() == 3,
-        "main menu should expose file, edit and playback menu groups");
+    require(menu.groups.size() == 4,
+        "main menu should expose file, edit, track and playback menu groups");
     require(menu.groups[0].name == "文件",
         "first main menu group should be the file menu");
     require(menu.groups[1].name == "编辑",
         "second main menu group should be the edit menu");
-    require(menu.groups[2].name == "播放",
-        "third main menu group should be the playback menu");
+    require(menu.groups[2].name == "轨道",
+        "third main menu group should be the track menu");
+    require(menu.groups[3].name == "播放",
+        "fourth main menu group should be the playback menu");
     require(menu.groups[0].items.size() == 6,
         "file menu should include project commands, a separator and an empty recent-project row");
     require(menu.groups[0].items[0].commandId
@@ -714,13 +716,36 @@ void mainMenuDescribesFileAndPlaybackCommands()
         "edit menu should expose a stable command id for redo");
     require(!menu.groups[1].items[1].enabled,
         "redo command should be disabled before there is redo history");
-    require(menu.groups[2].items[0].label == "播放",
-        "playback menu should expose the play command label");
+    require(menu.groups[2].items.size() == 3,
+        "track menu should expose the current no-selection track creation commands");
+    require(menu.groups[2].items[0].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddInstrumentTrack),
+        "track menu should expose a stable command id for adding an instrument track");
+    require(menu.groups[2].items[0].label == "添加乐器轨",
+        "track menu should expose the add-instrument-track label");
     require(menu.groups[2].items[0].enabled,
+        "add-instrument-track command should be enabled without a current selection");
+    require(menu.groups[2].items[1].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddAudioTrack),
+        "track menu should expose a stable command id for adding an audio track");
+    require(menu.groups[2].items[1].label == "添加音频轨",
+        "track menu should expose the add-audio-track label");
+    require(menu.groups[2].items[1].enabled,
+        "add-audio-track command should be enabled without a current selection");
+    require(menu.groups[2].items[2].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddFolderTrack),
+        "track menu should expose a stable command id for adding a folder track");
+    require(menu.groups[2].items[2].label == "添加文件夹轨",
+        "track menu should expose the add-folder-track label");
+    require(menu.groups[2].items[2].enabled,
+        "add-folder-track command should be enabled without a current selection");
+    require(menu.groups[3].items[0].label == "播放",
+        "playback menu should expose the play command label");
+    require(menu.groups[3].items[0].enabled,
         "play command should be enabled while playback is stopped");
-    require(!menu.groups[2].items[1].enabled,
+    require(!menu.groups[3].items[1].enabled,
         "stop command should be disabled while playback is stopped");
-    require(!menu.groups[2].items[2].enabled,
+    require(!menu.groups[3].items[2].enabled,
         "rewind command should be disabled before the playback head moves");
 }
 
@@ -767,7 +792,7 @@ void mainMenuReflectsPlayingTransportState()
         "playing menu test should move the playback head before describing rewind state");
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
-    const auto& playbackItems = menu.groups[2].items;
+    const auto& playbackItems = menu.groups[3].items;
 
     require(!playbackItems[0].enabled,
         "play command should be disabled while playback is already running");
@@ -850,6 +875,40 @@ void commandDispatcherRunsRedoMainMenuCommand()
         "redo menu id should resolve to the redo project command kind");
     require(redoProjectCalls == 1,
         "redo command should call the redo project handler exactly once");
+}
+
+void commandDispatcherRunsTrackCreationMenuCommands()
+{
+    int instrumentTrackCalls = 0;
+    int audioTrackCalls = 0;
+    int folderTrackCalls = 0;
+
+    trackloom::AppCommandHandlers handlers;
+    handlers.addInstrumentTrack = [&] { ++instrumentTrackCalls; };
+    handlers.addAudioTrack = [&] { ++audioTrackCalls; };
+    handlers.addFolderTrack = [&] { ++folderTrackCalls; };
+
+    const auto instrumentResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddInstrumentTrack),
+        handlers);
+    const auto audioResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddAudioTrack),
+        handlers);
+    const auto folderResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddFolderTrack),
+        handlers);
+
+    require(instrumentResult.executed
+            && instrumentResult.command == trackloom::AppCommandKind::AddInstrumentTrack,
+        "track menu add-instrument command should dispatch to the instrument-track handler");
+    require(audioResult.executed
+            && audioResult.command == trackloom::AppCommandKind::AddAudioTrack,
+        "track menu add-audio command should dispatch to the audio-track handler");
+    require(folderResult.executed
+            && folderResult.command == trackloom::AppCommandKind::AddFolderTrack,
+        "track menu add-folder command should dispatch to the folder-track handler");
+    require(instrumentTrackCalls == 1 && audioTrackCalls == 1 && folderTrackCalls == 1,
+        "track creation menu commands should each call exactly their own handler once");
 }
 
 void commandDispatcherPassesRecentProjectNumber()
@@ -7434,6 +7493,7 @@ int main()
     mainMenuListsRecentProjectsWithStableCommandIds();
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
     commandDispatcherRunsRedoMainMenuCommand();
+    commandDispatcherRunsTrackCreationMenuCommands();
     commandDispatcherPassesRecentProjectNumber();
     commandDispatcherRejectsUnknownOrUnboundCommands();
     commandShortcutsMapCommonFileKeysToMenuCommands();

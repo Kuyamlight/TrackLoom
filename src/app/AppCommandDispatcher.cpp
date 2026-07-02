@@ -42,6 +42,12 @@ AppCommandKind appCommandKindFromMainMenuCommand(AppMainMenuCommand command)
         return AppCommandKind::UndoProject;
     case AppMainMenuCommand::RedoProject:
         return AppCommandKind::RedoProject;
+    case AppMainMenuCommand::AddInstrumentTrack:
+        return AppCommandKind::AddInstrumentTrack;
+    case AppMainMenuCommand::AddAudioTrack:
+        return AppCommandKind::AddAudioTrack;
+    case AppMainMenuCommand::AddFolderTrack:
+        return AppCommandKind::AddFolderTrack;
     case AppMainMenuCommand::PlayProject:
         return AppCommandKind::PlayProject;
     case AppMainMenuCommand::StopProject:
@@ -96,6 +102,13 @@ AppCommandDispatchResult dispatchAppCommand(
         return runSimpleCommand(command, handlers.undoProject);
     case AppCommandKind::RedoProject:
         return runSimpleCommand(command, handlers.redoProject);
+    case AppCommandKind::AddInstrumentTrack:
+        // 轨道创建也只分发到应用层动作；命名、dirty 和撤销历史继续由 AppTrackActions 处理。
+        return runSimpleCommand(command, handlers.addInstrumentTrack);
+    case AppCommandKind::AddAudioTrack:
+        return runSimpleCommand(command, handlers.addAudioTrack);
+    case AppCommandKind::AddFolderTrack:
+        return runSimpleCommand(command, handlers.addFolderTrack);
     case AppCommandKind::PlayProject:
         return runSimpleCommand(command, handlers.playProject);
     case AppCommandKind::StopProject:

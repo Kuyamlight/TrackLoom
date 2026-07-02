@@ -17,6 +17,9 @@ enum class AppCommandKind {
     SaveProjectAs,
     UndoProject,
     RedoProject,
+    AddInstrumentTrack,
+    AddAudioTrack,
+    AddFolderTrack,
     PlayProject,
     StopProject,
     RewindProject,
@@ -47,6 +50,10 @@ struct AppCommandHandlers {
     std::function<void()> saveProjectAs;
     std::function<void()> undoProject;
     std::function<void()> redoProject;
+    // 轨道创建回调复用 AppTrackActions；分发器不直接命名轨道或改工程。
+    std::function<void()> addInstrumentTrack;
+    std::function<void()> addAudioTrack;
+    std::function<void()> addFolderTrack;
     std::function<void()> playProject;
     std::function<void()> stopProject;
     std::function<void()> rewindProject;

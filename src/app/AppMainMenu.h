@@ -21,7 +21,11 @@ enum class AppMainMenuCommand {
     RedoProject = 1052,
     PlayProject = 1101,
     StopProject = 1102,
-    RewindProject = 1103
+    RewindProject = 1103,
+    // 这三项只负责“创建轨道”，不依赖当前选中轨道或片段。
+    AddInstrumentTrack = 1201,
+    AddAudioTrack = 1202,
+    AddFolderTrack = 1203
 };
 
 struct AppMainMenuItem {

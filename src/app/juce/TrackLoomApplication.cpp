@@ -708,6 +708,9 @@ private:
         handlers.saveProjectAs = [this] { chooseProjectToSaveAs(); };
         handlers.undoProject = [this] { undoProjectEditFromMenu(); };
         handlers.redoProject = [this] { redoProjectEditFromMenu(); };
+        handlers.addInstrumentTrack = [this] { addDefaultInstrumentTrack(); };
+        handlers.addAudioTrack = [this] { addDefaultAudioTrack(); };
+        handlers.addFolderTrack = [this] { addDefaultFolderTrack(); };
         handlers.playProject = [this] { startProjectPlayback(); };
         handlers.stopProject = [this] { stopProjectPlayback(); };
         handlers.rewindProject = [this] { rewindProjectPlayback(); };
