@@ -135,6 +135,40 @@ AppCommandPaletteSelectionResult selectAppCommandPaletteItem(
     };
 }
 
+AppCommandPaletteActivationResult activateAppCommandPaletteCommand(
+    const AppCommandPaletteStatus& palette,
+    const std::string& query,
+    const AppCommandHandlers& handlers)
+{
+    AppCommandPaletteActivationResult result;
+    result.selection = selectAppCommandPaletteItem(palette, query);
+
+    if (result.selection.kind == AppCommandPaletteSelectionResultKind::NoMatchingCommand) {
+        result.kind = AppCommandPaletteActivationResultKind::NoMatchingCommand;
+        return result;
+    }
+
+    if (result.selection.kind == AppCommandPaletteSelectionResultKind::OnlyDisabledMatches) {
+        result.kind = AppCommandPaletteActivationResultKind::OnlyDisabledMatches;
+        return result;
+    }
+
+    if (!result.selection.item.has_value()) {
+        result.kind = AppCommandPaletteActivationResultKind::DispatchFailed;
+        return result;
+    }
+
+    result.dispatch = dispatchAppCommand(result.selection.item->commandId, handlers);
+    if (!result.dispatch.executed) {
+        result.kind = AppCommandPaletteActivationResultKind::DispatchFailed;
+        return result;
+    }
+
+    result.executed = true;
+    result.kind = AppCommandPaletteActivationResultKind::Executed;
+    return result;
+}
+
 std::optional<AppCommandPaletteItem> selectFirstExecutableAppCommand(
     const AppCommandPaletteStatus& palette,
     const std::string& query)

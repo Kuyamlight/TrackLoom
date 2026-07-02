@@ -980,6 +980,85 @@ void commandPaletteSelectionDistinguishesDisabledMatchesFromMissingMatches()
         "missing command palette queries should not carry a stale selected item");
 }
 
+void commandPaletteActivationExecutesSelectedEnabledCommandThroughDispatcher()
+{
+    trackloom::AppCommandPaletteStatus palette;
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddInstrumentTrack),
+        true,
+        "轨道",
+        "添加乐器轨",
+        {}
+    });
+
+    int addInstrumentTrackCalls = 0;
+    trackloom::AppCommandHandlers handlers;
+    handlers.addInstrumentTrack = [&] { ++addInstrumentTrackCalls; };
+
+    const auto result = trackloom::activateAppCommandPaletteCommand(palette, "乐器", handlers);
+
+    require(result.executed,
+        "command palette activation should execute a selected enabled command");
+    require(result.kind == trackloom::AppCommandPaletteActivationResultKind::Executed,
+        "command palette activation should expose a stable executed result kind");
+    require(result.dispatch.command == trackloom::AppCommandKind::AddInstrumentTrack,
+        "command palette activation should execute through AppCommandDispatcher");
+    require(addInstrumentTrackCalls == 1,
+        "command palette activation should call the selected command handler exactly once");
+}
+
+void commandPaletteActivationDoesNotDispatchDisabledOrMissingCommands()
+{
+    trackloom::AppCommandPaletteStatus palette;
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::UndoProject),
+        false,
+        "编辑",
+        "撤销",
+        "Ctrl+Z"
+    });
+
+    int undoCalls = 0;
+    trackloom::AppCommandHandlers handlers;
+    handlers.undoProject = [&] { ++undoCalls; };
+
+    const auto disabled = trackloom::activateAppCommandPaletteCommand(palette, "撤销", handlers);
+    const auto missing = trackloom::activateAppCommandPaletteCommand(palette, "不存在的命令", handlers);
+
+    require(!disabled.executed
+            && disabled.kind == trackloom::AppCommandPaletteActivationResultKind::OnlyDisabledMatches,
+        "command palette activation should not dispatch when matching commands are disabled");
+    require(!missing.executed
+            && missing.kind == trackloom::AppCommandPaletteActivationResultKind::NoMatchingCommand,
+        "command palette activation should not dispatch when no command matches the query");
+    require(undoCalls == 0,
+        "command palette activation should not call handlers for disabled or missing commands");
+}
+
+void commandPaletteActivationReportsDispatchFailure()
+{
+    trackloom::AppCommandPaletteStatus palette;
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::PlayProject),
+        true,
+        "播放",
+        "播放",
+        {}
+    });
+
+    trackloom::AppCommandHandlers handlers;
+    const auto result = trackloom::activateAppCommandPaletteCommand(palette, "播放", handlers);
+
+    require(!result.executed,
+        "command palette activation should report failure when the selected command lacks a handler");
+    require(result.kind == trackloom::AppCommandPaletteActivationResultKind::DispatchFailed,
+        "command palette activation should distinguish dispatcher failure from search failure");
+    require(result.selection.kind == trackloom::AppCommandPaletteSelectionResultKind::Selected,
+        "command palette activation should preserve the successful selection result");
+    require(result.dispatch.kind == trackloom::AppCommandDispatchResultKind::MissingHandler,
+        "command palette activation should expose the dispatcher failure reason");
+}
+
 void commandPaletteAddsShortcutLabelsForVisibleCommands()
 {
     trackloom::AppProjectSession session;
@@ -7695,6 +7774,9 @@ int main()
     commandPaletteSelectionSkipsDisabledAndMissingMatches();
     commandPaletteSelectionReportsSelectedResultKind();
     commandPaletteSelectionDistinguishesDisabledMatchesFromMissingMatches();
+    commandPaletteActivationExecutesSelectedEnabledCommandThroughDispatcher();
+    commandPaletteActivationDoesNotDispatchDisabledOrMissingCommands();
+    commandPaletteActivationReportsDispatchFailure();
     commandPaletteAddsShortcutLabelsForVisibleCommands();
     commandPaletteMergesMultipleShortcutLabelsForOneCommand();
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();

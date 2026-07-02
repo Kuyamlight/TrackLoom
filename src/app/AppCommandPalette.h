@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AppCommandDispatcher.h"
 #include "AppCommandShortcuts.h"
 #include "AppMainMenu.h"
 
@@ -33,6 +34,21 @@ struct AppCommandPaletteSelectionResult {
     std::optional<AppCommandPaletteItem> item;
 };
 
+enum class AppCommandPaletteActivationResultKind {
+    Executed,
+    NoMatchingCommand,
+    OnlyDisabledMatches,
+    DispatchFailed
+};
+
+struct AppCommandPaletteActivationResult {
+    bool executed = false;
+    AppCommandPaletteActivationResultKind kind =
+        AppCommandPaletteActivationResultKind::NoMatchingCommand;
+    AppCommandPaletteSelectionResult selection;
+    AppCommandDispatchResult dispatch;
+};
+
 // describeAppCommandPalette 把主菜单快照展开成命令面板可显示的扁平列表。
 // 它只复制命令数据，不执行命令；分隔线和提示行不会进入命令面板。
 AppCommandPaletteStatus describeAppCommandPalette(const AppMainMenuStatus& menu);
@@ -54,6 +70,13 @@ AppCommandPaletteStatus addAppCommandPaletteShortcutLabels(
 AppCommandPaletteSelectionResult selectAppCommandPaletteItem(
     const AppCommandPaletteStatus& palette,
     const std::string& query);
+
+// activateAppCommandPaletteCommand 是命令面板“确认执行”的应用层边界。
+// 它先使用命令面板选择规则，再通过 AppCommandDispatcher 执行；禁用或无匹配不会触发 handler。
+AppCommandPaletteActivationResult activateAppCommandPaletteCommand(
+    const AppCommandPaletteStatus& palette,
+    const std::string& query,
+    const AppCommandHandlers& handlers);
 
 // selectFirstExecutableAppCommand 只选择命令，不执行命令。
 // 它按当前过滤顺序返回第一个 enabled 项；执行仍由 AppCommandDispatcher 负责。
