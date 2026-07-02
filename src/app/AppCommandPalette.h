@@ -2,6 +2,7 @@
 
 #include "AppMainMenu.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,12 @@ AppCommandPaletteStatus describeAppCommandPalette(const AppMainMenuStatus& menu)
 // filterAppCommandPalette 在已展开的命令列表里做轻量搜索。
 // 当前只做标签和菜单组名匹配，后续真正 UI 可以在这个稳定结果上渲染。
 AppCommandPaletteStatus filterAppCommandPalette(
+    const AppCommandPaletteStatus& palette,
+    const std::string& query);
+
+// selectFirstExecutableAppCommand 只选择命令，不执行命令。
+// 它按当前过滤顺序返回第一个 enabled 项；执行仍由 AppCommandDispatcher 负责。
+std::optional<AppCommandPaletteItem> selectFirstExecutableAppCommand(
     const AppCommandPaletteStatus& palette,
     const std::string& query);
 

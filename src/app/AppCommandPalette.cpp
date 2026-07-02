@@ -71,4 +71,19 @@ AppCommandPaletteStatus filterAppCommandPalette(
     return status;
 }
 
+std::optional<AppCommandPaletteItem> selectFirstExecutableAppCommand(
+    const AppCommandPaletteStatus& palette,
+    const std::string& query)
+{
+    const auto filteredPalette = filterAppCommandPalette(palette, query);
+
+    for (const auto& item : filteredPalette.items) {
+        if (item.enabled) {
+            return item;
+        }
+    }
+
+    return std::nullopt;
+}
+
 }

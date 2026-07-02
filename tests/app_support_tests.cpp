@@ -883,6 +883,49 @@ void commandPaletteIncludesRecentProjectsAndFiltersByQuery()
         "command palette search should not expose disabled menu info rows as commands");
 }
 
+void commandPaletteSelectsFirstEnabledCommandForQuery()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Palette Select Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto palette = trackloom::describeAppCommandPalette(menu);
+    const auto selectedTrack = trackloom::selectFirstExecutableAppCommand(palette, "轨道");
+    const auto selectedPlayback = trackloom::selectFirstExecutableAppCommand(palette, "播放");
+
+    require(selectedTrack.has_value(),
+        "command palette should select an executable command when a query matches enabled commands");
+    require(selectedTrack->commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddInstrumentTrack),
+        "command palette should select the first enabled command in filtered order");
+    require(selectedTrack->label == "添加乐器轨" && selectedTrack->groupName == "轨道",
+        "command palette selection should preserve the chosen command display fields");
+    require(selectedPlayback.has_value()
+            && selectedPlayback->commandId
+                == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::PlayProject),
+        "command palette should skip disabled playback commands and select the enabled play command");
+}
+
+void commandPaletteSelectionSkipsDisabledAndMissingMatches()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Palette Disabled Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto palette = trackloom::describeAppCommandPalette(menu);
+    const auto disabledEditCommand = trackloom::selectFirstExecutableAppCommand(palette, "撤销");
+    const auto missingCommand = trackloom::selectFirstExecutableAppCommand(palette, "不存在的命令");
+
+    require(!disabledEditCommand.has_value(),
+        "command palette should not select a command when all matching commands are disabled");
+    require(!missingCommand.has_value(),
+        "command palette should return no selection when the query matches no command");
+}
+
 void commandDispatcherRunsOnlyTheSelectedMainMenuCommand()
 {
     int newProjectCalls = 0;
@@ -7545,6 +7588,8 @@ int main()
     mainMenuListsRecentProjectsWithStableCommandIds();
     commandPaletteFlattensMenuCommandsWithoutSeparatorsOrInfoRows();
     commandPaletteIncludesRecentProjectsAndFiltersByQuery();
+    commandPaletteSelectsFirstEnabledCommandForQuery();
+    commandPaletteSelectionSkipsDisabledAndMissingMatches();
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
     commandDispatcherRunsRedoMainMenuCommand();
     commandDispatcherRunsTrackCreationMenuCommands();
