@@ -468,8 +468,8 @@ TrackLoom 应支持：
 - 建立第一批桌面文件快捷键时：
   - 触发场景：基础文件/播放菜单和 `AppCommandDispatcher` 已存在后，需要让常见文件快捷键复用同一命令 id 和执行边界，而不是在 JUCE `keyPressed` 里重新写保存、打开和新建逻辑。
   - 根本原因：快捷键组合、平台主修饰键和命令执行是不同层次；如果直接在 JUCE 层判断 `Ctrl+S` 后调用保存函数，后续菜单、快捷键、命令面板和 AI 工具会逐渐分叉。Space 播放/停止是切换语义，不等同于菜单里的“播放”和“停止”两个独立命令，不能硬塞进同一批文件快捷键映射。
-  - 采用的解决方式：新增平台无关的 `AppCommandShortcuts`，把 `primaryModifier + N/O/S/Shift+S` 映射到 `AppMainMenuCommand` 的稳定 command id；JUCE 只把 `KeyPress` 转成 `AppShortcutChord`，再交给 `dispatchAppCommand` 执行。CTest 覆盖 `Ctrl+N`、`Ctrl+O`、`Ctrl+S`、`Ctrl+Shift+S` 和无主修饰键、带 Alt、未注册字符的拒绝。
-  - 后续规则：新增快捷键时应先扩展平台无关映射并测试，再让 JUCE 或其他前端转换输入事件；不得让快捷键绕过 dirty 保护、文件选择反馈或命令分发器；播放/停止切换继续使用 `toggleAppPlayback`，除非后续明确新增独立 Toggle 命令并补测试。
+  - 采用的解决方式：新增平台无关的 `AppCommandShortcuts`，把 `primaryModifier + N/O/S/Shift+S` 映射到 `AppMainMenuCommand` 的稳定 command id；2026-07-02 起，继续把 `primaryModifier + Z/Y/Shift+Z` 映射到撤销/重做 command id。JUCE 只把 `KeyPress` 转成 `AppShortcutChord`，再交给 `dispatchAppCommand` 执行。CTest 覆盖 `Ctrl+N`、`Ctrl+O`、`Ctrl+S`、`Ctrl+Shift+S`、`Ctrl+Z`、`Ctrl+Y`、`Ctrl+Shift+Z` 和无主修饰键、带 Alt、未注册字符的拒绝。
+  - 后续规则：新增快捷键时应先扩展平台无关映射并测试，再让 JUCE 或其他前端转换输入事件；不得让快捷键绕过 dirty 保护、文件选择反馈、工程命令历史或命令分发器；播放/停止切换继续使用 `toggleAppPlayback`，除非后续明确新增独立 Toggle 命令并补测试。
 - 建立应用层工程命令历史边界时：
   - 触发场景：核心 `CommandStack` 已能撤销/重做，但桌面首屏动作长期通过 `AppProjectSession::editProject()` 直接修改工程；如果直接暴露撤销菜单，可能跳过未记录的片段或音符编辑，误撤更早的轨道操作。
   - 根本原因：命令历史只能理解通过 `Command` 执行的编辑，无法自动知道旧直接编辑入口做过什么；混用两种修改路径时，保留旧历史比没有撤销更危险。
@@ -480,6 +480,11 @@ TrackLoom 应支持：
   - 根本原因：如果 JUCE 菜单直接调用 `session_.undoProjectEdit()`，菜单启用状态、命令 id、快捷键和后续命令面板会各自复制一套规则；如果把播放、最近工程或文件选择器状态放进工程撤销栈，会混淆运行态和工程编辑。
   - 采用的解决方式：扩展 `AppMainMenu` 增加“编辑”组和稳定 `UndoProject`/`RedoProject` command id，启用状态只读取 `canUndoProjectEdit()`/`canRedoProjectEdit()`；扩展 `AppCommandDispatcher` 通过注入回调执行撤销/重做；JUCE 只绑定 handler 并刷新提示。CTest 覆盖编辑菜单项、历史状态启用、撤销/重做分发。
   - 后续规则：所有用户可见撤销/重做入口都必须经同一 command id 和分发器；工程撤销/重做只处理 `Project` 命令历史，不包含播放头、最近工程、文件选择器、设置或其他运行态。
+- 接入桌面撤销/重做快捷键时：
+  - 触发场景：基础“编辑”菜单已能触发工程撤销/重做后，需要让常见键盘操作进入同一命令路径。
+  - 根本原因：如果在 JUCE `keyPressed` 里直接调用 `undoProjectEdit()` 或 `redoProjectEdit()`，菜单、快捷键和后续命令面板会分裂成多套入口；如果只支持一种重做组合，也会和 Windows/常见创作软件中的 `Ctrl+Y`、`Ctrl+Shift+Z` 习惯不一致。
+  - 采用的解决方式：扩展 `AppCommandShortcuts`，让 `Ctrl+Z` 映射 `UndoProject`，`Ctrl+Y` 和 `Ctrl+Shift+Z` 映射 `RedoProject`；JUCE 仍只负责把按键转换为 `AppShortcutChord` 并交给命令分发器。CTest 先红后绿覆盖三种组合。
+  - 后续规则：撤销/重做快捷键不得绕过 `AppMainMenuCommand` 和 `AppCommandDispatcher`；未来增加平台原生菜单快捷键展示、自定义快捷键或命令面板时，必须复用同一 command id，不能另写直接会话调用。
 - 展示桌面轨道列表时：
   - 触发场景：JUCE 首屏已有“添加乐器轨”按钮后，需要让用户看到真实轨道行，而不是只看到轨道数量。
   - 根本原因：如果界面直接遍历 `Project::tracks()` 并自行解释轨道类型、片段数量和状态标签，后续轨道选择、时间线、设备路由、AI 工具和诊断面板容易出现显示规则不一致。

@@ -918,6 +918,23 @@ void commandShortcutsMapCommonFileKeysToMenuCommands()
         "Ctrl+Shift+S should map to the same save-as command id used by the file menu");
 }
 
+void commandShortcutsMapUndoRedoKeysToEditMenuCommands()
+{
+    const auto undoProject = trackloom::appCommandIdForShortcut({ 'z', true, false, false });
+    const auto redoProject = trackloom::appCommandIdForShortcut({ 'y', true, false, false });
+    const auto redoProjectAlternative = trackloom::appCommandIdForShortcut({ 'z', true, true, false });
+
+    require(undoProject.has_value()
+            && undoProject.value() == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::UndoProject),
+        "Ctrl+Z should map to the same undo command id used by the edit menu");
+    require(redoProject.has_value()
+            && redoProject.value() == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::RedoProject),
+        "Ctrl+Y should map to the same redo command id used by the edit menu");
+    require(redoProjectAlternative.has_value()
+            && redoProjectAlternative.value() == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::RedoProject),
+        "Ctrl+Shift+Z should also map to redo for users who expect the common alternative redo shortcut");
+}
+
 void commandShortcutsIgnoreUnregisteredOrAmbiguousChords()
 {
     require(!trackloom::appCommandIdForShortcut({ 's', false, false, false }).has_value(),
@@ -7420,6 +7437,7 @@ int main()
     commandDispatcherPassesRecentProjectNumber();
     commandDispatcherRejectsUnknownOrUnboundCommands();
     commandShortcutsMapCommonFileKeysToMenuCommands();
+    commandShortcutsMapUndoRedoKeysToEditMenuCommands();
     commandShortcutsIgnoreUnregisteredOrAmbiguousChords();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionCreateCanBeUndoneAndRedoneThroughSessionHistory();

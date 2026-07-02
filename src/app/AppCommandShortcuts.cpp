@@ -37,6 +37,24 @@ std::optional<int> fileCommandShortcut(char key, bool shift)
     return std::nullopt;
 }
 
+std::optional<int> editCommandShortcut(char key, bool shift)
+{
+    // 撤销/重做快捷键复用编辑菜单 command id，避免键盘入口绕过菜单启用规则和命令分发器。
+    switch (key) {
+    case 'z':
+        return appMainMenuCommandId(shift
+            ? AppMainMenuCommand::RedoProject
+            : AppMainMenuCommand::UndoProject);
+    case 'y':
+        if (!shift) {
+            return appMainMenuCommandId(AppMainMenuCommand::RedoProject);
+        }
+        break;
+    }
+
+    return std::nullopt;
+}
+
 }
 
 std::optional<int> appCommandIdForShortcut(const AppShortcutChord& chord)
@@ -46,7 +64,11 @@ std::optional<int> appCommandIdForShortcut(const AppShortcutChord& chord)
         return std::nullopt;
     }
 
-    return fileCommandShortcut(normalizedShortcutKey(chord.key), chord.shift);
+    const auto key = normalizedShortcutKey(chord.key);
+    if (const auto commandId = fileCommandShortcut(key, chord.shift)) {
+        return commandId;
+    }
+    return editCommandShortcut(key, chord.shift);
 }
 
 }
