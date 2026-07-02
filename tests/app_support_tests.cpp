@@ -679,12 +679,14 @@ void mainMenuDescribesFileAndPlaybackCommands()
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
 
-    require(menu.groups.size() == 2,
-        "main menu should expose file and playback menu groups");
+    require(menu.groups.size() == 3,
+        "main menu should expose file, edit and playback menu groups");
     require(menu.groups[0].name == "文件",
         "first main menu group should be the file menu");
-    require(menu.groups[1].name == "播放",
-        "second main menu group should be the playback menu");
+    require(menu.groups[1].name == "编辑",
+        "second main menu group should be the edit menu");
+    require(menu.groups[2].name == "播放",
+        "third main menu group should be the playback menu");
     require(menu.groups[0].items.size() == 6,
         "file menu should include project commands, a separator and an empty recent-project row");
     require(menu.groups[0].items[0].commandId
@@ -698,14 +700,58 @@ void mainMenuDescribesFileAndPlaybackCommands()
         "file menu should separate regular file commands from recent projects");
     require(!menu.groups[0].items[5].enabled && menu.groups[0].items[5].commandId == 0,
         "empty recent-project menu row should be disabled and have no command id");
-    require(menu.groups[1].items[0].label == "播放",
-        "playback menu should expose the play command label");
-    require(menu.groups[1].items[0].enabled,
-        "play command should be enabled while playback is stopped");
+    require(menu.groups[1].items.size() == 2,
+        "edit menu should expose undo and redo commands");
+    require(menu.groups[1].items[0].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::UndoProject),
+        "edit menu should expose a stable command id for undo");
+    require(menu.groups[1].items[0].label == "撤销",
+        "edit menu should expose the undo command label");
+    require(!menu.groups[1].items[0].enabled,
+        "undo command should be disabled before there is undo history");
+    require(menu.groups[1].items[1].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::RedoProject),
+        "edit menu should expose a stable command id for redo");
     require(!menu.groups[1].items[1].enabled,
+        "redo command should be disabled before there is redo history");
+    require(menu.groups[2].items[0].label == "播放",
+        "playback menu should expose the play command label");
+    require(menu.groups[2].items[0].enabled,
+        "play command should be enabled while playback is stopped");
+    require(!menu.groups[2].items[1].enabled,
         "stop command should be disabled while playback is stopped");
-    require(!menu.groups[1].items[2].enabled,
+    require(!menu.groups[2].items[2].enabled,
         "rewind command should be disabled before the playback head moves");
+}
+
+void mainMenuReflectsUndoRedoHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Edit Menu History");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+
+    const auto commandResult = session.executeProjectCommand(
+        std::make_unique<trackloom::AddTrackCommand>("Lead", trackloom::TrackType::Instrument));
+    require(commandResult.success,
+        "edit menu history test should create undoable project history");
+
+    const auto afterEdit = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto& editItemsAfterEdit = afterEdit.groups[1].items;
+    require(editItemsAfterEdit[0].enabled,
+        "undo command should be enabled after an undoable edit");
+    require(!editItemsAfterEdit[1].enabled,
+        "redo command should stay disabled until the user undoes an edit");
+
+    require(session.undoProjectEdit(),
+        "edit menu history test should create redo history");
+
+    const auto afterUndo = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto& editItemsAfterUndo = afterUndo.groups[1].items;
+    require(!editItemsAfterUndo[0].enabled,
+        "undo command should be disabled after the only edit is undone");
+    require(editItemsAfterUndo[1].enabled,
+        "redo command should be enabled after undoing an edit");
 }
 
 void mainMenuReflectsPlayingTransportState()
@@ -721,7 +767,7 @@ void mainMenuReflectsPlayingTransportState()
         "playing menu test should move the playback head before describing rewind state");
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
-    const auto& playbackItems = menu.groups[1].items;
+    const auto& playbackItems = menu.groups[2].items;
 
     require(!playbackItems[0].enabled,
         "play command should be disabled while playback is already running");
@@ -765,24 +811,45 @@ void commandDispatcherRunsOnlyTheSelectedMainMenuCommand()
     int newProjectCalls = 0;
     int saveProjectCalls = 0;
     int playProjectCalls = 0;
+    int undoProjectCalls = 0;
 
     trackloom::AppCommandHandlers handlers;
     handlers.newProject = [&] { ++newProjectCalls; };
     handlers.saveProject = [&] { ++saveProjectCalls; };
     handlers.playProject = [&] { ++playProjectCalls; };
+    handlers.undoProject = [&] { ++undoProjectCalls; };
 
     const auto result = trackloom::dispatchAppCommand(
-        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject),
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::UndoProject),
         handlers);
 
     require(result.executed,
         "command dispatcher should execute a known command when its handler exists");
     require(result.kind == trackloom::AppCommandDispatchResultKind::Executed,
         "executed command should expose a stable executed result kind");
-    require(result.command == trackloom::AppCommandKind::SaveProject,
-        "save menu id should resolve to the save project command kind");
-    require(newProjectCalls == 0 && saveProjectCalls == 1 && playProjectCalls == 0,
+    require(result.command == trackloom::AppCommandKind::UndoProject,
+        "undo menu id should resolve to the undo project command kind");
+    require(newProjectCalls == 0 && saveProjectCalls == 0 && playProjectCalls == 0 && undoProjectCalls == 1,
         "command dispatcher should run only the selected command handler");
+}
+
+void commandDispatcherRunsRedoMainMenuCommand()
+{
+    int redoProjectCalls = 0;
+
+    trackloom::AppCommandHandlers handlers;
+    handlers.redoProject = [&] { ++redoProjectCalls; };
+
+    const auto result = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::RedoProject),
+        handlers);
+
+    require(result.executed,
+        "command dispatcher should execute the redo command when its handler exists");
+    require(result.command == trackloom::AppCommandKind::RedoProject,
+        "redo menu id should resolve to the redo project command kind");
+    require(redoProjectCalls == 1,
+        "redo command should call the redo project handler exactly once");
 }
 
 void commandDispatcherPassesRecentProjectNumber()
@@ -7345,9 +7412,11 @@ int main()
     recentProjectsOpenByNumberRejectsMissingSelection();
     recentProjectsOpenByNumberRejectsMissingFileWithoutMutation();
     mainMenuDescribesFileAndPlaybackCommands();
+    mainMenuReflectsUndoRedoHistory();
     mainMenuReflectsPlayingTransportState();
     mainMenuListsRecentProjectsWithStableCommandIds();
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
+    commandDispatcherRunsRedoMainMenuCommand();
     commandDispatcherPassesRecentProjectNumber();
     commandDispatcherRejectsUnknownOrUnboundCommands();
     commandShortcutsMapCommonFileKeysToMenuCommands();

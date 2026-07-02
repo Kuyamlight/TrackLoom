@@ -66,7 +66,7 @@ std::optional<std::size_t> appMainMenuRecentProjectNumberFromCommandId(int comma
 }
 
 AppMainMenuStatus describeAppMainMenu(
-    const AppProjectSession&,
+    const AppProjectSession& session,
     const AppPlaybackController& playback,
     const AppRecentProjects& recentProjects)
 {
@@ -89,6 +89,18 @@ AppMainMenuStatus describeAppMainMenu(
         }
     }
 
+    AppMainMenuGroup editMenu;
+    editMenu.name = "编辑";
+    // 菜单层只读取是否可撤销/重做；真正修改工程的动作交给命令分发器和会话层。
+    editMenu.items.push_back(commandItem(
+        AppMainMenuCommand::UndoProject,
+        "撤销",
+        session.canUndoProjectEdit()));
+    editMenu.items.push_back(commandItem(
+        AppMainMenuCommand::RedoProject,
+        "重做",
+        session.canRedoProjectEdit()));
+
     AppMainMenuGroup playbackMenu;
     playbackMenu.name = "播放";
     playbackMenu.items.push_back(commandItem(
@@ -105,6 +117,7 @@ AppMainMenuStatus describeAppMainMenu(
         playback.currentSample() > 0));
 
     status.groups.push_back(std::move(fileMenu));
+    status.groups.push_back(std::move(editMenu));
     status.groups.push_back(std::move(playbackMenu));
     return status;
 }

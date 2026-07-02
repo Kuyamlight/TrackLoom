@@ -706,6 +706,8 @@ private:
         handlers.openProject = [this] { chooseProjectToOpen(); };
         handlers.saveProject = [this] { saveCurrentProject(); };
         handlers.saveProjectAs = [this] { chooseProjectToSaveAs(); };
+        handlers.undoProject = [this] { undoProjectEditFromMenu(); };
+        handlers.redoProject = [this] { redoProjectEditFromMenu(); };
         handlers.playProject = [this] { startProjectPlayback(); };
         handlers.stopProject = [this] { stopProjectPlayback(); };
         handlers.rewindProject = [this] { rewindProjectPlayback(); };
@@ -714,6 +716,28 @@ private:
             openSelectedRecentProject();
         };
         return handlers;
+    }
+
+    void undoProjectEditFromMenu()
+    {
+        // 撤销只处理 Project 命令历史；播放头、最近工程和文件选择器状态不进入工程撤销栈。
+        if (session_.undoProjectEdit()) {
+            lastActionMessage_ = "编辑动作：已撤销上一步工程编辑。";
+        } else {
+            lastActionMessage_ = "编辑动作：当前没有可撤销的工程编辑。";
+        }
+        refreshFromSession();
+    }
+
+    void redoProjectEditFromMenu()
+    {
+        // 重做沿用同一会话历史；失败时只更新提示，不制造新的工程修改。
+        if (session_.redoProjectEdit()) {
+            lastActionMessage_ = "编辑动作：已重做上一步工程编辑。";
+        } else {
+            lastActionMessage_ = "编辑动作：当前没有可重做的工程编辑。";
+        }
+        refreshFromSession();
     }
 
     void timerCallback() override

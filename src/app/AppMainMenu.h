@@ -17,6 +17,8 @@ enum class AppMainMenuCommand {
     OpenProject = 1002,
     SaveProject = 1003,
     SaveProjectAs = 1004,
+    UndoProject = 1051,
+    RedoProject = 1052,
     PlayProject = 1101,
     StopProject = 1102,
     RewindProject = 1103

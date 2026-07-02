@@ -15,6 +15,8 @@ enum class AppCommandKind {
     OpenProject,
     SaveProject,
     SaveProjectAs,
+    UndoProject,
+    RedoProject,
     PlayProject,
     StopProject,
     RewindProject,
@@ -43,6 +45,8 @@ struct AppCommandHandlers {
     std::function<void()> openProject;
     std::function<void()> saveProject;
     std::function<void()> saveProjectAs;
+    std::function<void()> undoProject;
+    std::function<void()> redoProject;
     std::function<void()> playProject;
     std::function<void()> stopProject;
     std::function<void()> rewindProject;

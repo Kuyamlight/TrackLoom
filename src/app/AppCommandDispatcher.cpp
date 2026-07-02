@@ -38,6 +38,10 @@ AppCommandKind appCommandKindFromMainMenuCommand(AppMainMenuCommand command)
         return AppCommandKind::SaveProject;
     case AppMainMenuCommand::SaveProjectAs:
         return AppCommandKind::SaveProjectAs;
+    case AppMainMenuCommand::UndoProject:
+        return AppCommandKind::UndoProject;
+    case AppMainMenuCommand::RedoProject:
+        return AppCommandKind::RedoProject;
     case AppMainMenuCommand::PlayProject:
         return AppCommandKind::PlayProject;
     case AppMainMenuCommand::StopProject:
@@ -87,6 +91,11 @@ AppCommandDispatchResult dispatchAppCommand(
         return runSimpleCommand(command, handlers.saveProject);
     case AppCommandKind::SaveProjectAs:
         return runSimpleCommand(command, handlers.saveProjectAs);
+    case AppCommandKind::UndoProject:
+        // 撤销/重做也走同一个分发器，后续快捷键或命令面板就不会再复制一套执行规则。
+        return runSimpleCommand(command, handlers.undoProject);
+    case AppCommandKind::RedoProject:
+        return runSimpleCommand(command, handlers.redoProject);
     case AppCommandKind::PlayProject:
         return runSimpleCommand(command, handlers.playProject);
     case AppCommandKind::StopProject:
