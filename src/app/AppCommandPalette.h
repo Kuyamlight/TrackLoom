@@ -21,6 +21,18 @@ struct AppCommandPaletteStatus {
     std::vector<AppCommandPaletteItem> items;
 };
 
+enum class AppCommandPaletteSelectionResultKind {
+    Selected,
+    NoMatchingCommand,
+    OnlyDisabledMatches
+};
+
+struct AppCommandPaletteSelectionResult {
+    AppCommandPaletteSelectionResultKind kind =
+        AppCommandPaletteSelectionResultKind::NoMatchingCommand;
+    std::optional<AppCommandPaletteItem> item;
+};
+
 // describeAppCommandPalette 把主菜单快照展开成命令面板可显示的扁平列表。
 // 它只复制命令数据，不执行命令；分隔线和提示行不会进入命令面板。
 AppCommandPaletteStatus describeAppCommandPalette(const AppMainMenuStatus& menu);
@@ -36,6 +48,12 @@ AppCommandPaletteStatus filterAppCommandPalette(
 AppCommandPaletteStatus addAppCommandPaletteShortcutLabels(
     const AppCommandPaletteStatus& palette,
     const std::vector<AppShortcutBinding>& shortcutBindings);
+
+// selectAppCommandPaletteItem 返回稳定选择状态，方便 UI 区分“没找到”和“当前不可用”。
+// 只有 kind 为 Selected 时才携带 item；禁用命令不会被当作已选命令。
+AppCommandPaletteSelectionResult selectAppCommandPaletteItem(
+    const AppCommandPaletteStatus& palette,
+    const std::string& query);
 
 // selectFirstExecutableAppCommand 只选择命令，不执行命令。
 // 它按当前过滤顺序返回第一个 enabled 项；执行仍由 AppCommandDispatcher 负责。

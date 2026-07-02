@@ -107,19 +107,39 @@ AppCommandPaletteStatus addAppCommandPaletteShortcutLabels(
     return status;
 }
 
-std::optional<AppCommandPaletteItem> selectFirstExecutableAppCommand(
+AppCommandPaletteSelectionResult selectAppCommandPaletteItem(
     const AppCommandPaletteStatus& palette,
     const std::string& query)
 {
     const auto filteredPalette = filterAppCommandPalette(palette, query);
 
+    if (filteredPalette.items.empty()) {
+        return {
+            AppCommandPaletteSelectionResultKind::NoMatchingCommand,
+            std::nullopt
+        };
+    }
+
     for (const auto& item : filteredPalette.items) {
         if (item.enabled) {
-            return item;
+            return {
+                AppCommandPaletteSelectionResultKind::Selected,
+                item
+            };
         }
     }
 
-    return std::nullopt;
+    return {
+        AppCommandPaletteSelectionResultKind::OnlyDisabledMatches,
+        std::nullopt
+    };
+}
+
+std::optional<AppCommandPaletteItem> selectFirstExecutableAppCommand(
+    const AppCommandPaletteStatus& palette,
+    const std::string& query)
+{
+    return selectAppCommandPaletteItem(palette, query).item;
 }
 
 }

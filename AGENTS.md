@@ -468,8 +468,8 @@ TrackLoom 应支持：
 - 建立命令面板数据层时：
   - 触发场景：文件、编辑、轨道和播放菜单已有稳定 command id 后，需要为后续命令面板、快捷键提示和 AI 工具提供同一份可搜索命令列表。
   - 根本原因：如果命令面板直接读取 JUCE 菜单或重新拼命令清单，会再次复制菜单分组、动态最近工程、禁用状态和 command id 规则；分隔线和“暂无最近工程”这类提示行也可能被误当作可执行命令。
-  - 采用的解决方式：新增纯应用层 `AppCommandPalette`，从 `AppMainMenuStatus` 展开命令项，保留 group、label、enabled、command id 和可选 shortcut label，跳过分隔线与无 command id 的提示行，提供按标签或菜单组名过滤的轻量搜索，并用 `selectFirstExecutableAppCommand` 只选择第一个可执行命令。快捷键显示文本来自 `AppCommandShortcuts` 的默认绑定表，同一 command id 的多个快捷键会合并为一个展示标签。CTest 先红后绿覆盖基础菜单展开、动态最近工程、禁用状态保留、轨道组搜索、提示行过滤、跳过 disabled 命令、缺失查询无选择、禁用命令仍显示快捷键和多个快捷键合并显示。
-  - 后续规则：可见命令面板 UI、快捷键提示、AI 命令发现和诊断视图都应优先消费 `AppCommandPalette` 或等价应用层结果，再通过 `AppCommandDispatcher` 执行；不得让 UI 弹窗自行扫描 JUCE 菜单、复制命令列表、把非命令提示行当作可执行项，或在选择阶段直接执行命令。新增快捷键时必须先进入同一份默认快捷键绑定表，避免“可触发快捷键”和“可显示快捷键”两套数据漂移。
+  - 采用的解决方式：新增纯应用层 `AppCommandPalette`，从 `AppMainMenuStatus` 展开命令项，保留 group、label、enabled、command id 和可选 shortcut label，跳过分隔线与无 command id 的提示行，提供按标签或菜单组名过滤的轻量搜索，并用 `selectAppCommandPaletteItem` 返回 `Selected`、`NoMatchingCommand` 或 `OnlyDisabledMatches` 三种稳定选择结果。快捷键显示文本来自 `AppCommandShortcuts` 的默认绑定表，同一 command id 的多个快捷键会合并为一个展示标签。CTest 先红后绿覆盖基础菜单展开、动态最近工程、禁用状态保留、轨道组搜索、提示行过滤、跳过 disabled 命令、缺失查询无选择、禁用匹配与无匹配分类、禁用命令仍显示快捷键和多个快捷键合并显示。
+  - 后续规则：可见命令面板 UI、快捷键提示、AI 命令发现和诊断视图都应优先消费 `AppCommandPalette` 或等价应用层结果，再通过 `AppCommandDispatcher` 执行；不得让 UI 弹窗自行扫描 JUCE 菜单、复制命令列表、把非命令提示行当作可执行项，或在选择阶段直接执行命令。新增快捷键时必须先进入同一份默认快捷键绑定表，避免“可触发快捷键”和“可显示快捷键”两套数据漂移；命令面板反馈应读取稳定选择结果枚举，不要通过空 optional 或显示文本猜测失败原因。
 - 建立第一批桌面文件快捷键时：
   - 触发场景：基础文件/播放菜单和 `AppCommandDispatcher` 已存在后，需要让常见文件快捷键复用同一命令 id 和执行边界，而不是在 JUCE `keyPressed` 里重新写保存、打开和新建逻辑。
   - 根本原因：快捷键组合、平台主修饰键和命令执行是不同层次；如果直接在 JUCE 层判断 `Ctrl+S` 后调用保存函数，后续菜单、快捷键、命令面板和 AI 工具会逐渐分叉。Space 播放/停止是切换语义，不等同于菜单里的“播放”和“停止”两个独立命令，不能硬塞进同一批文件快捷键映射。

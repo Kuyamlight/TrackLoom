@@ -939,6 +939,47 @@ void commandPaletteSelectionSkipsDisabledAndMissingMatches()
         "command palette should return no selection when the query matches no command");
 }
 
+void commandPaletteSelectionReportsSelectedResultKind()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Palette Result Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto palette = trackloom::describeAppCommandPalette(menu);
+    const auto selectedPlayback = trackloom::selectAppCommandPaletteItem(palette, "播放");
+
+    require(selectedPlayback.kind == trackloom::AppCommandPaletteSelectionResultKind::Selected,
+        "command palette selection result should report when an executable command is selected");
+    require(selectedPlayback.item.has_value()
+            && selectedPlayback.item->commandId
+                == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::PlayProject),
+        "selected command palette result should include the executable command item");
+}
+
+void commandPaletteSelectionDistinguishesDisabledMatchesFromMissingMatches()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Palette Result Failure Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto palette = trackloom::describeAppCommandPalette(menu);
+    const auto disabledUndo = trackloom::selectAppCommandPaletteItem(palette, "撤销");
+    const auto missingCommand = trackloom::selectAppCommandPaletteItem(palette, "不存在的命令");
+
+    require(disabledUndo.kind == trackloom::AppCommandPaletteSelectionResultKind::OnlyDisabledMatches,
+        "command palette selection should distinguish disabled matches from missing matches");
+    require(!disabledUndo.item.has_value(),
+        "disabled command palette matches should not be treated as executable selections");
+    require(missingCommand.kind == trackloom::AppCommandPaletteSelectionResultKind::NoMatchingCommand,
+        "command palette selection should report when a query matches no command at all");
+    require(!missingCommand.item.has_value(),
+        "missing command palette queries should not carry a stale selected item");
+}
+
 void commandPaletteAddsShortcutLabelsForVisibleCommands()
 {
     trackloom::AppProjectSession session;
@@ -7652,6 +7693,8 @@ int main()
     commandPaletteIncludesRecentProjectsAndFiltersByQuery();
     commandPaletteSelectsFirstEnabledCommandForQuery();
     commandPaletteSelectionSkipsDisabledAndMissingMatches();
+    commandPaletteSelectionReportsSelectedResultKind();
+    commandPaletteSelectionDistinguishesDisabledMatchesFromMissingMatches();
     commandPaletteAddsShortcutLabelsForVisibleCommands();
     commandPaletteMergesMultipleShortcutLabelsForOneCommand();
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
