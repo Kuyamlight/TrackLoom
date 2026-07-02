@@ -5422,6 +5422,57 @@ void midiNoteActionAppendsAfterExistingNotes()
         "second starter MIDI note should append after the first note in that clip");
 }
 
+void midiNoteActionCreateCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Note Create History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "MIDI note create history test should create a target MIDI clip");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the MIDI note create action");
+
+    const auto feedback = trackloom::createDefaultMidiNoteInClip(session, clip->id);
+
+    require(feedback.success,
+        "MIDI note create history test should add a default note");
+    const auto createdClip = session.project().findClipById(clip->id);
+    require(createdClip.has_value()
+            && createdClip->midiNotes.size() == 1
+            && createdClip->midiNotes[0].id == feedback.noteId,
+        "MIDI note create history test should find the created note id");
+    require(session.canUndoProjectEdit(),
+        "MIDI note create action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI note creation from the note action");
+
+    const auto emptyClip = session.project().findClipById(clip->id);
+    require(emptyClip.has_value() && emptyClip->midiNotes.empty(),
+        "undoing MIDI note creation should remove the created note");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI note creation should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI note creation from the note action");
+
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value()
+            && redoneClip->midiNotes.size() == 1
+            && redoneClip->midiNotes[0].id == feedback.noteId,
+        "redoing MIDI note creation should restore the same note id");
+    require(redoneClip->midiNotes[0].startTick == 0
+            && redoneClip->midiNotes[0].lengthTick == trackloom::defaultAppMidiNoteLengthTick
+            && redoneClip->midiNotes[0].noteNumber == trackloom::defaultAppMidiNoteNumber
+            && redoneClip->midiNotes[0].velocity == trackloom::defaultAppMidiNoteVelocity
+            && redoneClip->midiNotes[0].channel == trackloom::defaultAppMidiNoteChannel,
+        "redoing MIDI note creation should restore the default note values");
+}
+
 void midiNoteActionDuplicatesLastNoteAfterItself()
 {
     removeTestWorkspace();
@@ -5477,6 +5528,77 @@ void midiNoteActionDuplicatesLastNoteAfterItself()
         "MIDI note duplicate should preserve the source note channel");
     require(session.isDirty(),
         "successful MIDI note duplicate should mark the app session dirty");
+}
+
+void midiNoteActionDuplicateCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Note Duplicate History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "MIDI note duplicate history test should create a target MIDI clip");
+    const auto first = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick,
+        trackloom::defaultAppMidiNoteNumber,
+        trackloom::defaultAppMidiNoteVelocity,
+        trackloom::defaultAppMidiNoteChannel);
+    const auto second = session.editProject().createMidiNote(
+        clip->id,
+        trackloom::defaultAppMidiNoteLengthTick,
+        trackloom::defaultAppMidiNoteLengthTick / 2,
+        trackloom::defaultAppMidiNoteNumber + 5,
+        trackloom::defaultAppMidiNoteVelocity - 20,
+        trackloom::defaultAppMidiNoteChannel);
+    require(first.has_value() && second.has_value(),
+        "MIDI note duplicate history test should create source notes");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the MIDI note duplicate action");
+
+    const auto feedback = trackloom::duplicateLastMidiNoteInClip(session, clip->id);
+
+    require(feedback.success,
+        "MIDI note duplicate history test should copy the last note");
+    const auto duplicatedClip = session.project().findClipById(clip->id);
+    require(duplicatedClip.has_value() && duplicatedClip->midiNotes.size() == 3,
+        "MIDI note duplicate history test should append the duplicate note");
+    const auto duplicatedNote = duplicatedClip->midiNotes[2];
+    require(duplicatedNote.id == feedback.noteId
+            && duplicatedNote.id != second->id
+            && duplicatedNote.startTick == second->startTick + second->lengthTick
+            && duplicatedNote.lengthTick == second->lengthTick
+            && duplicatedNote.noteNumber == second->noteNumber
+            && duplicatedNote.velocity == second->velocity
+            && duplicatedNote.channel == second->channel,
+        "MIDI note duplicate history test should preserve source note values with a new id");
+    require(session.canUndoProjectEdit(),
+        "MIDI note duplicate action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI note duplication from the note action");
+
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value()
+            && restoredClip->midiNotes.size() == 2
+            && restoredClip->midiNotes[0].id == first->id
+            && restoredClip->midiNotes[1].id == second->id,
+        "undoing MIDI note duplication should restore only the original notes");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI note duplication should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI note duplication from the note action");
+
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value()
+            && redoneClip->midiNotes.size() == 3
+            && redoneClip->midiNotes[2].id == feedback.noteId,
+        "redoing MIDI note duplication should restore the same duplicate note id");
 }
 
 void midiNoteActionRejectsDuplicateBeyondClipWithoutDirtyingSession()
@@ -5713,6 +5835,71 @@ void midiNoteActionDeletesLastNoteInMidiClip()
         "MIDI note delete action should mark the app session dirty");
     require(feedback.message.find("删除") != std::string::npos,
         "successful MIDI note delete feedback should describe the deletion");
+}
+
+void midiNoteActionDeleteCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("MIDI Note Delete History");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = session.editProject().createClip(
+        instrument.id,
+        "Lead MIDI",
+        trackloom::ClipType::Midi,
+        0,
+        trackloom::defaultAppMidiClipLengthTick);
+    require(clip.has_value(),
+        "MIDI note delete history test should create a target MIDI clip");
+    const auto first = session.editProject().createMidiNote(
+        clip->id,
+        0,
+        trackloom::defaultAppMidiNoteLengthTick,
+        trackloom::defaultAppMidiNoteNumber,
+        trackloom::defaultAppMidiNoteVelocity,
+        trackloom::defaultAppMidiNoteChannel);
+    const auto second = session.editProject().createMidiNote(
+        clip->id,
+        trackloom::defaultAppMidiNoteLengthTick,
+        trackloom::defaultAppMidiNoteLengthTick,
+        trackloom::defaultAppMidiNoteNumber + 7,
+        trackloom::defaultAppMidiNoteVelocity - 10,
+        trackloom::defaultAppMidiNoteChannel);
+    require(first.has_value() && second.has_value(),
+        "MIDI note delete history test should create source notes");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the MIDI note delete action");
+
+    const auto feedback = trackloom::deleteLastMidiNoteInClip(session, clip->id);
+
+    require(feedback.success,
+        "MIDI note delete history test should delete the last note");
+    const auto afterDeleteClip = session.project().findClipById(clip->id);
+    require(afterDeleteClip.has_value()
+            && afterDeleteClip->midiNotes.size() == 1
+            && afterDeleteClip->midiNotes[0].id == first->id,
+        "MIDI note delete history test should keep only the earlier note");
+    require(session.canUndoProjectEdit(),
+        "MIDI note delete action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo MIDI note deletion from the note action");
+
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value()
+            && restoredClip->midiNotes.size() == 2
+            && restoredClip->midiNotes[1].id == second->id
+            && restoredClip->midiNotes[1].noteNumber == second->noteNumber
+            && restoredClip->midiNotes[1].velocity == second->velocity,
+        "undoing MIDI note deletion should restore the removed note and its values");
+    require(session.canRedoProjectEdit(),
+        "undoing MIDI note deletion should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo MIDI note deletion from the note action");
+
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value()
+            && redoneClip->midiNotes.size() == 1
+            && redoneClip->midiNotes[0].id == first->id,
+        "redoing MIDI note deletion should remove the same last note again");
 }
 
 void midiNoteActionRaisesLastNotePitchOneSemitone()
@@ -7056,7 +7243,9 @@ int main()
     midiClipActionRejectsAudioClipDeleteWithoutDirtyingSession();
     midiNoteActionCreatesDefaultNoteInMidiClip();
     midiNoteActionAppendsAfterExistingNotes();
+    midiNoteActionCreateCanBeUndoneAndRedoneThroughSessionHistory();
     midiNoteActionDuplicatesLastNoteAfterItself();
+    midiNoteActionDuplicateCanBeUndoneAndRedoneThroughSessionHistory();
     midiNoteActionRejectsDuplicateBeyondClipWithoutDirtyingSession();
     midiNoteActionRejectsEmptyClipDuplicateWithoutDirtyingSession();
     midiNoteActionRejectsMissingClipDuplicateWithoutDirtyingSession();
@@ -7065,6 +7254,7 @@ int main()
     midiNoteActionRejectsAudioClipWithoutDirtyingSession();
     midiNoteActionRejectsFullClipWithoutDirtyingSession();
     midiNoteActionDeletesLastNoteInMidiClip();
+    midiNoteActionDeleteCanBeUndoneAndRedoneThroughSessionHistory();
     midiNoteActionRaisesLastNotePitchOneSemitone();
     midiNoteActionLowersLastNotePitchOneSemitone();
     midiNoteActionRejectsPitchRaiseAboveMidiRangeWithoutDirtyingSession();

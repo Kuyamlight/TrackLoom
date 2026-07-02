@@ -1,9 +1,14 @@
 #include "AppMidiNoteActions.h"
 
+#include "Command.h"
+
 #include <algorithm>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace trackloom {
 namespace {
@@ -104,6 +109,40 @@ bool canFitDefaultNoteAt(const TimelineClip& clip, std::int64_t startTick)
 {
     return clip.lengthTick >= defaultAppMidiNoteLengthTick
         && startTick <= clip.lengthTick - defaultAppMidiNoteLengthTick;
+}
+
+std::vector<std::string> currentMidiNoteIds(const TimelineClip& clip)
+{
+    std::vector<std::string> ids;
+    ids.reserve(clip.midiNotes.size());
+    for (const auto& note : clip.midiNotes) {
+        ids.push_back(note.id);
+    }
+    return ids;
+}
+
+bool containsNoteId(const std::vector<std::string>& ids, const std::string& noteId)
+{
+    return std::find(ids.begin(), ids.end(), noteId) != ids.end();
+}
+
+std::optional<MidiNoteEvent> findNoteCreatedAfterCommand(
+    const Project& project,
+    const std::string& clipId,
+    const std::vector<std::string>& previousNoteIds)
+{
+    const auto clip = project.findClipById(clipId);
+    if (!clip.has_value()) {
+        return std::nullopt;
+    }
+
+    for (const auto& note : clip->midiNotes) {
+        if (!containsNoteId(previousNoteIds, note.id)) {
+            return note;
+        }
+    }
+
+    return std::nullopt;
 }
 
 const MidiNoteEvent& lastNoteInTimelineOrder(const TimelineClip& clip)
@@ -333,16 +372,18 @@ AppMidiNoteActionFeedback createDefaultMidiNoteInClip(
             "无法添加 MIDI 音符：当前片段已经没有足够空间容纳默认音符。");
     }
 
-    // 失败路径必须在这里之前返回；editProject 会把会话标记为 dirty。
-    auto createdNote = session.editProject().createMidiNote(
-        clipId,
-        startTick,
-        defaultAppMidiNoteLengthTick,
-        defaultAppMidiNoteNumber,
-        defaultAppMidiNoteVelocity,
-        defaultAppMidiNoteChannel);
-
-    if (!createdNote.has_value()) {
+    const auto previousNoteIds = currentMidiNoteIds(*targetClip);
+    // 音符创建必须走命令历史；这样撤销/重做才能恢复同一个稳定 note id。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<AddMidiNoteCommand>(
+            clipId,
+            startTick,
+            defaultAppMidiNoteLengthTick,
+            defaultAppMidiNoteNumber,
+            defaultAppMidiNoteVelocity,
+            defaultAppMidiNoteChannel));
+    const auto createdNote = findNoteCreatedAfterCommand(session.project(), clipId, previousNoteIds);
+    if (!result.success || !createdNote.has_value()) {
         return failureFeedback(
             AppMidiNoteActionFeedbackKind::CreateFailed,
             "无法添加 MIDI 音符：工程模型拒绝了这次音符创建。");
@@ -376,8 +417,10 @@ AppMidiNoteActionFeedback deleteLastMidiNoteInClip(
 
     const auto noteToDelete = lastNoteInTimelineOrder(*targetClip);
 
-    // 删除前所有校验都已完成；只有真实删除才允许把会话标记为 dirty。
-    if (!session.editProject().removeMidiNoteById(noteToDelete.id)) {
+    // 删除必须走命令历史；撤销才能恢复原 note id、时间和 MIDI 属性。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<DeleteMidiNoteCommand>(noteToDelete.id));
+    if (!result.success) {
         return failureFeedback(
             AppMidiNoteActionFeedbackKind::DeleteFailed,
             "无法删除 MIDI 音符：工程模型拒绝了这次删除。");
@@ -418,16 +461,18 @@ AppMidiNoteActionFeedback duplicateLastMidiNoteInClip(
             "无法复制 MIDI 音符：源音符之后没有足够空间容纳副本。");
     }
 
-    // 副本必须获得新 note id，不能和源音符共享对象身份；其他 MIDI 属性保持一致。
-    auto copiedNote = session.editProject().createMidiNote(
-        clipId,
-        newStartTick,
-        noteToDuplicate.lengthTick,
-        noteToDuplicate.noteNumber,
-        noteToDuplicate.velocity,
-        noteToDuplicate.channel);
-
-    if (!copiedNote.has_value()) {
+    const auto previousNoteIds = currentMidiNoteIds(*targetClip);
+    // 副本必须获得新 note id；命令历史会在重做时恢复同一个副本 id。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<AddMidiNoteCommand>(
+            clipId,
+            newStartTick,
+            noteToDuplicate.lengthTick,
+            noteToDuplicate.noteNumber,
+            noteToDuplicate.velocity,
+            noteToDuplicate.channel));
+    const auto copiedNote = findNoteCreatedAfterCommand(session.project(), clipId, previousNoteIds);
+    if (!result.success || !copiedNote.has_value()) {
         return failureFeedback(
             AppMidiNoteActionFeedbackKind::CreateFailed,
             "无法复制 MIDI 音符：工程模型拒绝了这次音符创建。");
