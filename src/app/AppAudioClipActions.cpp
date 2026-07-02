@@ -1,12 +1,17 @@
 #include "AppAudioClipActions.h"
 
+#include "Command.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace trackloom {
 namespace {
@@ -156,6 +161,42 @@ std::size_t clipCountForTrack(const Project& project, const std::string& trackId
     }
 
     return count;
+}
+
+// AddClipCommand 不把新片段直接返回给调用方；这里记录执行前的 id，用差集找回新片段。
+std::vector<std::string> currentClipIds(const Project& project)
+{
+    std::vector<std::string> ids;
+    ids.reserve(project.clips().size());
+    for (const auto& clip : project.clips()) {
+        ids.push_back(clip.id);
+    }
+
+    return ids;
+}
+
+bool containsClipId(const std::vector<std::string>& ids, const std::string& clipId)
+{
+    for (const auto& id : ids) {
+        if (id == clipId) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::optional<TimelineClip> findClipCreatedAfterCommand(
+    const Project& project,
+    const std::vector<std::string>& previousClipIds)
+{
+    for (const auto& clip : project.clips()) {
+        if (!containsClipId(previousClipIds, clip.id)) {
+            return clip;
+        }
+    }
+
+    return std::nullopt;
 }
 
 std::string trimClipName(std::string name)
@@ -490,16 +531,19 @@ AppAudioClipActionFeedback createDefaultAudioClipOnTrack(
     const auto startTick = nextClipStartTickForTrack(session.project(), trackId);
     const auto clipNumber = clipCountForTrack(session.project(), trackId) + 1;
     const auto clipName = targetTrack->name + " Audio " + std::to_string(clipNumber);
+    const auto previousClipIds = currentClipIds(session.project());
 
-    // editProject 会把会话标脏；因此必须先完成所有可预见失败校验。
-    const auto createdClip = session.editProject().createClip(
-        trackId,
-        clipName,
-        ClipType::Audio,
-        startTick,
-        defaultAppAudioClipLengthTick);
+    // 片段创建必须走命令历史；这样撤销/重做才能恢复同一个稳定 clip id。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<AddClipCommand>(
+            trackId,
+            clipName,
+            ClipType::Audio,
+            startTick,
+            defaultAppAudioClipLengthTick));
+    const auto createdClip = findClipCreatedAfterCommand(session.project(), previousClipIds);
 
-    if (!createdClip.has_value()) {
+    if (!result.success || !createdClip.has_value()) {
         return failureFeedback(
             AppAudioClipActionFeedbackKind::CreateFailed,
             "无法创建音频片段：工程模型拒绝了这次片段创建。");
@@ -526,8 +570,9 @@ AppAudioClipActionFeedback deleteAudioClipById(
             "无法删除音频片段：只能删除音频片段。");
     }
 
-    // 所有可预见校验都已完成；只有真实删除才允许把会话标记为 dirty。
-    if (!session.editProject().removeClipById(clipId)) {
+    // 删除必须走命令历史；撤销才能恢复同一个片段外壳及其基础属性。
+    const auto result = session.executeProjectCommand(std::make_unique<DeleteClipCommand>(clipId));
+    if (!result.success) {
         return failureFeedback(
             AppAudioClipActionFeedbackKind::DeleteFailed,
             "无法删除音频片段：工程模型拒绝了这次删除。");
@@ -733,8 +778,10 @@ AppAudioClipActionFeedback renameAudioClipById(
             "无法重命名音频片段：只能重命名音频片段。");
     }
 
-    // 所有可预见校验都已完成；只有真实重命名才允许把会话标记为 dirty。
-    if (!session.editProject().renameClipById(clipId, trimmedName)) {
+    // 重命名必须走命令历史；撤销/重做才能在旧名称和新名称之间切换。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<RenameClipCommand>(clipId, trimmedName));
+    if (!result.success) {
         return failureFeedback(
             AppAudioClipActionFeedbackKind::RenameFailed,
             "无法重命名音频片段：工程模型拒绝了这次重命名。");

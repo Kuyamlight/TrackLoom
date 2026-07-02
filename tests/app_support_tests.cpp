@@ -16,12 +16,30 @@
 #include "Command.h"
 #include "TrackLoomAppInfo.h"
 
+#if defined(_MSC_VER)
+#include <crtdbg.h>
+#include <cstdlib>
+#endif
+
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
 
 namespace {
+
+void configureTestFailureOutput()
+{
+#if defined(_MSC_VER)
+    // MSVC Debug CRT 默认会在 abort/assert 时弹窗；测试应直接写 stderr，避免 CTest 被弹窗卡住。
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+    _set_error_mode(_OUT_TO_STDERR);
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+#endif
+}
 
 void require(bool condition, const std::string& message)
 {
@@ -1947,6 +1965,42 @@ void audioClipActionCreatesDefaultClipOnAudioTrack()
         "successful audio clip feedback should describe the created audio clip");
 }
 
+void audioClipActionCreateCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Create History");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the audio clip create action");
+
+    const auto feedback = trackloom::createDefaultAudioClipOnTrack(session, audio.id);
+
+    require(feedback.success,
+        "audio clip history test should create a default clip");
+    require(session.project().clips().size() == 1,
+        "audio clip history test should start with one created clip");
+    require(session.canUndoProjectEdit(),
+        "audio clip create action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo audio clip creation from the clip action");
+    require(session.project().clips().empty(),
+        "undoing audio clip creation should remove the created clip");
+    require(session.canRedoProjectEdit(),
+        "undoing audio clip creation should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo audio clip creation from the clip action");
+
+    const auto restoredClip = session.project().findClipById(feedback.clipId);
+    require(restoredClip.has_value(),
+        "redoing audio clip creation should restore the same clip id");
+    require(restoredClip->trackId == audio.id,
+        "redoing audio clip creation should restore the requested audio track");
+    require(restoredClip->type == trackloom::ClipType::Audio,
+        "redoing audio clip creation should restore the audio clip type");
+    require(restoredClip->startTick == 0 && restoredClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "redoing audio clip creation should restore the default timing");
+}
+
 void audioClipActionAppendsAfterExistingTrackClips()
 {
     trackloom::AppProjectSession session;
@@ -2162,6 +2216,51 @@ void audioClipActionDeletesAudioClip()
         "audio clip delete action should mark the app session dirty");
     require(feedback.message.find("删除") != std::string::npos,
         "successful audio clip delete feedback should describe the deletion");
+}
+
+void audioClipActionDeleteCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Delete History");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Vocal Take",
+        trackloom::ClipType::Audio,
+        trackloom::Project::ticksPerQuarterNote,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(clip.has_value(),
+        "audio clip delete history test should create a source clip");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the audio clip delete action");
+
+    const auto feedback = trackloom::deleteAudioClipById(session, clip->id);
+
+    require(feedback.success,
+        "audio clip delete history test should delete the target clip");
+    require(session.project().clips().empty(),
+        "audio clip delete history test should start from a deleted clip state");
+    require(session.canUndoProjectEdit(),
+        "audio clip delete action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo audio clip deletion from the clip action");
+
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value(),
+        "undoing audio clip deletion should restore the deleted clip");
+    require(restoredClip->name == "Vocal Take",
+        "undoing audio clip deletion should restore the previous clip name");
+    require(restoredClip->trackId == audio.id,
+        "undoing audio clip deletion should restore the previous track");
+    require(restoredClip->startTick == trackloom::Project::ticksPerQuarterNote
+            && restoredClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "undoing audio clip deletion should restore the previous timing");
+    require(session.canRedoProjectEdit(),
+        "undoing audio clip deletion should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo audio clip deletion from the clip action");
+    require(!session.project().findClipById(clip->id).has_value(),
+        "redoing audio clip deletion should remove the clip again");
 }
 
 void audioClipActionRejectsMissingClipDeleteWithoutDirtyingSession()
@@ -2504,6 +2603,42 @@ void audioClipActionRenamesAudioClipAndMarksSessionDirty()
         "successful audio clip rename should mark the app session dirty");
     require(feedback.message.find("重命名") != std::string::npos,
         "successful audio clip rename feedback should describe the rename");
+}
+
+void audioClipActionRenameCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Rename History");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Raw Vocal",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(clip.has_value(),
+        "audio clip rename history test should create a source clip");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the audio clip rename action");
+
+    const auto feedback = trackloom::renameAudioClipById(session, clip->id, "  Verse Vocal  ");
+
+    require(feedback.success,
+        "audio clip rename history test should rename the target clip");
+    require(session.project().findClipById(clip->id)->name == "Verse Vocal",
+        "audio clip rename history test should start from the renamed clip");
+    require(session.canUndoProjectEdit(),
+        "audio clip rename action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo audio clip rename from the clip action");
+    require(session.project().findClipById(clip->id)->name == "Raw Vocal",
+        "undoing audio clip rename should restore the previous clip name");
+    require(session.canRedoProjectEdit(),
+        "undoing audio clip rename should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo audio clip rename from the clip action");
+    require(session.project().findClipById(clip->id)->name == "Verse Vocal",
+        "redoing audio clip rename should restore the renamed clip name");
 }
 
 void audioClipActionRejectsEmptyClipNameWithoutDirtyingSession()
@@ -6353,6 +6488,8 @@ void trackListStatusDescribesTrackPlaybackAndViewFlags()
 
 int main()
 {
+    configureTestFailureOutput();
+
     appInfoExposesStableDesktopIdentity();
     projectSessionTracksNewProjectAndDirtyState();
     projectSessionSavesAndOpensProjectFile();
@@ -6427,6 +6564,7 @@ int main()
     playbackRewindReturnsStoppedTransportToStartWithoutDirtyingProject();
     playbackRewindPreparesFreshRuntimeWithoutStartingPlayback();
     audioClipActionCreatesDefaultClipOnAudioTrack();
+    audioClipActionCreateCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionAppendsAfterExistingTrackClips();
     audioClipActionDuplicatesAudioClipAfterItself();
     audioClipActionSplitsAudioClipAtMidpoint();
@@ -6434,6 +6572,7 @@ int main()
     audioClipActionRejectsMissingTrackWithoutDirtyingSession();
     audioClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
     audioClipActionDeletesAudioClip();
+    audioClipActionDeleteCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionRejectsMissingClipDeleteWithoutDirtyingSession();
     audioClipActionRejectsMidiClipDeleteWithoutDirtyingSession();
     audioClipActionRejectsMissingClipDuplicateWithoutDirtyingSession();
@@ -6447,6 +6586,7 @@ int main()
     audioClipActionRejectsInstrumentTargetTrackMoveWithoutDirtyingSession();
     audioClipActionRejectsMidiClipTrackMoveWithoutDirtyingSession();
     audioClipActionRenamesAudioClipAndMarksSessionDirty();
+    audioClipActionRenameCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionRejectsEmptyClipNameWithoutDirtyingSession();
     audioClipActionRejectsMissingClipRenameWithoutDirtyingSession();
     audioClipActionRejectsMidiClipRenameWithoutDirtyingSession();
