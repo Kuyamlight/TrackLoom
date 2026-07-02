@@ -520,11 +520,11 @@ TrackLoom 应支持：
   - 根本原因：如果复用“目标乐器轨”选择器、MIDI 片段动作、MIDI 名称输入框或 UI 直接调用 `Project::createClip` / `Project::renameClipById` / `Project::duplicateClipToTrackAtTick` / `Project::splitClipAtTick` / `Project::moveClipToTrack` / `Project::setClipTiming` / `Project::trimClipEndToTick` / `Project::removeClipById`，音频轨和乐器轨的类型边界、追加位置、复制起点、拆分切点、跨轨目标、名称清理、左边界、最短长度、dirty 状态和错误文案会分散并漂移。
   - 采用的解决方式：新增并扩展 `AppAudioClipActions`，只允许在 `TrackType::Audio` 上追加默认一小节空音频片段，只允许重命名、复制到同轨道源片段结束位置、从长度中点拆分成左右两个空音频片段、移动到另一条音频轨、按一拍左右移动、按一拍缩短/延长片头和片尾，以及删除 `ClipType::Audio` 片段；JUCE 首屏新增独立“目标音频轨”和“目标音频片段”选择器，以及独立音频片段名称输入框，创建、复制和拆分后选中新片段，跨轨移动成功后保留被移动片段并选择目标音频轨，删除后清空旧选择，切换音频片段时同步音频名称输入框，复制、拆分、跨轨移动、一拍移动和片头/片尾编辑按钮只调用应用层动作。`AppTimelineStatus` 空提示同步改成 MIDI/音频片段通用提示。CTest 覆盖成功创建、连续追加、缺失轨道拒绝、非音频轨拒绝、成功重命名、空名称拒绝、缺失片段重命名拒绝、MIDI 片段重命名拒绝、成功复制、缺失片段复制拒绝、MIDI 片段复制拒绝、成功中点拆分、缺失片段拆分拒绝、MIDI 片段拆分拒绝、过短音频片段拆分拒绝、成功跨音频轨移动、同轨移动拒绝、缺失源片段跨轨移动拒绝、缺失目标轨跨轨移动拒绝、乐器目标轨跨轨移动拒绝、MIDI 片段跨轨移动拒绝、成功左右移动、左边界拒绝、缺失片段移动拒绝、MIDI 片段移动拒绝、成功片尾缩短和延长、过短片段片尾缩短拒绝、缺失片段片尾编辑拒绝、MIDI 片段片尾编辑拒绝、成功删除、缺失片段删除拒绝和 MIDI 片段删除拒绝。
   - 后续规则：音频片段创建、重命名、复制、拆分、跨轨移动、一拍移动、片头/片尾编辑、删除、导入、真实修剪和播放必须继续区分音频轨与乐器轨；失败校验不得触碰 `AppProjectSession::editProject()`，避免把未修改工程标脏；音频片段 UI 不得用 MIDI 片段选择或 MIDI 名称输入框承担逻辑；未接入素材引用和音频引擎前，只能称为空音频片段外壳，片段复制只能称为外壳复制，片段拆分只能称为外壳拆分，片段跨轨移动只能称为外壳归属切换，片段一拍移动只能称为外壳起点移动，片尾缩短/延长只能称为外壳长度编辑，片头缩短/延长只能称为外壳左边界编辑，不得宣称已经支持音频导入、素材复制、素材移动、素材偏移、波形显示、可听播放、真实音频切点、交叉淡化、拖拽定位、吸附网格、重叠处理或真实音频修剪。
-- 迁移桌面音频片段基础动作到命令历史时：
-  - 触发场景：空音频片段创建、重命名和删除已经可用后，需要让这些用户动作也能通过会话历史撤销/重做，而不是继续绕过上一阶段建立的 `AppProjectSession` 命令栈。
-  - 根本原因：`session.editProject()` 会直接修改工程并清空旧历史；如果创建、重命名、删除继续直接调用 `Project`，撤销菜单未来会跳过这些用户可见编辑，或只能放弃完整撤销。
-  - 采用的解决方式：将 `createDefaultAudioClipOnTrack` 改为执行 `AddClipCommand`，用执行前后的 clip id 差集找回新片段反馈给 UI；将 `renameAudioClipById` 改为执行 `RenameClipCommand`；将 `deleteAudioClipById` 改为执行 `DeleteClipCommand`。CTest 覆盖创建、重命名、删除的撤销/重做，并确认重做保留同一个 clip id、名称、轨道和时间范围。
-  - 后续规则：迁移其余音频片段动作时，必须先补红测覆盖撤销/重做，再改为核心命令或新增原子命令；一次用户动作不能拆成多次用户可见撤销。失败路径继续在只读校验阶段返回，不得触碰 `editProject()`。
+- 迁移桌面音频片段基础与结构动作到命令历史时：
+  - 触发场景：空音频片段创建、重命名、删除、复制、拆分和跨轨移动已经可用后，需要让这些用户动作也能通过会话历史撤销/重做，而不是继续绕过上一阶段建立的 `AppProjectSession` 命令栈。
+  - 根本原因：`session.editProject()` 会直接修改工程并清空旧历史；如果音频片段动作继续直接调用 `Project`，撤销菜单未来会跳过这些用户可见编辑，或只能放弃完整撤销。
+  - 采用的解决方式：将 `createDefaultAudioClipOnTrack` 改为执行 `AddClipCommand`，`renameAudioClipById` 改为执行 `RenameClipCommand`，`deleteAudioClipById` 改为执行 `DeleteClipCommand`，`duplicateAudioClipAfterItself` 改为执行 `DuplicateClipCommand`，`splitAudioClipAtMidpoint` 改为执行 `SplitClipCommand`，`moveAudioClipToTrack` 改为执行 `MoveClipToTrackCommand`。创建、复制和拆分都用执行前后的 clip id 差集找回新片段反馈给 UI。CTest 覆盖创建、重命名、删除、复制、拆分和跨轨移动的撤销/重做，并确认重做保留同一个 clip id、名称、轨道和时间范围。
+  - 后续规则：迁移其余音频片段动作时，必须先补红测覆盖撤销/重做，再改为核心命令或新增原子命令；一次用户动作不能拆成多次用户可见撤销。失败路径继续在只读校验阶段返回，不得触碰 `editProject()`。当前尚未迁移的音频片段动作是一拍移动和片头/片尾编辑。
 - 编辑桌面空音频片段片头时：
   - 触发场景：空音频片段外壳已有创建、移动和片尾长度编辑后，需要补齐固定一拍的片头缩短/延长按钮，但音频文件导入、素材引用和素材偏移还没有实现。
   - 根本原因：当前 `TimelineClip` 只保存时间线外壳的起点和长度；真实音频素材片头修剪必须知道素材文件、素材内偏移、淡化、尾音和重叠策略，不能直接套用 MIDI 片头修剪的音符迁移规则。

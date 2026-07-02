@@ -618,14 +618,17 @@ AppAudioClipActionFeedback duplicateAudioClipAfterItself(
     }
 
     const auto duplicateStartTick = sourceClip->startTick + sourceClip->lengthTick;
+    const auto previousClipIds = currentClipIds(session.project());
 
-    // 当前复制只复制空音频片段外壳；真实素材引用、波形和素材偏移会在音频导入阶段单独设计。
-    const auto duplicate = session.editProject().duplicateClipToTrackAtTick(
-        clipId,
-        sourceClip->trackId,
-        duplicateStartTick);
+    // 当前复制只复制空音频片段外壳；通过命令历史保留副本 id，方便撤销/重做。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<DuplicateClipCommand>(
+            clipId,
+            sourceClip->trackId,
+            duplicateStartTick));
+    const auto duplicate = findClipCreatedAfterCommand(session.project(), previousClipIds);
 
-    if (!duplicate.has_value()) {
+    if (!result.success || !duplicate.has_value()) {
         return failureFeedback(
             AppAudioClipActionFeedbackKind::DuplicateFailed,
             "无法复制音频片段：工程模型拒绝了这次复制。");
@@ -679,9 +682,12 @@ AppAudioClipActionFeedback splitAudioClipAtMidpoint(
     }
 
     const auto splitTick = sourceClip->startTick + splitOffset;
-    // 当前拆分只切开空音频片段外壳；真实素材切点和素材偏移会在音频导入阶段单独设计。
-    const auto rightClip = session.editProject().splitClipAtTick(clipId, splitTick);
-    if (!rightClip.has_value()) {
+    const auto previousClipIds = currentClipIds(session.project());
+    // 当前拆分只切开空音频片段外壳；通过命令历史让左右片段能作为一次用户动作撤销/重做。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SplitClipCommand>(clipId, splitTick));
+    const auto rightClip = findClipCreatedAfterCommand(session.project(), previousClipIds);
+    if (!result.success || !rightClip.has_value()) {
         return failureFeedback(
             AppAudioClipActionFeedbackKind::SplitFailed,
             "无法拆分音频片段：工程模型拒绝了这次拆分。");
@@ -741,8 +747,10 @@ AppAudioClipActionFeedback moveAudioClipToTrack(
             "无法移动音频片段到目标音频轨：目标轨道与当前轨道相同。");
     }
 
-    // 当前不处理重叠冲突、素材复制或跨类型转换；这些属于正式时间线编辑器规则。
-    if (!session.editProject().moveClipToTrack(clipId, targetTrackId)) {
+    // 当前只改变空音频片段归属；通过命令历史保留旧轨道，方便撤销跨轨移动。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<MoveClipToTrackCommand>(clipId, targetTrackId));
+    if (!result.success) {
         return failureFeedback(
             AppAudioClipActionFeedbackKind::MoveFailed,
             "无法移动音频片段到目标音频轨：工程模型拒绝了这次移动。");

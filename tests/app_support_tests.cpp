@@ -2063,6 +2063,55 @@ void audioClipActionDuplicatesAudioClipAfterItself()
         "successful audio clip duplicate feedback should describe the copy");
 }
 
+void audioClipActionDuplicateCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Duplicate History");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Vocal Take",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(clip.has_value(),
+        "audio clip duplicate history test should create a source clip");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the audio clip duplicate action");
+
+    const auto feedback = trackloom::duplicateAudioClipAfterItself(session, clip->id);
+
+    require(feedback.success,
+        "audio clip duplicate history test should duplicate the source clip");
+    require(session.project().clips().size() == 2,
+        "audio clip duplicate history test should start with source and duplicate clips");
+    const auto duplicatedClip = session.project().findClipById(feedback.clipId);
+    require(duplicatedClip.has_value(),
+        "audio clip duplicate history test should find the duplicate clip");
+    require(duplicatedClip->startTick == clip->startTick + clip->lengthTick,
+        "audio clip duplicate history test should place the duplicate after the source");
+    require(session.canUndoProjectEdit(),
+        "audio clip duplicate action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo audio clip duplication from the clip action");
+    require(session.project().clips().size() == 1 && session.project().findClipById(clip->id).has_value(),
+        "undoing audio clip duplication should keep only the source clip");
+    require(!session.project().findClipById(feedback.clipId).has_value(),
+        "undoing audio clip duplication should remove the duplicate id from the project");
+    require(session.canRedoProjectEdit(),
+        "undoing audio clip duplication should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo audio clip duplication from the clip action");
+
+    const auto restoredDuplicate = session.project().findClipById(feedback.clipId);
+    require(restoredDuplicate.has_value(),
+        "redoing audio clip duplication should restore the same duplicate clip id");
+    require(restoredDuplicate->trackId == audio.id
+            && restoredDuplicate->type == trackloom::ClipType::Audio
+            && restoredDuplicate->lengthTick == clip->lengthTick,
+        "redoing audio clip duplication should restore the duplicate audio shell");
+}
+
 void audioClipActionSplitsAudioClipAtMidpoint()
 {
     removeTestWorkspace();
@@ -2112,6 +2161,61 @@ void audioClipActionSplitsAudioClipAtMidpoint()
         "successful audio clip split feedback should describe the split");
 }
 
+void audioClipActionSplitCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Split History");
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        audio.id,
+        "Vocal Take",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(clip.has_value(),
+        "audio clip split history test should create a source clip");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the audio clip split action");
+
+    const auto feedback = trackloom::splitAudioClipAtMidpoint(session, clip->id);
+
+    require(feedback.success,
+        "audio clip split history test should split the source clip");
+    const auto leftAfterSplit = session.project().findClipById(clip->id);
+    const auto rightAfterSplit = session.project().findClipById(feedback.clipId);
+    require(leftAfterSplit.has_value() && rightAfterSplit.has_value(),
+        "audio clip split history test should find both split sides");
+    require(leftAfterSplit->lengthTick == trackloom::defaultAppAudioClipLengthTick / 2,
+        "audio clip split history test should shorten the left clip");
+    require(rightAfterSplit->startTick == leftAfterSplit->startTick + leftAfterSplit->lengthTick,
+        "audio clip split history test should place the right clip after the left side");
+    require(session.canUndoProjectEdit(),
+        "audio clip split action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo audio clip splitting from the clip action");
+
+    const auto restoredOriginal = session.project().findClipById(clip->id);
+    require(session.project().clips().size() == 1 && restoredOriginal.has_value(),
+        "undoing audio clip split should restore one original clip");
+    require(!session.project().findClipById(feedback.clipId).has_value(),
+        "undoing audio clip split should remove the right-side clip id");
+    require(restoredOriginal->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "undoing audio clip split should restore the original clip length");
+    require(session.canRedoProjectEdit(),
+        "undoing audio clip split should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo audio clip splitting from the clip action");
+
+    const auto redoLeft = session.project().findClipById(clip->id);
+    const auto redoRight = session.project().findClipById(feedback.clipId);
+    require(redoLeft.has_value() && redoRight.has_value(),
+        "redoing audio clip split should restore both split sides");
+    require(redoLeft->lengthTick == trackloom::defaultAppAudioClipLengthTick / 2,
+        "redoing audio clip split should restore the shortened left clip");
+    require(redoRight->type == trackloom::ClipType::Audio && redoRight->midiNotes.empty(),
+        "redoing audio clip split should restore the same right-side audio shell");
+}
+
 void audioClipActionMovesAudioClipToAudioTrack()
 {
     removeTestWorkspace();
@@ -2146,6 +2250,54 @@ void audioClipActionMovesAudioClipToAudioTrack()
         "successful audio clip move-to-track should mark the app session dirty");
     require(feedback.message.find("目标音频轨") != std::string::npos,
         "successful audio clip move-to-track feedback should describe the target-track move");
+}
+
+void audioClipActionMoveToTrackCanBeUndoneAndRedoneThroughSessionHistory()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Clip Track Move History");
+    const auto sourceTrack = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto targetTrack = session.editProject().createTrack("Harmony", trackloom::TrackType::Audio);
+    const auto clip = session.editProject().createClip(
+        sourceTrack.id,
+        "Vocal Take",
+        trackloom::ClipType::Audio,
+        0,
+        trackloom::defaultAppAudioClipLengthTick);
+    require(clip.has_value(),
+        "audio clip track-move history test should create a source clip");
+    require(!session.canUndoProjectEdit(),
+        "direct setup edits should not leave undo history before the audio clip track-move action");
+
+    const auto feedback = trackloom::moveAudioClipToTrack(session, clip->id, targetTrack.id);
+
+    require(feedback.success,
+        "audio clip track-move history test should move the source clip to the target audio track");
+    const auto movedClip = session.project().findClipById(clip->id);
+    require(movedClip.has_value() && movedClip->trackId == targetTrack.id,
+        "audio clip track-move history test should update the owning track id");
+    require(movedClip->startTick == 0 && movedClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "audio clip track-move history test should keep clip timing unchanged");
+    require(session.canUndoProjectEdit(),
+        "audio clip track-move action should enter the app session undo history");
+    require(session.undoProjectEdit(),
+        "app session should undo audio clip track movement from the clip action");
+
+    const auto restoredClip = session.project().findClipById(clip->id);
+    require(restoredClip.has_value() && restoredClip->trackId == sourceTrack.id,
+        "undoing audio clip track movement should restore the source track id");
+    require(restoredClip->type == trackloom::ClipType::Audio && restoredClip->midiNotes.empty(),
+        "undoing audio clip track movement should keep the audio shell unchanged");
+    require(session.canRedoProjectEdit(),
+        "undoing audio clip track movement should make redo available");
+    require(session.redoProjectEdit(),
+        "app session should redo audio clip track movement from the clip action");
+
+    const auto redoneClip = session.project().findClipById(clip->id);
+    require(redoneClip.has_value() && redoneClip->trackId == targetTrack.id,
+        "redoing audio clip track movement should restore the target track id");
+    require(redoneClip->startTick == 0 && redoneClip->lengthTick == trackloom::defaultAppAudioClipLengthTick,
+        "redoing audio clip track movement should preserve the clip timing");
 }
 
 void audioClipActionRejectsMissingTrackWithoutDirtyingSession()
@@ -6567,8 +6719,11 @@ int main()
     audioClipActionCreateCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionAppendsAfterExistingTrackClips();
     audioClipActionDuplicatesAudioClipAfterItself();
+    audioClipActionDuplicateCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionSplitsAudioClipAtMidpoint();
+    audioClipActionSplitCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionMovesAudioClipToAudioTrack();
+    audioClipActionMoveToTrackCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionRejectsMissingTrackWithoutDirtyingSession();
     audioClipActionRejectsIncompatibleTrackWithoutDirtyingSession();
     audioClipActionDeletesAudioClip();
