@@ -1,6 +1,8 @@
 #pragma once
 
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace trackloom {
 
@@ -12,6 +14,19 @@ struct AppShortcutChord {
     bool shift = false;
     bool alt = false;
 };
+
+struct AppShortcutBinding {
+    AppShortcutChord chord;
+    int commandId = 0;
+};
+
+// defaultAppShortcutBindings 暴露当前注册的默认快捷键表。
+// 它只描述快捷键和 command id 的关系，不执行命令，也不读取菜单启用状态。
+std::vector<AppShortcutBinding> defaultAppShortcutBindings();
+
+// describeAppShortcutChord 把平台无关 chord 转成 Windows 首期可读标签。
+// 命令面板、菜单提示和测试都可复用这个函数，避免多处手写 Ctrl+S 文案。
+std::string describeAppShortcutChord(const AppShortcutChord& chord);
 
 // appCommandIdForShortcut 只负责快捷键到命令 id 的映射，不执行命令。
 // 返回的 id 与 AppMainMenu 使用同一套编号，后续可统一交给 AppCommandDispatcher。

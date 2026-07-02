@@ -72,6 +72,19 @@ void removeTestWorkspace()
     std::filesystem::remove_all(testWorkspace(), ignoredError);
 }
 
+const trackloom::AppCommandPaletteItem* findPaletteItem(
+    const trackloom::AppCommandPaletteStatus& palette,
+    int commandId)
+{
+    for (const auto& item : palette.items) {
+        if (item.commandId == commandId) {
+            return &item;
+        }
+    }
+
+    return nullptr;
+}
+
 void projectSessionTracksNewProjectAndDirtyState()
 {
     trackloom::AppProjectSession session;
@@ -924,6 +937,55 @@ void commandPaletteSelectionSkipsDisabledAndMissingMatches()
         "command palette should not select a command when all matching commands are disabled");
     require(!missingCommand.has_value(),
         "command palette should return no selection when the query matches no command");
+}
+
+void commandPaletteAddsShortcutLabelsForVisibleCommands()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Palette Shortcut Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto palette = trackloom::addAppCommandPaletteShortcutLabels(
+        trackloom::describeAppCommandPalette(menu),
+        trackloom::defaultAppShortcutBindings());
+
+    const auto saveProject = findPaletteItem(
+        palette,
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject));
+    const auto undoProject = findPaletteItem(
+        palette,
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::UndoProject));
+    const auto addInstrumentTrack = findPaletteItem(
+        palette,
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddInstrumentTrack));
+
+    require(saveProject != nullptr && saveProject->shortcutLabel == "Ctrl+S",
+        "command palette should show the registered shortcut for save");
+    require(undoProject != nullptr && undoProject->shortcutLabel == "Ctrl+Z",
+        "command palette should show shortcuts even when the command is currently disabled");
+    require(addInstrumentTrack != nullptr && addInstrumentTrack->shortcutLabel.empty(),
+        "command palette should leave commands without registered shortcuts unlabeled");
+}
+
+void commandPaletteMergesMultipleShortcutLabelsForOneCommand()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Palette Shortcut Merge Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto palette = trackloom::addAppCommandPaletteShortcutLabels(
+        trackloom::describeAppCommandPalette(menu),
+        trackloom::defaultAppShortcutBindings());
+    const auto redoProject = findPaletteItem(
+        palette,
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::RedoProject));
+
+    require(redoProject != nullptr && redoProject->shortcutLabel == "Ctrl+Y, Ctrl+Shift+Z",
+        "command palette should preserve every registered shortcut label for the same command");
 }
 
 void commandDispatcherRunsOnlyTheSelectedMainMenuCommand()
@@ -7590,6 +7652,8 @@ int main()
     commandPaletteIncludesRecentProjectsAndFiltersByQuery();
     commandPaletteSelectsFirstEnabledCommandForQuery();
     commandPaletteSelectionSkipsDisabledAndMissingMatches();
+    commandPaletteAddsShortcutLabelsForVisibleCommands();
+    commandPaletteMergesMultipleShortcutLabelsForOneCommand();
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
     commandDispatcherRunsRedoMainMenuCommand();
     commandDispatcherRunsTrackCreationMenuCommands();

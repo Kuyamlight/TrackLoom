@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AppCommandShortcuts.h"
 #include "AppMainMenu.h"
 
 #include <optional>
@@ -13,6 +14,7 @@ struct AppCommandPaletteItem {
     bool enabled = false;
     std::string groupName;
     std::string label;
+    std::string shortcutLabel;
 };
 
 struct AppCommandPaletteStatus {
@@ -28,6 +30,12 @@ AppCommandPaletteStatus describeAppCommandPalette(const AppMainMenuStatus& menu)
 AppCommandPaletteStatus filterAppCommandPalette(
     const AppCommandPaletteStatus& palette,
     const std::string& query);
+
+// addAppCommandPaletteShortcutLabels 返回带快捷键显示文本的新快照。
+// 它不注册快捷键，也不执行命令；只是把已有默认快捷键表映射到 command id。
+AppCommandPaletteStatus addAppCommandPaletteShortcutLabels(
+    const AppCommandPaletteStatus& palette,
+    const std::vector<AppShortcutBinding>& shortcutBindings);
 
 // selectFirstExecutableAppCommand 只选择命令，不执行命令。
 // 它按当前过滤顺序返回第一个 enabled 项；执行仍由 AppCommandDispatcher 负责。

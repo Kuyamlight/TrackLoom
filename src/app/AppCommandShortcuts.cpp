@@ -3,6 +3,7 @@
 #include "AppMainMenu.h"
 
 #include <cctype>
+#include <sstream>
 
 namespace trackloom {
 namespace {
@@ -13,48 +14,64 @@ char normalizedShortcutKey(char key)
     return static_cast<char>(std::tolower(static_cast<unsigned char>(key)));
 }
 
-std::optional<int> fileCommandShortcut(char key, bool shift)
+char displayShortcutKey(char key)
 {
-    // 这里只返回菜单命令 id，不直接调用保存或打开函数。
-    // 这样菜单、快捷键和未来命令面板都能走同一套 AppCommandDispatcher 执行规则。
-    switch (key) {
-    case 'n':
-        if (!shift) {
-            return appMainMenuCommandId(AppMainMenuCommand::NewProject);
-        }
-        break;
-    case 'o':
-        if (!shift) {
-            return appMainMenuCommandId(AppMainMenuCommand::OpenProject);
-        }
-        break;
-    case 's':
-        return appMainMenuCommandId(shift
-            ? AppMainMenuCommand::SaveProjectAs
-            : AppMainMenuCommand::SaveProject);
-    }
-
-    return std::nullopt;
+    return static_cast<char>(std::toupper(static_cast<unsigned char>(normalizedShortcutKey(key))));
 }
 
-std::optional<int> editCommandShortcut(char key, bool shift)
+bool sameShortcutChord(const AppShortcutChord& left, const AppShortcutChord& right)
 {
-    // 撤销/重做快捷键复用编辑菜单 command id，避免键盘入口绕过菜单启用规则和命令分发器。
-    switch (key) {
-    case 'z':
-        return appMainMenuCommandId(shift
-            ? AppMainMenuCommand::RedoProject
-            : AppMainMenuCommand::UndoProject);
-    case 'y':
-        if (!shift) {
-            return appMainMenuCommandId(AppMainMenuCommand::RedoProject);
-        }
-        break;
-    }
-
-    return std::nullopt;
+    return normalizedShortcutKey(left.key) == normalizedShortcutKey(right.key)
+        && left.primaryModifier == right.primaryModifier
+        && left.shift == right.shift
+        && left.alt == right.alt;
 }
 
+}
+
+std::vector<AppShortcutBinding> defaultAppShortcutBindings()
+{
+    // 这张表是首期窗口内快捷键的唯一来源。
+    // command id 仍来自主菜单枚举，确保菜单、快捷键和命令面板指向同一命令。
+    return {
+        {{ 'n', true, false, false }, appMainMenuCommandId(AppMainMenuCommand::NewProject)},
+        {{ 'o', true, false, false }, appMainMenuCommandId(AppMainMenuCommand::OpenProject)},
+        {{ 's', true, false, false }, appMainMenuCommandId(AppMainMenuCommand::SaveProject)},
+        {{ 's', true, true, false }, appMainMenuCommandId(AppMainMenuCommand::SaveProjectAs)},
+        {{ 'z', true, false, false }, appMainMenuCommandId(AppMainMenuCommand::UndoProject)},
+        {{ 'y', true, false, false }, appMainMenuCommandId(AppMainMenuCommand::RedoProject)},
+        {{ 'z', true, true, false }, appMainMenuCommandId(AppMainMenuCommand::RedoProject)}
+    };
+}
+
+std::string describeAppShortcutChord(const AppShortcutChord& chord)
+{
+    if (chord.key == '\0') {
+        return {};
+    }
+
+    std::ostringstream label;
+    bool needsSeparator = false;
+    const auto appendPart = [&](const std::string& part) {
+        if (needsSeparator) {
+            label << '+';
+        }
+        label << part;
+        needsSeparator = true;
+    };
+
+    if (chord.primaryModifier) {
+        appendPart("Ctrl");
+    }
+    if (chord.shift) {
+        appendPart("Shift");
+    }
+    if (chord.alt) {
+        appendPart("Alt");
+    }
+    appendPart(std::string(1, displayShortcutKey(chord.key)));
+
+    return label.str();
 }
 
 std::optional<int> appCommandIdForShortcut(const AppShortcutChord& chord)
@@ -64,11 +81,13 @@ std::optional<int> appCommandIdForShortcut(const AppShortcutChord& chord)
         return std::nullopt;
     }
 
-    const auto key = normalizedShortcutKey(chord.key);
-    if (const auto commandId = fileCommandShortcut(key, chord.shift)) {
-        return commandId;
+    for (const auto& binding : defaultAppShortcutBindings()) {
+        if (sameShortcutChord(chord, binding.chord)) {
+            return binding.commandId;
+        }
     }
-    return editCommandShortcut(key, chord.shift);
+
+    return std::nullopt;
 }
 
 }

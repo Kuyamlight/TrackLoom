@@ -1,5 +1,6 @@
 #include "AppCommandPalette.h"
 
+#include <map>
 #include <string>
 
 namespace trackloom {
@@ -28,6 +29,18 @@ bool containsSearchText(const std::string& text, const std::string& query)
     }
 
     return asciiLowerCopy(text).find(asciiLowerCopy(query)) != std::string::npos;
+}
+
+void appendShortcutLabel(std::string& existingLabel, const std::string& nextLabel)
+{
+    if (nextLabel.empty()) {
+        return;
+    }
+
+    if (!existingLabel.empty()) {
+        existingLabel += ", ";
+    }
+    existingLabel += nextLabel;
 }
 
 }
@@ -65,6 +78,29 @@ AppCommandPaletteStatus filterAppCommandPalette(
         const auto searchableText = item.groupName + " " + item.label;
         if (containsSearchText(searchableText, query)) {
             status.items.push_back(item);
+        }
+    }
+
+    return status;
+}
+
+AppCommandPaletteStatus addAppCommandPaletteShortcutLabels(
+    const AppCommandPaletteStatus& palette,
+    const std::vector<AppShortcutBinding>& shortcutBindings)
+{
+    std::map<int, std::string> labelsByCommandId;
+
+    for (const auto& binding : shortcutBindings) {
+        appendShortcutLabel(labelsByCommandId[binding.commandId], describeAppShortcutChord(binding.chord));
+    }
+
+    auto status = palette;
+    for (auto& item : status.items) {
+        if (const auto label = labelsByCommandId.find(item.commandId);
+            label != labelsByCommandId.end()) {
+            item.shortcutLabel = label->second;
+        } else {
+            item.shortcutLabel.clear();
         }
     }
 
