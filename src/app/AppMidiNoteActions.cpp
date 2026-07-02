@@ -194,8 +194,10 @@ AppMidiNoteActionFeedback transposeLastMidiNotePitchInClip(
             "无法调整 MIDI 音符音高：目标音高超出 MIDI 0-127 范围。");
     }
 
-    // 所有可预见失败都在 editProject() 前处理；只有真实改音高才允许把会话标记为 dirty。
-    if (!session.editProject().setMidiNotePitch(noteToEdit.id, newNoteNumber)) {
+    // 所有可预见失败都在命令执行前处理；命令成功后才会进入撤销历史并标脏工程。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetMidiNotePitchCommand>(noteToEdit.id, newNoteNumber));
+    if (!result.success) {
         return failureFeedback(
             AppMidiNoteActionFeedbackKind::PitchFailed,
             "无法调整 MIDI 音符音高：工程模型拒绝了这次音高修改。");
@@ -237,8 +239,10 @@ AppMidiNoteActionFeedback adjustLastMidiNoteVelocityInClip(
             "无法调整 MIDI 音符力度：目标力度超出 MIDI 1-127 范围。");
     }
 
-    // velocity 0 不保存为发声音符；边界通过后才进入 editProject()，避免失败误标 dirty。
-    if (!session.editProject().setMidiNoteVelocity(noteToEdit.id, newVelocity)) {
+    // velocity 0 不保存为发声音符；边界通过后才执行命令，避免失败误标 dirty。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetMidiNoteVelocityCommand>(noteToEdit.id, newVelocity));
+    if (!result.success) {
         return failureFeedback(
             AppMidiNoteActionFeedbackKind::VelocityFailed,
             "无法调整 MIDI 音符力度：工程模型拒绝了这次力度修改。");
@@ -286,8 +290,10 @@ AppMidiNoteActionFeedback adjustLastMidiNoteLengthInClip(
             "无法调整 MIDI 音符长度：音符右边界不能超出片段。");
     }
 
-    // 长度微调不移动音符起点；边界通过后才进入 editProject()，避免失败误标 dirty。
-    if (!session.editProject().setMidiNoteTiming(noteToEdit.id, noteToEdit.startTick, newLengthTick)) {
+    // 长度微调不移动音符起点；命令记录旧时间，撤销时恢复原起点和长度。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetMidiNoteTimingCommand>(noteToEdit.id, noteToEdit.startTick, newLengthTick));
+    if (!result.success) {
         return failureFeedback(
             AppMidiNoteActionFeedbackKind::LengthFailed,
             "无法调整 MIDI 音符长度：工程模型拒绝了这次长度修改。");
@@ -336,8 +342,10 @@ AppMidiNoteActionFeedback moveLastMidiNoteStartInClip(
             "无法移动 MIDI 音符起点：音符右边界不能超出片段。");
     }
 
-    // 起点微调只改变音符在片段内的位置；长度、音高、力度和通道必须保持原样。
-    if (!session.editProject().setMidiNoteTiming(noteToEdit.id, newStartTick, noteToEdit.lengthTick)) {
+    // 起点微调只改变音符在片段内的位置；命令会保留旧时间用于撤销。
+    const auto result = session.executeProjectCommand(
+        std::make_unique<SetMidiNoteTimingCommand>(noteToEdit.id, newStartTick, noteToEdit.lengthTick));
+    if (!result.success) {
         return failureFeedback(
             AppMidiNoteActionFeedbackKind::TimingFailed,
             "无法移动 MIDI 音符起点：工程模型拒绝了这次时间修改。");

@@ -473,8 +473,8 @@ TrackLoom 应支持：
 - 建立应用层工程命令历史边界时：
   - 触发场景：核心 `CommandStack` 已能撤销/重做，但桌面首屏动作长期通过 `AppProjectSession::editProject()` 直接修改工程；如果直接暴露撤销菜单，可能跳过未记录的片段或音符编辑，误撤更早的轨道操作。
   - 根本原因：命令历史只能理解通过 `Command` 执行的编辑，无法自动知道旧直接编辑入口做过什么；混用两种修改路径时，保留旧历史比没有撤销更危险。
-  - 采用的解决方式：在 `AppProjectSession` 新增 `executeProjectCommand`、`undoProjectEdit`、`redoProjectEdit` 和历史查询入口；成功命令才标脏并进入历史。直接 `editProject()` 会清空旧历史，表示这次修改没有可撤销记录。首批迁移 `AppTrackActions` 的轨道创建、删除、重命名和移动到核心命令执行；随后迁移 `AppTrackStateActions` 的静音、独奏、禁用和隐藏到核心状态命令，迁移 `AppMidiClipActions` 的默认 MIDI 片段创建、删除、重命名、复制、中点拆分、一拍左右移动、跨轨移动、片尾缩短/延长和片头缩短/延长到核心片段命令，迁移 `AppAudioClipActions` 当前已有的空音频片段外壳动作到核心片段命令，并迁移 `AppMidiNoteActions` 的默认音符创建、末尾音符删除和末尾音符复制到核心音符命令。CTest 覆盖成功命令撤销/重做、失败命令不标脏不入栈、新建工程清空历史、直接编辑清空历史，以及轨道创建、静音、隐藏、MIDI 片段创建/删除/重命名/复制/拆分/一拍移动/跨轨移动/片尾缩短/延长/片头缩短/延长、音频片段创建/删除/重命名/复制/拆分/跨轨移动/一拍移动/片尾缩短/片尾延长/片头缩短/片头延长、MIDI 音符创建/删除/复制可通过会话历史撤销/重做。
-  - 后续规则：新增或迁移编辑入口时优先通过 `executeProjectCommand` 或等价可撤销边界执行；在 MIDI 音符音高、力度、长度、起点微调和后续新增编辑入口全部迁移前，不应向用户暴露完整 Undo/Redo 菜单或快捷键；任何仍需直接 `editProject()` 的过渡代码必须清空命令历史，避免跨未记录编辑撤销。
+  - 采用的解决方式：在 `AppProjectSession` 新增 `executeProjectCommand`、`undoProjectEdit`、`redoProjectEdit` 和历史查询入口；成功命令才标脏并进入历史。直接 `editProject()` 会清空旧历史，表示这次修改没有可撤销记录。首批迁移 `AppTrackActions` 的轨道创建、删除、重命名和移动到核心命令执行；随后迁移 `AppTrackStateActions` 的静音、独奏、禁用和隐藏到核心状态命令，迁移 `AppMidiClipActions` 的默认 MIDI 片段创建、删除、重命名、复制、中点拆分、一拍左右移动、跨轨移动、片尾缩短/延长和片头缩短/延长到核心片段命令，迁移 `AppAudioClipActions` 当前已有的空音频片段外壳动作到核心片段命令，并迁移 `AppMidiNoteActions` 的默认音符创建、末尾音符删除、末尾音符复制、音高、力度、长度和起点微调到核心音符命令。CTest 覆盖成功命令撤销/重做、失败命令不标脏不入栈、新建工程清空历史、直接编辑清空历史，以及轨道创建、静音、隐藏、MIDI 片段创建/删除/重命名/复制/拆分/一拍移动/跨轨移动/片尾缩短/延长/片头缩短/延长、音频片段创建/删除/重命名/复制/拆分/跨轨移动/一拍移动/片尾缩短/片尾延长/片头缩短/片头延长、MIDI 音符创建/删除/复制/音高/力度/长度/起点微调可通过会话历史撤销/重做。
+  - 后续规则：新增或迁移编辑入口时优先通过 `executeProjectCommand` 或等价可撤销边界执行；在后续新增编辑入口全部迁移并补齐正式菜单、快捷键和用户可见反馈前，不应向用户暴露完整 Undo/Redo 体验；任何仍需直接 `editProject()` 的过渡代码必须清空命令历史，避免跨未记录编辑撤销。
 - 展示桌面轨道列表时：
   - 触发场景：JUCE 首屏已有“添加乐器轨”按钮后，需要让用户看到真实轨道行，而不是只看到轨道数量。
   - 根本原因：如果界面直接遍历 `Project::tracks()` 并自行解释轨道类型、片段数量和状态标签，后续轨道选择、时间线、设备路由、AI 工具和诊断面板容易出现显示规则不一致。
@@ -593,23 +593,23 @@ TrackLoom 应支持：
 - 调整桌面末尾 MIDI 音符音高时：
   - 触发场景：首屏已经能追加和删除默认 MIDI 音符后，需要一个不依赖钢琴卷帘的最小旋律修改入口，让用户能把末尾音符升高或降低一个半音。
   - 根本原因：核心 `setMidiNotePitch` 只负责单个 note id 的合法性校验，不知道首屏当前没有任意音符选择 UI；如果 UI 直接寻找音符并调用核心，会把“末尾音符”选择规则、0-127 音高边界、空片段失败和 dirty 语义分散到界面层。
-  - 采用的解决方式：扩展 `AppMidiNoteActions`，新增 `raiseLastMidiNotePitchInClip` 和 `lowerLastMidiNotePitchInClip`，沿用时间位置最后的音符选择规则，先拒绝缺失片段、音频片段、空片段和越界音高，再调用 `setMidiNotePitch`。JUCE 首屏新增“升高音符”和“降低音符”按钮。CTest 覆盖成功升高、成功降低、127 上界拒绝、0 下界拒绝和空片段拒绝。
-  - 后续规则：在正式钢琴卷帘、快捷键或 AI 工具能选择任意音符前，首屏音高调整只允许作用于时间位置最后的音符；任何音高修改都必须保留 MIDI 0-127 边界，不得通过 velocity、channel 或显示文本间接判断目标音符。
+  - 采用的解决方式：扩展 `AppMidiNoteActions`，新增 `raiseLastMidiNotePitchInClip` 和 `lowerLastMidiNotePitchInClip`，沿用时间位置最后的音符选择规则，先拒绝缺失片段、音频片段、空片段和越界音高，再通过 `SetMidiNotePitchCommand` 进入 `AppProjectSession` 命令历史。JUCE 首屏新增“升高音符”和“降低音符”按钮。CTest 覆盖成功升高、成功降低、127 上界拒绝、0 下界拒绝、空片段拒绝和音高撤销/重做。
+  - 后续规则：在正式钢琴卷帘、快捷键或 AI 工具能选择任意音符前，首屏音高调整只允许作用于时间位置最后的音符；任何音高修改都必须保留 MIDI 0-127 边界并通过核心命令执行，不得通过 velocity、channel 或显示文本间接判断目标音符。
 - 调整桌面末尾 MIDI 音符力度时：
   - 触发场景：首屏已有末尾音符添加、删除和音高微调后，需要继续提供不依赖钢琴卷帘的最小力度修改入口。
   - 根本原因：核心 `setMidiNoteVelocity` 能校验单个 note id，但 MIDI velocity 0 通常表示 Note Off，不能作为当前工程保存的发声音符力度；如果 UI 直接加减 velocity，容易把 1-127 边界、末尾音符选择、空片段失败和 dirty 语义分散。
-  - 采用的解决方式：扩展 `AppMidiNoteActions`，新增 `increaseLastMidiNoteVelocityInClip` 和 `decreaseLastMidiNoteVelocityInClip`，按 8 步进调整时间位置最后的音符力度，先拒绝缺失片段、音频片段、空片段和越界力度，再调用 `setMidiNoteVelocity`。JUCE 首屏新增“增强力度”和“减弱力度”按钮。CTest 覆盖成功增强、成功减弱、127 上界拒绝、1 下界拒绝、空片段、缺失片段和音频片段拒绝。
-  - 后续规则：在正式钢琴卷帘、快捷键或 AI 工具能选择任意音符前，首屏力度调整只允许作用于时间位置最后的音符；保存的发声音符 velocity 必须保持在 1-127，失败路径不得触碰 `editProject()`。
+  - 采用的解决方式：扩展 `AppMidiNoteActions`，新增 `increaseLastMidiNoteVelocityInClip` 和 `decreaseLastMidiNoteVelocityInClip`，按 8 步进调整时间位置最后的音符力度，先拒绝缺失片段、音频片段、空片段和越界力度，再通过 `SetMidiNoteVelocityCommand` 进入 `AppProjectSession` 命令历史。JUCE 首屏新增“增强力度”和“减弱力度”按钮。CTest 覆盖成功增强、成功减弱、127 上界拒绝、1 下界拒绝、空片段、缺失片段、音频片段拒绝和力度撤销/重做。
+  - 后续规则：在正式钢琴卷帘、快捷键或 AI 工具能选择任意音符前，首屏力度调整只允许作用于时间位置最后的音符；保存的发声音符 velocity 必须保持在 1-127，成功修改必须通过核心命令进入历史，失败路径不得触碰 `editProject()`。
 - 调整桌面末尾 MIDI 音符长度时：
   - 触发场景：首屏已有末尾音符音高和力度微调后，需要继续补齐最小音符时值修改能力，但仍不能假装已经有钢琴卷帘或任意音符选择。
   - 根本原因：核心 `setMidiNoteTiming` 会验证音符时间，但 `AppProjectSession::editProject()` 会先标脏；如果 UI 直接调用核心，缩短到无效长度、延长越过片段右边界、空片段和音频片段失败都会把未变工程误标 dirty。
-  - 采用的解决方式：扩展 `AppMidiNoteActions`，新增 `lengthenLastMidiNoteInClip` 和 `shortenLastMidiNoteInClip`，按十六分音符 tick 调整时间位置最后的音符长度，先拒绝缺失片段、音频片段、空片段、短于最小长度和越过片段右边界，再调用 `setMidiNoteTiming`。JUCE 首屏新增“延长音符”和“缩短音符”按钮。CTest 覆盖成功延长、成功缩短、右边界拒绝、最短长度拒绝、空片段、缺失片段和音频片段拒绝。
-  - 后续规则：在正式钢琴卷帘、快捷键或 AI 工具能选择任意音符前，首屏长度调整只允许作用于时间位置最后的音符；长度微调不移动音符起点，不得越过片段边界，失败路径不得触碰 `editProject()`。
+  - 采用的解决方式：扩展 `AppMidiNoteActions`，新增 `lengthenLastMidiNoteInClip` 和 `shortenLastMidiNoteInClip`，按十六分音符 tick 调整时间位置最后的音符长度，先拒绝缺失片段、音频片段、空片段、短于最小长度和越过片段右边界，再通过 `SetMidiNoteTimingCommand` 进入 `AppProjectSession` 命令历史。JUCE 首屏新增“延长音符”和“缩短音符”按钮。CTest 覆盖成功延长、成功缩短、右边界拒绝、最短长度拒绝、空片段、缺失片段、音频片段拒绝和长度撤销/重做。
+  - 后续规则：在正式钢琴卷帘、快捷键或 AI 工具能选择任意音符前，首屏长度调整只允许作用于时间位置最后的音符；长度微调不移动音符起点，不得越过片段边界，成功修改必须通过核心命令进入历史，失败路径不得触碰 `editProject()`。
 - 移动桌面末尾 MIDI 音符起点时：
   - 触发场景：首屏已有末尾音符长度微调后，需要继续补齐最小位置移动能力，但仍没有钢琴卷帘、任意音符选择或拖拽编辑。
   - 根本原因：起点移动和长度修改共用 `setMidiNoteTiming`，同样存在失败路径误标 dirty 的风险；同时原音符编辑按钮已经占满一行，继续横向追加按钮会让桌面首屏布局变得拥挤。
-  - 采用的解决方式：扩展 `AppMidiNoteActions`，新增 `moveLastMidiNoteStartEarlierInClip` 和 `moveLastMidiNoteStartLaterInClip`，按十六分音符 tick 移动时间位置最后的音符起点，保持长度、音高、力度和通道不变；先拒绝缺失片段、音频片段、空片段、起点早于 0 和右边界超出片段，再调用 `setMidiNoteTiming`。JUCE 首屏新增“左移音符”和“右移音符”，并把音符编辑拆成音高/力度行与长度/位置行。CTest 覆盖成功左移、成功右移、左右边界拒绝、空片段、缺失片段和音频片段拒绝。
-  - 后续规则：在正式钢琴卷帘、快捷键或 AI 工具能选择任意音符前，首屏起点移动只允许作用于时间位置最后的音符；位置微调必须保留音符长度和其他 MIDI 属性，失败路径不得触碰 `editProject()`；新增首屏按钮前要检查行宽和窗口高度，必要时拆行并调整默认窗口尺寸，而不是继续横向堆叠。
+  - 采用的解决方式：扩展 `AppMidiNoteActions`，新增 `moveLastMidiNoteStartEarlierInClip` 和 `moveLastMidiNoteStartLaterInClip`，按十六分音符 tick 移动时间位置最后的音符起点，保持长度、音高、力度和通道不变；先拒绝缺失片段、音频片段、空片段、起点早于 0 和右边界超出片段，再通过 `SetMidiNoteTimingCommand` 进入 `AppProjectSession` 命令历史。JUCE 首屏新增“左移音符”和“右移音符”，并把音符编辑拆成音高/力度行与长度/位置行。CTest 覆盖成功左移、成功右移、左右边界拒绝、空片段、缺失片段、音频片段拒绝和起点撤销/重做。
+  - 后续规则：在正式钢琴卷帘、快捷键或 AI 工具能选择任意音符前，首屏起点移动只允许作用于时间位置最后的音符；位置微调必须保留音符长度和其他 MIDI 属性，成功修改必须通过核心命令进入历史，失败路径不得触碰 `editProject()`；新增首屏按钮前要检查行宽和窗口高度，必要时拆行并调整默认窗口尺寸，而不是继续横向堆叠。
 - 整理需求与规划文档时：
   - 触发场景：阶段性开发累计产生 `docs/superpowers/specs/` 和 `docs/superpowers/plans/` 下 93 个需求与计划草稿，后续判断容易分不清哪份文档是当前基线。
   - 根本原因：早期按阶段写设计和计划有利于执行，但长期保留全部草稿会让需求来源分散，并与用户希望“后续所有需求与规划都在一份最终文档上更改”的要求冲突。
