@@ -1,6 +1,7 @@
 add_library(trackloom_app_support STATIC
     AppAudioClipActions.cpp
     AppCommandDispatcher.cpp
+    AppCommandPalette.cpp
     AppCommandShortcuts.cpp
     AppMainMenu.cpp
     AppMidiClipActions.cpp

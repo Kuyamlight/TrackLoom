@@ -1,5 +1,6 @@
 #include "AppAudioClipActions.h"
 #include "AppCommandDispatcher.h"
+#include "AppCommandPalette.h"
 #include "AppCommandShortcuts.h"
 #include "AppProjectFileActions.h"
 #include "AppRecentProjects.h"
@@ -829,6 +830,57 @@ void mainMenuListsRecentProjectsWithStableCommandIds()
     require(!trackloom::appMainMenuRecentProjectNumberFromCommandId(
                 trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject)).has_value(),
         "regular menu command ids should not be mistaken for recent-project ids");
+}
+
+void commandPaletteFlattensMenuCommandsWithoutSeparatorsOrInfoRows()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Palette Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto palette = trackloom::describeAppCommandPalette(menu);
+
+    require(palette.items.size() == 12,
+        "command palette should include menu commands but skip separators and disabled info rows");
+    require(palette.items[0].groupName == "文件" && palette.items[0].label == "新建工程",
+        "command palette should preserve the file menu group and command label");
+    require(palette.items[0].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::NewProject),
+        "command palette should preserve stable menu command ids");
+    require(palette.items[4].groupName == "编辑" && palette.items[4].label == "撤销",
+        "command palette should keep disabled edit commands visible for discoverability");
+    require(!palette.items[4].enabled,
+        "command palette should preserve disabled command state");
+    require(palette.items[6].groupName == "轨道" && palette.items[6].label == "添加乐器轨",
+        "command palette should include the current no-selection track creation commands");
+    require(palette.items[9].groupName == "播放" && palette.items[9].label == "播放",
+        "command palette should preserve playback commands after track commands");
+}
+
+void commandPaletteIncludesRecentProjectsAndFiltersByQuery()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Palette Recent Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+    recent.record(testWorkspace() / "palette-first.trackloom");
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto palette = trackloom::describeAppCommandPalette(menu);
+    const auto recentCommands = trackloom::filterAppCommandPalette(palette, "palette-first");
+    const auto trackCommands = trackloom::filterAppCommandPalette(palette, "轨道");
+    const auto emptyInfoRows = trackloom::filterAppCommandPalette(palette, "暂无最近工程");
+
+    require(recentCommands.items.size() == 1,
+        "command palette search should find dynamic recent-project commands by label");
+    require(recentCommands.items[0].commandId == trackloom::appMainMenuRecentProjectCommandId(1),
+        "command palette should preserve recent-project dynamic command ids");
+    require(trackCommands.items.size() == 3,
+        "command palette search should find commands by their menu group name");
+    require(emptyInfoRows.items.empty(),
+        "command palette search should not expose disabled menu info rows as commands");
 }
 
 void commandDispatcherRunsOnlyTheSelectedMainMenuCommand()
@@ -7491,6 +7543,8 @@ int main()
     mainMenuReflectsUndoRedoHistory();
     mainMenuReflectsPlayingTransportState();
     mainMenuListsRecentProjectsWithStableCommandIds();
+    commandPaletteFlattensMenuCommandsWithoutSeparatorsOrInfoRows();
+    commandPaletteIncludesRecentProjectsAndFiltersByQuery();
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
     commandDispatcherRunsRedoMainMenuCommand();
     commandDispatcherRunsTrackCreationMenuCommands();
