@@ -738,8 +738,8 @@ void mainMenuDescribesFileAndPlaybackCommands()
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
 
-    require(menu.groups.size() == 4,
-        "main menu should expose file, edit, track and playback menu groups");
+    require(menu.groups.size() == 5,
+        "main menu should expose file, edit, track, playback and tools menu groups");
     require(menu.groups[0].name == "文件",
         "first main menu group should be the file menu");
     require(menu.groups[1].name == "编辑",
@@ -748,6 +748,8 @@ void mainMenuDescribesFileAndPlaybackCommands()
         "third main menu group should be the track menu");
     require(menu.groups[3].name == "播放",
         "fourth main menu group should be the playback menu");
+    require(menu.groups[4].name == "工具",
+        "fifth main menu group should be the tools menu");
     require(menu.groups[0].items.size() == 6,
         "file menu should include project commands, a separator and an empty recent-project row");
     require(menu.groups[0].items[0].commandId
@@ -806,6 +808,15 @@ void mainMenuDescribesFileAndPlaybackCommands()
         "stop command should be disabled while playback is stopped");
     require(!menu.groups[3].items[2].enabled,
         "rewind command should be disabled before the playback head moves");
+    require(menu.groups[4].items.size() == 1,
+        "tools menu should expose the first utility command");
+    require(menu.groups[4].items[0].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenCommandPalette),
+        "tools menu should expose a stable command id for opening the command palette");
+    require(menu.groups[4].items[0].label == "命令面板...",
+        "tools menu should expose the command palette label");
+    require(menu.groups[4].items[0].enabled,
+        "command palette command should be enabled because it only opens local UI state");
 }
 
 void mainMenuReflectsUndoRedoHistory()
@@ -900,7 +911,7 @@ void commandPaletteFlattensMenuCommandsWithoutSeparatorsOrInfoRows()
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
     const auto palette = trackloom::describeAppCommandPalette(menu);
 
-    require(palette.items.size() == 12,
+    require(palette.items.size() == 13,
         "command palette should include menu commands but skip separators and disabled info rows");
     require(palette.items[0].groupName == "文件" && palette.items[0].label == "新建工程",
         "command palette should preserve the file menu group and command label");
@@ -915,6 +926,8 @@ void commandPaletteFlattensMenuCommandsWithoutSeparatorsOrInfoRows()
         "command palette should include the current no-selection track creation commands");
     require(palette.items[9].groupName == "播放" && palette.items[9].label == "播放",
         "command palette should preserve playback commands after track commands");
+    require(palette.items[12].groupName == "工具" && palette.items[12].label == "命令面板...",
+        "command palette should include the tools command for reopening itself by search");
 }
 
 void commandPaletteIncludesRecentProjectsAndFiltersByQuery()
@@ -1125,6 +1138,9 @@ void commandPaletteAddsShortcutLabelsForVisibleCommands()
     const auto addInstrumentTrack = findPaletteItem(
         palette,
         trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddInstrumentTrack));
+    const auto openCommandPalette = findPaletteItem(
+        palette,
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenCommandPalette));
 
     require(saveProject != nullptr && saveProject->shortcutLabel == "Ctrl+S",
         "command palette should show the registered shortcut for save");
@@ -1132,6 +1148,8 @@ void commandPaletteAddsShortcutLabelsForVisibleCommands()
         "command palette should show shortcuts even when the command is currently disabled");
     require(addInstrumentTrack != nullptr && addInstrumentTrack->shortcutLabel.empty(),
         "command palette should leave commands without registered shortcuts unlabeled");
+    require(openCommandPalette != nullptr && openCommandPalette->shortcutLabel == "Ctrl+K, Ctrl+Shift+P",
+        "command palette should show both registered shortcuts for opening itself");
 }
 
 void commandPaletteMergesMultipleShortcutLabelsForOneCommand()
@@ -1496,6 +1514,25 @@ void commandDispatcherRunsTrackCreationMenuCommands()
         "track creation menu commands should each call exactly their own handler once");
 }
 
+void commandDispatcherRunsCommandPaletteMenuCommand()
+{
+    int openCommandPaletteCalls = 0;
+
+    trackloom::AppCommandHandlers handlers;
+    handlers.openCommandPalette = [&] { ++openCommandPaletteCalls; };
+
+    const auto result = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenCommandPalette),
+        handlers);
+
+    require(result.executed,
+        "command dispatcher should execute the command palette command when its handler exists");
+    require(result.command == trackloom::AppCommandKind::OpenCommandPalette,
+        "command palette menu id should resolve to the open-command-palette command kind");
+    require(openCommandPaletteCalls == 1,
+        "command palette command should call the open-command-palette handler exactly once");
+}
+
 void commandDispatcherPassesRecentProjectNumber()
 {
     std::size_t openedNumber = 0;
@@ -1577,6 +1614,21 @@ void commandShortcutsMapUndoRedoKeysToEditMenuCommands()
     require(redoProjectAlternative.has_value()
             && redoProjectAlternative.value() == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::RedoProject),
         "Ctrl+Shift+Z should also map to redo for users who expect the common alternative redo shortcut");
+}
+
+void commandShortcutsMapCommandPaletteKeysToToolCommand()
+{
+    const auto openByCtrlK = trackloom::appCommandIdForShortcut({ 'k', true, false, false });
+    const auto openByCtrlShiftP = trackloom::appCommandIdForShortcut({ 'p', true, true, false });
+
+    require(openByCtrlK.has_value()
+            && openByCtrlK.value() == trackloom::appMainMenuCommandId(
+                trackloom::AppMainMenuCommand::OpenCommandPalette),
+        "Ctrl+K should map to the same command palette command id used by the tools menu");
+    require(openByCtrlShiftP.has_value()
+            && openByCtrlShiftP.value() == trackloom::appMainMenuCommandId(
+                trackloom::AppMainMenuCommand::OpenCommandPalette),
+        "Ctrl+Shift+P should also open the command palette for common editor muscle memory");
 }
 
 void commandShortcutsIgnoreUnregisteredOrAmbiguousChords()
@@ -8100,10 +8152,12 @@ int main()
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
     commandDispatcherRunsRedoMainMenuCommand();
     commandDispatcherRunsTrackCreationMenuCommands();
+    commandDispatcherRunsCommandPaletteMenuCommand();
     commandDispatcherPassesRecentProjectNumber();
     commandDispatcherRejectsUnknownOrUnboundCommands();
     commandShortcutsMapCommonFileKeysToMenuCommands();
     commandShortcutsMapUndoRedoKeysToEditMenuCommands();
+    commandShortcutsMapCommandPaletteKeysToToolCommand();
     commandShortcutsIgnoreUnregisteredOrAmbiguousChords();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionCreateCanBeUndoneAndRedoneThroughSessionHistory();

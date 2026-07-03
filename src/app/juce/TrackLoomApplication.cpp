@@ -1,5 +1,6 @@
 #include "AppAudioClipActions.h"
 #include "AppCommandDispatcher.h"
+#include "AppCommandPaletteSession.h"
 #include "AppCommandShortcuts.h"
 #include "AppMainMenu.h"
 #include "AppMidiClipActions.h"
@@ -714,11 +715,28 @@ private:
         handlers.playProject = [this] { startProjectPlayback(); };
         handlers.stopProject = [this] { stopProjectPlayback(); };
         handlers.rewindProject = [this] { rewindProjectPlayback(); };
+        handlers.openCommandPalette = [this] { openCommandPaletteFromUi(); };
         handlers.openRecentProject = [this](std::size_t number) {
             selectedRecentProjectNumber_ = number;
             openSelectedRecentProject();
         };
         return handlers;
+    }
+
+    void openCommandPaletteFromUi()
+    {
+        const auto palette = trackloom::addAppCommandPaletteShortcutLabels(
+            trackloom::describeAppCommandPalette(trackloom::describeAppMainMenu(session_, playback_, recentProjects_)),
+            trackloom::defaultAppShortcutBindings());
+
+        // 当前阶段先建立可测试的会话状态；后续弹窗 UI 将直接渲染这个快照。
+        commandPaletteSession_.open(palette);
+        const auto view = trackloom::describeAppCommandPaletteSession(commandPaletteSession_.status());
+
+        lastActionMessage_ = "命令面板：已准备 "
+            + std::to_string(view.rows.size())
+            + " 个命令入口，弹窗界面将在后续接入。";
+        refreshFromSession();
     }
 
     void undoProjectEditFromMenu()
@@ -2247,6 +2265,7 @@ private:
     std::unique_ptr<juce::FileChooser> fileChooser_;
     std::filesystem::path recentProjectsSettingsPath_;
     trackloom::AppRecentProjects recentProjects_;
+    trackloom::AppCommandPaletteSession commandPaletteSession_;
     std::vector<std::string> selectableTrackIds_;
     std::vector<std::string> selectableAudioTrackIds_;
     std::vector<std::string> selectableAudioClipIds_;

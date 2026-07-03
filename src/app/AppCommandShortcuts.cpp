@@ -40,7 +40,9 @@ std::vector<AppShortcutBinding> defaultAppShortcutBindings()
         {{ 's', true, true, false }, appMainMenuCommandId(AppMainMenuCommand::SaveProjectAs)},
         {{ 'z', true, false, false }, appMainMenuCommandId(AppMainMenuCommand::UndoProject)},
         {{ 'y', true, false, false }, appMainMenuCommandId(AppMainMenuCommand::RedoProject)},
-        {{ 'z', true, true, false }, appMainMenuCommandId(AppMainMenuCommand::RedoProject)}
+        {{ 'z', true, true, false }, appMainMenuCommandId(AppMainMenuCommand::RedoProject)},
+        {{ 'k', true, false, false }, appMainMenuCommandId(AppMainMenuCommand::OpenCommandPalette)},
+        {{ 'p', true, true, false }, appMainMenuCommandId(AppMainMenuCommand::OpenCommandPalette)}
     };
 }
 

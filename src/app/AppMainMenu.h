@@ -25,7 +25,9 @@ enum class AppMainMenuCommand {
     // 这三项只负责“创建轨道”，不依赖当前选中轨道或片段。
     AddInstrumentTrack = 1201,
     AddAudioTrack = 1202,
-    AddFolderTrack = 1203
+    AddFolderTrack = 1203,
+    // 命令面板属于工具入口；它打开本地 UI 状态，不直接修改工程。
+    OpenCommandPalette = 1301
 };
 
 struct AppMainMenuItem {

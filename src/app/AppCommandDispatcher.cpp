@@ -54,6 +54,8 @@ AppCommandKind appCommandKindFromMainMenuCommand(AppMainMenuCommand command)
         return AppCommandKind::StopProject;
     case AppMainMenuCommand::RewindProject:
         return AppCommandKind::RewindProject;
+    case AppMainMenuCommand::OpenCommandPalette:
+        return AppCommandKind::OpenCommandPalette;
     }
 
     return AppCommandKind::Unknown;
@@ -115,6 +117,8 @@ AppCommandDispatchResult dispatchAppCommand(
         return runSimpleCommand(command, handlers.stopProject);
     case AppCommandKind::RewindProject:
         return runSimpleCommand(command, handlers.rewindProject);
+    case AppCommandKind::OpenCommandPalette:
+        return runSimpleCommand(command, handlers.openCommandPalette);
     case AppCommandKind::OpenRecentProject:
     case AppCommandKind::Unknown:
         break;

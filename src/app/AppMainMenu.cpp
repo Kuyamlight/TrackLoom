@@ -132,10 +132,19 @@ AppMainMenuStatus describeAppMainMenu(
         "回到开头",
         playback.currentSample() > 0));
 
+    AppMainMenuGroup toolsMenu;
+    toolsMenu.name = "工具";
+    // 命令面板是本地临时 UI 状态，不依赖工程是否可保存或播放。
+    toolsMenu.items.push_back(commandItem(
+        AppMainMenuCommand::OpenCommandPalette,
+        "命令面板...",
+        true));
+
     status.groups.push_back(std::move(fileMenu));
     status.groups.push_back(std::move(editMenu));
     status.groups.push_back(std::move(trackMenu));
     status.groups.push_back(std::move(playbackMenu));
+    status.groups.push_back(std::move(toolsMenu));
     return status;
 }
 
