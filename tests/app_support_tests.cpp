@@ -1,6 +1,7 @@
 #include "AppAudioClipActions.h"
 #include "AppCommandDispatcher.h"
 #include "AppCommandPalette.h"
+#include "AppCommandPaletteSession.h"
 #include "AppCommandShortcuts.h"
 #include "AppProjectFileActions.h"
 #include "AppRecentProjects.h"
@@ -85,6 +86,48 @@ const trackloom::AppCommandPaletteItem* findPaletteItem(
     }
 
     return nullptr;
+}
+
+trackloom::AppCommandPaletteStatus sampleCommandPaletteForSession()
+{
+    trackloom::AppCommandPaletteStatus palette;
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::UndoProject),
+        false,
+        "编辑",
+        "撤销",
+        "Ctrl+Z"
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject),
+        true,
+        "文件",
+        "保存",
+        "Ctrl+S"
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProjectAs),
+        true,
+        "文件",
+        "另存为...",
+        "Ctrl+Shift+S"
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::StopProject),
+        false,
+        "播放",
+        "停止",
+        ""
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::PlayProject),
+        true,
+        "播放",
+        "播放",
+        ""
+    });
+
+    return palette;
 }
 
 void projectSessionTracksNewProjectAndDirtyState()
@@ -1156,6 +1199,98 @@ void commandPaletteFiltersByMergedShortcutLabel()
             && redoMatches.items.front().commandId == trackloom::appMainMenuCommandId(
                 trackloom::AppMainMenuCommand::RedoProject),
         "command palette search should match commands by any shortcut inside a merged label");
+}
+
+void commandPaletteSessionOpensWithFirstEnabledCommandHighlighted()
+{
+    trackloom::AppCommandPaletteSession session;
+
+    session.open(sampleCommandPaletteForSession());
+
+    const auto& status = session.status();
+    require(status.open,
+        "command palette session should report open after opening");
+    require(status.query.empty(),
+        "command palette session should start with an empty query");
+    require(status.filteredPalette.items.size() == 5,
+        "command palette session should show every command before the user types");
+    require(status.highlightedIndex.has_value() && status.highlightedIndex.value() == 1,
+        "command palette session should highlight the first enabled command, skipping disabled items");
+    require(status.filteredPalette.items.at(status.highlightedIndex.value()).commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject),
+        "command palette session should expose the highlighted command through the filtered palette");
+}
+
+void commandPaletteSessionUpdatesQueryAndResetsHighlight()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleCommandPaletteForSession());
+
+    session.updateQuery("ctrl+z");
+
+    const auto& disabledMatch = session.status();
+    require(disabledMatch.query == "ctrl+z",
+        "command palette session should keep the current query text");
+    require(disabledMatch.filteredPalette.items.size() == 1
+            && disabledMatch.filteredPalette.items.front().commandId == trackloom::appMainMenuCommandId(
+                trackloom::AppMainMenuCommand::UndoProject),
+        "command palette session should filter using the same shortcut-aware palette search");
+    require(!disabledMatch.highlightedIndex.has_value(),
+        "command palette session should not highlight a disabled-only match");
+
+    session.updateQuery("ctrl+shift+s");
+
+    const auto& enabledMatch = session.status();
+    require(enabledMatch.filteredPalette.items.size() == 1
+            && enabledMatch.filteredPalette.items.front().commandId == trackloom::appMainMenuCommandId(
+                trackloom::AppMainMenuCommand::SaveProjectAs),
+        "command palette session should refresh filtered commands when the query changes");
+    require(enabledMatch.highlightedIndex.has_value() && enabledMatch.highlightedIndex.value() == 0,
+        "command palette session should reset highlight to the first enabled filtered command");
+}
+
+void commandPaletteSessionMovesHighlightAcrossEnabledCommands()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleCommandPaletteForSession());
+
+    session.moveHighlightDown();
+    const auto& afterDown = session.status();
+    require(afterDown.highlightedIndex.has_value() && afterDown.highlightedIndex.value() == 2,
+        "command palette session should move highlight down to the next enabled command");
+    require(afterDown.filteredPalette.items.at(afterDown.highlightedIndex.value()).commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProjectAs),
+        "command palette session should skip disabled commands while moving down");
+
+    session.moveHighlightDown();
+    session.moveHighlightDown();
+    const auto& wrappedDown = session.status();
+    require(wrappedDown.highlightedIndex.has_value() && wrappedDown.highlightedIndex.value() == 1,
+        "command palette session should wrap downward navigation to the first enabled command");
+
+    session.moveHighlightUp();
+    const auto& wrappedUp = session.status();
+    require(wrappedUp.highlightedIndex.has_value() && wrappedUp.highlightedIndex.value() == 4,
+        "command palette session should wrap upward navigation to the last enabled command");
+}
+
+void commandPaletteSessionClosesAndClearsState()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleCommandPaletteForSession());
+    session.updateQuery("保存");
+
+    session.close();
+
+    const auto& status = session.status();
+    require(!status.open,
+        "command palette session should report closed after closing");
+    require(status.query.empty(),
+        "command palette session should clear query text when closed");
+    require(status.filteredPalette.items.empty(),
+        "command palette session should clear filtered items when closed");
+    require(!status.highlightedIndex.has_value(),
+        "command palette session should clear highlight when closed");
 }
 
 void commandDispatcherRunsOnlyTheSelectedMainMenuCommand()
@@ -7831,6 +7966,10 @@ int main()
     commandPaletteMergesMultipleShortcutLabelsForOneCommand();
     commandPaletteFiltersByShortcutLabel();
     commandPaletteFiltersByMergedShortcutLabel();
+    commandPaletteSessionOpensWithFirstEnabledCommandHighlighted();
+    commandPaletteSessionUpdatesQueryAndResetsHighlight();
+    commandPaletteSessionMovesHighlightAcrossEnabledCommands();
+    commandPaletteSessionClosesAndClearsState();
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
     commandDispatcherRunsRedoMainMenuCommand();
     commandDispatcherRunsTrackCreationMenuCommands();
