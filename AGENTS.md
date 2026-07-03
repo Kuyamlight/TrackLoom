@@ -660,3 +660,8 @@ TrackLoom 应支持：
   - 根本原因：JUCE 可见行只是当前过滤结果的窗口切片；如果 UI 直接按行号或旧 command id 执行，搜索文本变化、面板关闭、disabled 状态或可见窗口偏移都可能让点击路径绕过应用层校验。
   - 采用的解决方式：新增 `activateAppCommandPaletteSessionRow`，UI 只传当前行绑定的 command id；应用层重新确认会话打开、命令仍在当前过滤结果里且 enabled，再复用 `AppCommandDispatcher` 执行；JUCE 行标签只负责把鼠标事件转成该应用层调用。
   - 后续规则：命令面板的鼠标、触控、滚动窗口和未来图标行都不得直接执行可见行缓存；所有点击激活必须通过 `AppCommandPaletteSession` 按当前过滤结果二次校验，并覆盖关闭、disabled、缺失行和缺失 handler 测试。
+- 接入命令面板分页导航时：
+  - 触发场景：可见命令面板只显示 6 行结果后，需要让用户用 PageUp/PageDown 快速跨页移动高亮，并让列表窗口跟随高亮位置。
+  - 根本原因：如果可见窗口首行计算留在 JUCE 私有函数里，分页、鼠标滚动、触控滚动和后续诊断视图会复制不同的窗口规则；如果分页直接按行号跳转，还可能落到 disabled 命令或越过列表边界。
+  - 采用的解决方式：在 `AppCommandPaletteSession` 中新增分页高亮移动，按可见行数跳转并把结果夹到第一/最后 enabled 命令，遇到 disabled 目标行时按翻页方向寻找最近 enabled 命令；同时新增 `firstVisibleAppCommandPaletteSessionRowIndex` 作为纯应用层 helper，JUCE 只读取 helper 结果渲染窗口。CTest 覆盖分页移动、边界夹紧、disabled 目标跳过、disabled-only 查询和零可见行数。
+  - 后续规则：命令面板滚轮、触控滚动、更多可见行布局或虚拟列表都必须复用应用层可见窗口计算或等价测试边界；高亮不得落到 disabled 命令，分页和滚动不得把窗口规则隐藏在单一 UI 实现里。

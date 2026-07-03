@@ -43,10 +43,15 @@ public:
     void updateQuery(std::string query);
     void moveHighlightDown();
     void moveHighlightUp();
+    // PageUp/PageDown 使用当前 UI 可见行数作为跳转步长。
+    // 这里只移动高亮，不滚动 JUCE 组件；可见窗口由只读 view helper 计算。
+    void moveHighlightPageDown(std::size_t visibleRowCount);
+    void moveHighlightPageUp(std::size_t visibleRowCount);
 
 private:
     void refreshFilteredPalette();
     void moveHighlight(bool forward);
+    void moveHighlightByPage(bool forward, std::size_t visibleRowCount);
 
     AppCommandPaletteStatus sourcePalette_;
     AppCommandPaletteSessionStatus status_;
@@ -74,5 +79,11 @@ AppCommandPaletteSessionView describeAppCommandPaletteSession(
 // JUCE、测试或后续诊断面板复用它，避免各处重复拼接菜单组、快捷键和禁用提示。
 std::string describeAppCommandPaletteSessionRow(
     const AppCommandPaletteSessionRow& row);
+
+// firstVisibleAppCommandPaletteSessionRowIndex 计算 UI 应显示的第一条结果。
+// 它只读取 view，不依赖 JUCE；高亮项超出可见范围时，让窗口刚好滚到能看到高亮行。
+std::size_t firstVisibleAppCommandPaletteSessionRowIndex(
+    const AppCommandPaletteSessionView& view,
+    std::size_t visibleRowCount);
 
 }

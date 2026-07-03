@@ -743,6 +743,18 @@ public:
                 refreshCommandPalettePanel();
                 return true;
             }
+
+            if (key.getKeyCode() == juce::KeyPress::pageDownKey) {
+                commandPaletteSession_.moveHighlightPageDown(commandPaletteVisibleRowCount);
+                refreshCommandPalettePanel();
+                return true;
+            }
+
+            if (key.getKeyCode() == juce::KeyPress::pageUpKey) {
+                commandPaletteSession_.moveHighlightPageUp(commandPaletteVisibleRowCount);
+                refreshCommandPalettePanel();
+                return true;
+            }
         }
 
         if (const auto commandId = trackloom::appCommandIdForShortcut(appShortcutChordFromKeyPress(key))) {
@@ -937,18 +949,6 @@ private:
         grabKeyboardFocus();
     }
 
-    std::size_t firstVisibleCommandPaletteRowIndex(
-        const trackloom::AppCommandPaletteSessionView& view) const
-    {
-        for (std::size_t index = 0; index < view.rows.size(); ++index) {
-            if (view.rows[index].highlighted && index >= commandPaletteVisibleRowCount) {
-                return index - commandPaletteVisibleRowCount + 1;
-            }
-        }
-
-        return 0;
-    }
-
     void refreshCommandPalettePanel()
     {
         const auto view = trackloom::describeAppCommandPaletteSession(commandPaletteSession_.status());
@@ -973,7 +973,9 @@ private:
         commandPaletteQueryEditor_.setText(toJuceString(view.query), false);
         syncingCommandPaletteQuery_ = false;
 
-        const auto firstVisibleRow = firstVisibleCommandPaletteRowIndex(view);
+        const auto firstVisibleRow = trackloom::firstVisibleAppCommandPaletteSessionRowIndex(
+            view,
+            commandPaletteVisibleRowCount);
         for (std::size_t visibleIndex = 0; visibleIndex < commandPaletteRowLabels_.size(); ++visibleIndex) {
             auto& rowLabel = commandPaletteRowLabels_[visibleIndex];
             const auto rowIndex = firstVisibleRow + visibleIndex;

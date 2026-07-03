@@ -28,6 +28,46 @@ std::optional<std::size_t> lastEnabledIndex(const AppCommandPaletteStatus& palet
     return std::nullopt;
 }
 
+std::optional<std::size_t> firstEnabledIndexAtOrAfter(
+    const AppCommandPaletteStatus& palette,
+    std::size_t startIndex)
+{
+    for (std::size_t index = startIndex; index < palette.items.size(); ++index) {
+        if (palette.items[index].enabled) {
+            return index;
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<std::size_t> lastEnabledIndexAtOrBefore(
+    const AppCommandPaletteStatus& palette,
+    std::size_t startIndex)
+{
+    if (palette.items.empty()) {
+        return std::nullopt;
+    }
+
+    auto index = startIndex >= palette.items.size()
+        ? palette.items.size() - 1
+        : startIndex;
+
+    for (;;) {
+        if (palette.items[index].enabled) {
+            return index;
+        }
+
+        if (index == 0) {
+            break;
+        }
+
+        --index;
+    }
+
+    return std::nullopt;
+}
+
 AppCommandPaletteSelectionResult selectHighlightedItem(const AppCommandPaletteSessionStatus& status)
 {
     if (!status.open || status.filteredPalette.items.empty()) {
@@ -168,6 +208,16 @@ void AppCommandPaletteSession::moveHighlightUp()
     moveHighlight(false);
 }
 
+void AppCommandPaletteSession::moveHighlightPageDown(std::size_t visibleRowCount)
+{
+    moveHighlightByPage(true, visibleRowCount);
+}
+
+void AppCommandPaletteSession::moveHighlightPageUp(std::size_t visibleRowCount)
+{
+    moveHighlightByPage(false, visibleRowCount);
+}
+
 void AppCommandPaletteSession::refreshFilteredPalette()
 {
     status_.filteredPalette = filterAppCommandPalette(sourcePalette_, status_.query);
@@ -206,6 +256,45 @@ void AppCommandPaletteSession::moveHighlight(bool forward)
     }
 
     status_.highlightedIndex = std::nullopt;
+}
+
+void AppCommandPaletteSession::moveHighlightByPage(bool forward, std::size_t visibleRowCount)
+{
+    if (visibleRowCount == 0) {
+        return;
+    }
+
+    if (!status_.open || status_.filteredPalette.items.empty()) {
+        status_.highlightedIndex = std::nullopt;
+        return;
+    }
+
+    if (!status_.highlightedIndex.has_value()
+        || status_.highlightedIndex.value() >= status_.filteredPalette.items.size()) {
+        status_.highlightedIndex = forward
+            ? firstEnabledIndex(status_.filteredPalette)
+            : lastEnabledIndex(status_.filteredPalette);
+        return;
+    }
+
+    const auto currentIndex = status_.highlightedIndex.value();
+    const auto lastIndex = status_.filteredPalette.items.size() - 1;
+    const auto targetIndex = forward
+        ? (visibleRowCount > lastIndex - currentIndex ? lastIndex : currentIndex + visibleRowCount)
+        : (currentIndex < visibleRowCount ? std::size_t{0} : currentIndex - visibleRowCount);
+
+    if (status_.filteredPalette.items[targetIndex].enabled) {
+        status_.highlightedIndex = targetIndex;
+        return;
+    }
+
+    // PageDown 遇到 disabled 目标行时向下找；PageUp 则向上找。
+    // 如果目标行之后/之前没有 enabled 命令，就夹到列表底部/顶部的 enabled 命令。
+    status_.highlightedIndex = forward
+        ? firstEnabledIndexAtOrAfter(status_.filteredPalette, targetIndex)
+            .value_or(lastEnabledIndex(status_.filteredPalette).value_or(currentIndex))
+        : lastEnabledIndexAtOrBefore(status_.filteredPalette, targetIndex)
+            .value_or(firstEnabledIndex(status_.filteredPalette).value_or(currentIndex));
 }
 
 AppCommandPaletteActivationResult activateHighlightedAppCommandPaletteCommand(
@@ -269,6 +358,33 @@ std::string describeAppCommandPaletteSessionRow(
     }
 
     return text;
+}
+
+std::size_t firstVisibleAppCommandPaletteSessionRowIndex(
+    const AppCommandPaletteSessionView& view,
+    std::size_t visibleRowCount)
+{
+    if (!view.open || visibleRowCount == 0 || view.rows.size() <= visibleRowCount) {
+        return 0;
+    }
+
+    for (std::size_t index = 0; index < view.rows.size(); ++index) {
+        if (!view.rows[index].highlighted) {
+            continue;
+        }
+
+        if (index < visibleRowCount) {
+            return 0;
+        }
+
+        const auto firstVisible = index - visibleRowCount + 1;
+        const auto lastPossibleFirstVisible = view.rows.size() - visibleRowCount;
+        return firstVisible > lastPossibleFirstVisible
+            ? lastPossibleFirstVisible
+            : firstVisible;
+    }
+
+    return 0;
 }
 
 }

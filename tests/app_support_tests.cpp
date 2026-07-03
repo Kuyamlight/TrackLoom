@@ -130,6 +130,97 @@ trackloom::AppCommandPaletteStatus sampleCommandPaletteForSession()
     return palette;
 }
 
+trackloom::AppCommandPaletteStatus sampleLongCommandPaletteForSession()
+{
+    trackloom::AppCommandPaletteStatus palette;
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::UndoProject),
+        false,
+        "编辑",
+        "撤销",
+        "Ctrl+Z"
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::NewProject),
+        true,
+        "文件",
+        "新建工程",
+        "Ctrl+N"
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenProject),
+        true,
+        "文件",
+        "打开工程",
+        "Ctrl+O"
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject),
+        true,
+        "文件",
+        "保存",
+        "Ctrl+S"
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProjectAs),
+        true,
+        "文件",
+        "另存为...",
+        "Ctrl+Shift+S"
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::StopProject),
+        false,
+        "播放",
+        "停止",
+        ""
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::PlayProject),
+        true,
+        "播放",
+        "播放",
+        ""
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::RewindProject),
+        true,
+        "播放",
+        "回到开头",
+        ""
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddInstrumentTrack),
+        true,
+        "轨道",
+        "添加乐器轨",
+        ""
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddAudioTrack),
+        true,
+        "轨道",
+        "添加音频轨",
+        ""
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddFolderTrack),
+        true,
+        "轨道",
+        "添加文件夹",
+        ""
+    });
+    palette.items.push_back({
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenCommandPalette),
+        true,
+        "工具",
+        "命令面板...",
+        "Ctrl+K, Ctrl+Shift+P"
+    });
+
+    return palette;
+}
+
 void projectSessionTracksNewProjectAndDirtyState()
 {
     trackloom::AppProjectSession session;
@@ -1290,6 +1381,73 @@ void commandPaletteSessionMovesHighlightAcrossEnabledCommands()
     const auto& wrappedUp = session.status();
     require(wrappedUp.highlightedIndex.has_value() && wrappedUp.highlightedIndex.value() == 4,
         "command palette session should wrap upward navigation to the last enabled command");
+}
+
+void commandPaletteSessionPagesHighlightAcrossVisibleWindows()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleLongCommandPaletteForSession());
+
+    session.moveHighlightPageDown(6);
+    const auto& firstPageDown = session.status();
+    require(firstPageDown.highlightedIndex.has_value() && firstPageDown.highlightedIndex.value() == 7,
+        "command palette page-down should move the highlight by one visible window");
+    require(trackloom::firstVisibleAppCommandPaletteSessionRowIndex(
+                trackloom::describeAppCommandPaletteSession(firstPageDown),
+                6) == 2,
+        "command palette visible window should scroll just enough to keep the page-down target visible");
+
+    session.moveHighlightPageDown(6);
+    const auto& secondPageDown = session.status();
+    require(secondPageDown.highlightedIndex.has_value() && secondPageDown.highlightedIndex.value() == 11,
+        "command palette page-down should clamp to the last enabled command at the bottom");
+    require(trackloom::firstVisibleAppCommandPaletteSessionRowIndex(
+                trackloom::describeAppCommandPaletteSession(secondPageDown),
+                6) == 6,
+        "command palette visible window should show the last page when the highlight reaches the bottom");
+
+    session.moveHighlightPageUp(6);
+    const auto& firstPageUp = session.status();
+    require(firstPageUp.highlightedIndex.has_value() && firstPageUp.highlightedIndex.value() == 4,
+        "command palette page-up should move the highlight upward by one visible window");
+
+    session.moveHighlightPageUp(6);
+    const auto& secondPageUp = session.status();
+    require(secondPageUp.highlightedIndex.has_value() && secondPageUp.highlightedIndex.value() == 1,
+        "command palette page-up should clamp to the first enabled command at the top");
+}
+
+void commandPaletteSessionPageNavigationSkipsDisabledTargetsAndInvalidCounts()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleLongCommandPaletteForSession());
+
+    session.moveHighlightPageDown(0);
+    require(session.status().highlightedIndex.has_value() && session.status().highlightedIndex.value() == 1,
+        "command palette page navigation should ignore a zero-row page size");
+
+    session.moveHighlightPageDown(4);
+    const auto& skippedDown = session.status();
+    require(skippedDown.highlightedIndex.has_value() && skippedDown.highlightedIndex.value() == 6,
+        "command palette page-down should move to the next enabled command when the target row is disabled");
+
+    session.moveHighlightPageUp(1);
+    const auto& skippedUp = session.status();
+    require(skippedUp.highlightedIndex.has_value() && skippedUp.highlightedIndex.value() == 4,
+        "command palette page-up should move to the previous enabled command when the target row is disabled");
+
+    session.updateQuery("Ctrl+Z");
+    session.moveHighlightPageDown(6);
+    require(!session.status().highlightedIndex.has_value(),
+        "command palette page navigation should keep disabled-only searches without a highlight");
+    require(trackloom::firstVisibleAppCommandPaletteSessionRowIndex(
+                trackloom::describeAppCommandPaletteSession(session.status()),
+                6) == 0,
+        "command palette visible window should stay at the top when no row is highlighted");
+    require(trackloom::firstVisibleAppCommandPaletteSessionRowIndex(
+                trackloom::describeAppCommandPaletteSession(session.status()),
+                0) == 0,
+        "command palette visible window should reject a zero visible row count");
 }
 
 void commandPaletteSessionClosesAndClearsState()
@@ -8250,6 +8408,8 @@ int main()
     commandPaletteSessionOpensWithFirstEnabledCommandHighlighted();
     commandPaletteSessionUpdatesQueryAndResetsHighlight();
     commandPaletteSessionMovesHighlightAcrossEnabledCommands();
+    commandPaletteSessionPagesHighlightAcrossVisibleWindows();
+    commandPaletteSessionPageNavigationSkipsDisabledTargetsAndInvalidCounts();
     commandPaletteSessionClosesAndClearsState();
     commandPaletteSessionActivationExecutesHighlightedCommand();
     commandPaletteSessionActivationRejectsClosedDisabledOrMissingHandler();
