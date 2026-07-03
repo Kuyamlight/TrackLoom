@@ -1359,6 +1359,63 @@ void commandPaletteSessionActivationRejectsClosedDisabledOrMissingHandler()
         "command palette session activation should distinguish selected command dispatch failure from search failure");
 }
 
+void commandPaletteSessionDescriptionMarksRowsForUi()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleCommandPaletteForSession());
+    session.moveHighlightDown();
+
+    const auto view = trackloom::describeAppCommandPaletteSession(session.status());
+
+    require(view.open,
+        "command palette session view should preserve the open state");
+    require(view.query.empty(),
+        "command palette session view should expose the current query text");
+    require(view.rows.size() == 5,
+        "command palette session view should expose one row for every filtered command");
+    require(view.emptyMessage.empty(),
+        "command palette session view should not show an empty message when rows exist");
+    require(view.rows[0].label == "撤销" && !view.rows[0].enabled && !view.rows[0].highlighted,
+        "command palette session view should expose disabled rows without highlighting them");
+    require(view.rows[2].commandId == trackloom::appMainMenuCommandId(
+                trackloom::AppMainMenuCommand::SaveProjectAs)
+            && view.rows[2].highlighted
+            && view.rows[2].shortcutLabel == "Ctrl+Shift+S",
+        "command palette session view should mark the current highlighted row and preserve shortcut labels");
+}
+
+void commandPaletteSessionDescriptionReportsDisabledAndEmptyStates()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleCommandPaletteForSession());
+
+    session.updateQuery("ctrl+z");
+    const auto disabledOnly = trackloom::describeAppCommandPaletteSession(session.status());
+
+    require(disabledOnly.rows.size() == 1
+            && disabledOnly.rows.front().commandId == trackloom::appMainMenuCommandId(
+                trackloom::AppMainMenuCommand::UndoProject),
+        "command palette session view should keep disabled-only matches visible");
+    require(!disabledOnly.rows.front().enabled && !disabledOnly.rows.front().highlighted,
+        "command palette session view should not mark disabled-only matches as highlighted");
+    require(disabledOnly.emptyMessage.empty(),
+        "command palette session view should not treat disabled-only matches as an empty result");
+
+    session.updateQuery("definitely-not-a-command");
+    const auto empty = trackloom::describeAppCommandPaletteSession(session.status());
+
+    require(empty.open && empty.rows.empty(),
+        "command palette session view should report open empty results when a query matches nothing");
+    require(empty.emptyMessage == "没有匹配的命令",
+        "command palette session view should provide one stable empty-result message for UI rendering");
+
+    session.close();
+    const auto closed = trackloom::describeAppCommandPaletteSession(session.status());
+
+    require(!closed.open && closed.rows.empty() && closed.query.empty() && closed.emptyMessage.empty(),
+        "command palette session view should be empty when the session is closed");
+}
+
 void commandDispatcherRunsOnlyTheSelectedMainMenuCommand()
 {
     int newProjectCalls = 0;
@@ -8038,6 +8095,8 @@ int main()
     commandPaletteSessionClosesAndClearsState();
     commandPaletteSessionActivationExecutesHighlightedCommand();
     commandPaletteSessionActivationRejectsClosedDisabledOrMissingHandler();
+    commandPaletteSessionDescriptionMarksRowsForUi();
+    commandPaletteSessionDescriptionReportsDisabledAndEmptyStates();
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
     commandDispatcherRunsRedoMainMenuCommand();
     commandDispatcherRunsTrackCreationMenuCommands();

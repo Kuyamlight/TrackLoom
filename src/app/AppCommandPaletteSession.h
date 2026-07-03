@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace trackloom {
 
@@ -13,6 +14,22 @@ struct AppCommandPaletteSessionStatus {
     std::string query;
     AppCommandPaletteStatus filteredPalette;
     std::optional<std::size_t> highlightedIndex;
+};
+
+struct AppCommandPaletteSessionRow {
+    int commandId = 0;
+    bool enabled = false;
+    bool highlighted = false;
+    std::string groupName;
+    std::string label;
+    std::string shortcutLabel;
+};
+
+struct AppCommandPaletteSessionView {
+    bool open = false;
+    std::string query;
+    std::vector<AppCommandPaletteSessionRow> rows;
+    std::string emptyMessage;
 };
 
 // AppCommandPaletteSession 保存命令面板弹出期间的临时 UI 状态。
@@ -40,5 +57,10 @@ private:
 AppCommandPaletteActivationResult activateHighlightedAppCommandPaletteCommand(
     const AppCommandPaletteSessionStatus& status,
     const AppCommandHandlers& handlers);
+
+// describeAppCommandPaletteSession 把会话状态转换成 UI 可直接渲染的只读快照。
+// UI 不需要自己解释 highlightedIndex、disabled 项或空查询结果。
+AppCommandPaletteSessionView describeAppCommandPaletteSession(
+    const AppCommandPaletteSessionStatus& status);
 
 }

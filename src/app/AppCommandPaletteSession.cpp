@@ -173,4 +173,36 @@ AppCommandPaletteActivationResult activateHighlightedAppCommandPaletteCommand(
     return result;
 }
 
+AppCommandPaletteSessionView describeAppCommandPaletteSession(
+    const AppCommandPaletteSessionStatus& status)
+{
+    AppCommandPaletteSessionView view;
+    view.open = status.open;
+    view.query = status.query;
+
+    if (!status.open) {
+        return view;
+    }
+
+    for (std::size_t index = 0; index < status.filteredPalette.items.size(); ++index) {
+        const auto& item = status.filteredPalette.items[index];
+        view.rows.push_back({
+            item.commandId,
+            item.enabled,
+            status.highlightedIndex.has_value()
+                && status.highlightedIndex.value() == index
+                && item.enabled,
+            item.groupName,
+            item.label,
+            item.shortcutLabel
+        });
+    }
+
+    if (view.rows.empty()) {
+        view.emptyMessage = "没有匹配的命令";
+    }
+
+    return view;
+}
+
 }
