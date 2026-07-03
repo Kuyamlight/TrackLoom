@@ -435,4 +435,27 @@ AppCommandPaletteVisibleRowsView describeVisibleAppCommandPaletteSessionRows(
     return visibleRows;
 }
 
+std::string describeAppCommandPaletteVisibleRowsRange(
+    const AppCommandPaletteVisibleRowsView& visibleRows)
+{
+    if (visibleRows.rows.empty() || visibleRows.totalRowCount == 0) {
+        return {};
+    }
+
+    const auto firstVisibleNumber = visibleRows.firstRowIndex + 1;
+    const auto lastVisibleNumber = visibleRows.firstRowIndex + visibleRows.rows.size();
+
+    if (firstVisibleNumber == lastVisibleNumber) {
+        return std::to_string(firstVisibleNumber)
+            + " / "
+            + std::to_string(visibleRows.totalRowCount);
+    }
+
+    return std::to_string(firstVisibleNumber)
+        + "-"
+        + std::to_string(lastVisibleNumber)
+        + " / "
+        + std::to_string(visibleRows.totalRowCount);
+}
+
 }

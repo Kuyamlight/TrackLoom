@@ -103,4 +103,9 @@ AppCommandPaletteVisibleRowsView describeVisibleAppCommandPaletteSessionRows(
     const AppCommandPaletteSessionView& view,
     std::size_t visibleRowCount);
 
+// describeAppCommandPaletteVisibleRowsRange 生成当前可见结果范围，例如 "3-8 / 12"。
+// 空可见窗口返回空字符串，避免 UI 在无结果或零行布局时显示误导性的范围。
+std::string describeAppCommandPaletteVisibleRowsRange(
+    const AppCommandPaletteVisibleRowsView& visibleRows);
+
 }

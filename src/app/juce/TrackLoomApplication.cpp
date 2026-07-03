@@ -241,6 +241,9 @@ public:
         commandPaletteTitleLabel_.setText(toJuceString("命令面板"), juce::dontSendNotification);
         commandPaletteTitleLabel_.setFont(juce::FontOptions(18.0f, juce::Font::bold));
         commandPaletteTitleLabel_.setColour(juce::Label::textColourId, juce::Colour(0xfff2f0e8));
+        commandPaletteRangeLabel_.setFont(juce::FontOptions(14.0f));
+        commandPaletteRangeLabel_.setJustificationType(juce::Justification::centredRight);
+        commandPaletteRangeLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffb7c7b3));
         styleSingleLineTextEditor(commandPaletteQueryEditor_);
         commandPaletteQueryEditor_.setTextToShowWhenEmpty(
             toJuceString("搜索命令"),
@@ -470,6 +473,7 @@ public:
         addAndMakeVisible(commandPaletteBackground_);
         addAndMakeVisible(commandPalettePanel_);
         addAndMakeVisible(commandPaletteTitleLabel_);
+        addAndMakeVisible(commandPaletteRangeLabel_);
         addAndMakeVisible(commandPaletteQueryEditor_);
         for (auto& rowLabel : commandPaletteRowLabels_) {
             addAndMakeVisible(rowLabel);
@@ -707,7 +711,9 @@ public:
         commandPalettePanel_.setBounds(paletteBounds);
 
         auto paletteInner = paletteBounds.reduced(18);
-        commandPaletteTitleLabel_.setBounds(paletteInner.removeFromTop(24));
+        auto paletteTitleRow = paletteInner.removeFromTop(24);
+        commandPaletteRangeLabel_.setBounds(paletteTitleRow.removeFromRight(150));
+        commandPaletteTitleLabel_.setBounds(paletteTitleRow);
         paletteInner.removeFromTop(8);
         commandPaletteQueryEditor_.setBounds(paletteInner.removeFromTop(34));
         paletteInner.removeFromTop(10);
@@ -969,6 +975,7 @@ private:
         commandPaletteBackground_.setVisible(visible);
         commandPalettePanel_.setVisible(visible);
         commandPaletteTitleLabel_.setVisible(visible);
+        commandPaletteRangeLabel_.setVisible(visible);
         commandPaletteQueryEditor_.setVisible(visible);
         commandPaletteEmptyLabel_.setVisible(visible && view.rows.empty());
 
@@ -988,6 +995,9 @@ private:
         const auto visibleRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
             view,
             commandPaletteVisibleRowCount);
+        commandPaletteRangeLabel_.setText(
+            toJuceString(trackloom::describeAppCommandPaletteVisibleRowsRange(visibleRows)),
+            juce::dontSendNotification);
         for (std::size_t visibleIndex = 0; visibleIndex < commandPaletteRowLabels_.size(); ++visibleIndex) {
             auto& rowLabel = commandPaletteRowLabels_[visibleIndex];
 
@@ -1015,6 +1025,7 @@ private:
         commandPaletteBackground_.toFront(false);
         commandPalettePanel_.toFront(false);
         commandPaletteTitleLabel_.toFront(false);
+        commandPaletteRangeLabel_.toFront(false);
         commandPaletteQueryEditor_.toFront(false);
         for (auto& rowLabel : commandPaletteRowLabels_) {
             rowLabel.toFront(false);
@@ -2569,6 +2580,7 @@ private:
     juce::Label commandPaletteBackground_;
     juce::GroupComponent commandPalettePanel_;
     juce::Label commandPaletteTitleLabel_;
+    juce::Label commandPaletteRangeLabel_;
     juce::TextEditor commandPaletteQueryEditor_;
     std::array<CommandPaletteRowLabel, commandPaletteVisibleRowCount> commandPaletteRowLabels_;
     juce::Label commandPaletteEmptyLabel_;

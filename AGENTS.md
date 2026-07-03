@@ -675,3 +675,8 @@ TrackLoom 应支持：
   - 根本原因：如果 UI 层保留切片、总数和上下是否还有隐藏行的判断，后续鼠标滚轮、范围提示或虚拟列表容易复制出不同规则，点击行缓存也会脱离应用层测试边界。
   - 采用的解决方式：新增 `AppCommandPaletteVisibleRowsView` 和 `describeVisibleAppCommandPaletteSessionRows`，统一返回 `firstRowIndex`、`totalRowCount`、`hasPreviousRows`、`hasNextRows` 和裁剪后的 `rows`；JUCE 只渲染该快照并绑定当前可见行 command id。CTest 覆盖跨页切片、末页、closed、零可见行和 disabled-only 查询。
   - 后续规则：命令面板滚轮、范围提示、虚拟列表或可见行点击扩展必须消费应用层可见行快照；UI 不得重新按完整 rows 自行切片或推断滚动提示。
+- 接入命令面板范围提示时：
+  - 触发场景：可见行快照已经能返回首行、总数和裁剪 rows 后，需要在命令面板标题区显示当前正在查看的结果范围。
+  - 根本原因：范围提示如果由 JUCE 根据标签数量临时拼接，会再次复制一套 one-based 索引、单行格式、空窗口处理和总数规则；后续滚轮或诊断视图容易显示不同结果。
+  - 采用的解决方式：新增 `describeAppCommandPaletteVisibleRowsRange`，从 `AppCommandPaletteVisibleRowsView` 生成 `"3-8 / 12"`、`"1 / 1"` 或空字符串；JUCE 只新增一个右对齐 label 显示该文本。CTest 覆盖中间页、末页、单行 disabled-only 和零可见行。
+  - 后续规则：命令面板里所有结果范围、滚动提示、诊断摘要都必须复用应用层范围描述或等价测试边界；UI 层不得自行把 row index 转成人类可读范围。

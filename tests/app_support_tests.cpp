@@ -1575,6 +1575,39 @@ void commandPaletteSessionVisibleRowsHandleClosedZeroAndDisabledOnlyStates()
         "command palette visible rows should preserve disabled-only row state without inventing a highlight");
 }
 
+void commandPaletteSessionVisibleRowsFormatRangeHintForUi()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleLongCommandPaletteForSession());
+
+    session.moveHighlightPageDown(6);
+    const auto firstPageDownRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        6);
+    require(trackloom::describeAppCommandPaletteVisibleRowsRange(firstPageDownRows) == "3-8 / 12",
+        "command palette range text should use one-based indexes for a middle visible window");
+
+    session.moveHighlightToLast();
+    const auto lastPageRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        6);
+    require(trackloom::describeAppCommandPaletteVisibleRowsRange(lastPageRows) == "7-12 / 12",
+        "command palette range text should describe the final visible window");
+
+    session.updateQuery("Ctrl+Z");
+    const auto disabledOnlyRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        6);
+    require(trackloom::describeAppCommandPaletteVisibleRowsRange(disabledOnlyRows) == "1 / 1",
+        "command palette range text should use a compact single-row format");
+
+    const auto zeroVisibleRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        0);
+    require(trackloom::describeAppCommandPaletteVisibleRowsRange(zeroVisibleRows).empty(),
+        "command palette range text should be empty when no rows are currently visible");
+}
+
 void commandPaletteSessionClosesAndClearsState()
 {
     trackloom::AppCommandPaletteSession session;
@@ -8539,6 +8572,7 @@ int main()
     commandPaletteSessionBoundaryNavigationKeepsDisabledOnlySearchesUnhighlighted();
     commandPaletteSessionVisibleRowsDescribeWindowSliceForUi();
     commandPaletteSessionVisibleRowsHandleClosedZeroAndDisabledOnlyStates();
+    commandPaletteSessionVisibleRowsFormatRangeHintForUi();
     commandPaletteSessionClosesAndClearsState();
     commandPaletteSessionActivationExecutesHighlightedCommand();
     commandPaletteSessionActivationRejectsClosedDisabledOrMissingHandler();
