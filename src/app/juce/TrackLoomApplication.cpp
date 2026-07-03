@@ -744,6 +744,18 @@ public:
                 return true;
             }
 
+            if (key.getKeyCode() == juce::KeyPress::homeKey) {
+                commandPaletteSession_.moveHighlightToFirst();
+                refreshCommandPalettePanel();
+                return true;
+            }
+
+            if (key.getKeyCode() == juce::KeyPress::endKey) {
+                commandPaletteSession_.moveHighlightToLast();
+                refreshCommandPalettePanel();
+                return true;
+            }
+
             if (key.getKeyCode() == juce::KeyPress::pageDownKey) {
                 commandPaletteSession_.moveHighlightPageDown(commandPaletteVisibleRowCount);
                 refreshCommandPalettePanel();

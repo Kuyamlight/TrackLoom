@@ -1450,6 +1450,51 @@ void commandPaletteSessionPageNavigationSkipsDisabledTargetsAndInvalidCounts()
         "command palette visible window should reject a zero visible row count");
 }
 
+void commandPaletteSessionMovesHighlightToFirstAndLastEnabledCommand()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleLongCommandPaletteForSession());
+
+    session.moveHighlightToLast();
+    const auto& last = session.status();
+    require(last.highlightedIndex.has_value() && last.highlightedIndex.value() == 11,
+        "command palette End navigation should move to the last enabled command");
+    require(trackloom::firstVisibleAppCommandPaletteSessionRowIndex(
+                trackloom::describeAppCommandPaletteSession(last),
+                6) == 6,
+        "command palette visible window should scroll to the last page after End navigation");
+
+    session.moveHighlightToFirst();
+    const auto& first = session.status();
+    require(first.highlightedIndex.has_value() && first.highlightedIndex.value() == 1,
+        "command palette Home navigation should move to the first enabled command");
+    require(trackloom::firstVisibleAppCommandPaletteSessionRowIndex(
+                trackloom::describeAppCommandPaletteSession(first),
+                6) == 0,
+        "command palette visible window should return to the top after Home navigation");
+}
+
+void commandPaletteSessionBoundaryNavigationKeepsDisabledOnlySearchesUnhighlighted()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleLongCommandPaletteForSession());
+    session.updateQuery("Ctrl+Z");
+
+    session.moveHighlightToLast();
+    require(!session.status().highlightedIndex.has_value(),
+        "command palette End navigation should not highlight disabled-only matches");
+
+    session.moveHighlightToFirst();
+    require(!session.status().highlightedIndex.has_value(),
+        "command palette Home navigation should not highlight disabled-only matches");
+
+    session.close();
+    session.moveHighlightToFirst();
+    session.moveHighlightToLast();
+    require(!session.status().open && !session.status().highlightedIndex.has_value(),
+        "command palette boundary navigation should leave a closed session closed and unhighlighted");
+}
+
 void commandPaletteSessionClosesAndClearsState()
 {
     trackloom::AppCommandPaletteSession session;
@@ -8410,6 +8455,8 @@ int main()
     commandPaletteSessionMovesHighlightAcrossEnabledCommands();
     commandPaletteSessionPagesHighlightAcrossVisibleWindows();
     commandPaletteSessionPageNavigationSkipsDisabledTargetsAndInvalidCounts();
+    commandPaletteSessionMovesHighlightToFirstAndLastEnabledCommand();
+    commandPaletteSessionBoundaryNavigationKeepsDisabledOnlySearchesUnhighlighted();
     commandPaletteSessionClosesAndClearsState();
     commandPaletteSessionActivationExecutesHighlightedCommand();
     commandPaletteSessionActivationRejectsClosedDisabledOrMissingHandler();

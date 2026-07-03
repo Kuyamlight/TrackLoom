@@ -665,3 +665,8 @@ TrackLoom 应支持：
   - 根本原因：如果可见窗口首行计算留在 JUCE 私有函数里，分页、鼠标滚动、触控滚动和后续诊断视图会复制不同的窗口规则；如果分页直接按行号跳转，还可能落到 disabled 命令或越过列表边界。
   - 采用的解决方式：在 `AppCommandPaletteSession` 中新增分页高亮移动，按可见行数跳转并把结果夹到第一/最后 enabled 命令，遇到 disabled 目标行时按翻页方向寻找最近 enabled 命令；同时新增 `firstVisibleAppCommandPaletteSessionRowIndex` 作为纯应用层 helper，JUCE 只读取 helper 结果渲染窗口。CTest 覆盖分页移动、边界夹紧、disabled 目标跳过、disabled-only 查询和零可见行数。
   - 后续规则：命令面板滚轮、触控滚动、更多可见行布局或虚拟列表都必须复用应用层可见窗口计算或等价测试边界；高亮不得落到 disabled 命令，分页和滚动不得把窗口规则隐藏在单一 UI 实现里。
+- 接入命令面板 Home/End 边界导航时：
+  - 触发场景：命令面板已有上下键和 PageUp/PageDown 后，需要支持常见列表键盘习惯，用 Home/End 快速到达第一条或最后一条可执行命令。
+  - 根本原因：Home/End 如果在 JUCE 层直接操作行号，容易把 disabled 跳过、closed session 和 disabled-only 查询的规则复制到 UI；如果把 Home/End 当作执行命令，也会混淆“移动高亮”和“确认执行”。
+  - 采用的解决方式：在 `AppCommandPaletteSession` 中新增 `moveHighlightToFirst` 和 `moveHighlightToLast`，只把高亮移动到第一/最后 enabled 命令，closed、空结果和 disabled-only 查询保持无高亮；JUCE 只绑定 `homeKey`/`endKey` 并刷新面板。CTest 覆盖首尾移动、可见窗口跟随、disabled-only 查询和 closed session。
+  - 后续规则：命令面板新增键盘导航时，必须先在会话层定义“移动高亮但不执行”的语义，并测试 disabled、空结果和关闭状态；JUCE 不得自行复制高亮边界规则。

@@ -208,6 +208,26 @@ void AppCommandPaletteSession::moveHighlightUp()
     moveHighlight(false);
 }
 
+void AppCommandPaletteSession::moveHighlightToFirst()
+{
+    if (!status_.open || status_.filteredPalette.items.empty()) {
+        status_.highlightedIndex = std::nullopt;
+        return;
+    }
+
+    status_.highlightedIndex = firstEnabledIndex(status_.filteredPalette);
+}
+
+void AppCommandPaletteSession::moveHighlightToLast()
+{
+    if (!status_.open || status_.filteredPalette.items.empty()) {
+        status_.highlightedIndex = std::nullopt;
+        return;
+    }
+
+    status_.highlightedIndex = lastEnabledIndex(status_.filteredPalette);
+}
+
 void AppCommandPaletteSession::moveHighlightPageDown(std::size_t visibleRowCount)
 {
     moveHighlightByPage(true, visibleRowCount);

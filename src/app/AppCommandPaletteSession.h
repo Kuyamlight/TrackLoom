@@ -43,6 +43,9 @@ public:
     void updateQuery(std::string query);
     void moveHighlightDown();
     void moveHighlightUp();
+    // Home/End 只把高亮移动到边界 enabled 命令；真正执行仍由 Enter 或点击激活函数负责。
+    void moveHighlightToFirst();
+    void moveHighlightToLast();
     // PageUp/PageDown 使用当前 UI 可见行数作为跳转步长。
     // 这里只移动高亮，不滚动 JUCE 组件；可见窗口由只读 view helper 计算。
     void moveHighlightPageDown(std::size_t visibleRowCount);
