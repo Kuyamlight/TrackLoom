@@ -18,6 +18,8 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <algorithm>
+#include <array>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -110,7 +112,8 @@ void styleSingleLineTextEditor(juce::TextEditor& editor)
 class MainComponent final
     : public juce::Component
     , public juce::MenuBarModel
-    , private juce::Timer {
+    , private juce::Timer
+    , private juce::KeyListener {
 public:
     explicit MainComponent(std::function<void(std::string)> titleChanged)
         : titleChanged_(std::move(titleChanged))
@@ -210,6 +213,30 @@ public:
         styleReadOnlyTextEditor(trackListText_);
         styleReadOnlyTextEditor(timelineText_);
         styleReadOnlyTextEditor(recentProjectsText_);
+
+        commandPaletteBackground_.setColour(juce::Label::backgroundColourId, juce::Colour(0xff1d211e));
+        commandPalettePanel_.setText({});
+        commandPalettePanel_.setColour(juce::GroupComponent::outlineColourId, juce::Colour(0xff6ccf8d));
+        commandPalettePanel_.setColour(juce::GroupComponent::textColourId, juce::Colour(0xfff2f0e8));
+        commandPaletteTitleLabel_.setText(toJuceString("命令面板"), juce::dontSendNotification);
+        commandPaletteTitleLabel_.setFont(juce::FontOptions(18.0f, juce::Font::bold));
+        commandPaletteTitleLabel_.setColour(juce::Label::textColourId, juce::Colour(0xfff2f0e8));
+        styleSingleLineTextEditor(commandPaletteQueryEditor_);
+        commandPaletteQueryEditor_.setTextToShowWhenEmpty(
+            toJuceString("搜索命令"),
+            juce::Colour(0xff7f8c7d));
+
+        for (auto& rowLabel : commandPaletteRowLabels_) {
+            rowLabel.setFont(juce::FontOptions(15.0f));
+            rowLabel.setJustificationType(juce::Justification::centredLeft);
+            rowLabel.setColour(juce::Label::textColourId, juce::Colour(0xffdfe9d8));
+            rowLabel.setColour(juce::Label::backgroundColourId, juce::Colour(0xff20231f));
+        }
+
+        commandPaletteEmptyLabel_.setFont(juce::FontOptions(15.0f));
+        commandPaletteEmptyLabel_.setJustificationType(juce::Justification::centredLeft);
+        commandPaletteEmptyLabel_.setColour(juce::Label::textColourId, juce::Colour(0xffb7c7b3));
+        commandPaletteEmptyLabel_.setColour(juce::Label::backgroundColourId, juce::Colour(0xff20231f));
 
         newProjectButton_.setButtonText(toJuceString("新建工程"));
         openProjectButton_.setButtonText(toJuceString("打开工程"));
@@ -330,6 +357,10 @@ public:
         renameMidiClipButton_.onClick = [this] { renameSelectedMidiClip(); };
         clipNameEditor_.onReturnKey = [this] { renameSelectedMidiClip(); };
         openRecentProjectButton_.onClick = [this] { openSelectedRecentProject(); };
+        commandPaletteQueryEditor_.onTextChange = [this] { updateCommandPaletteQueryFromUi(); };
+        commandPaletteQueryEditor_.onReturnKey = [this] { activateCommandPaletteSelectionFromUi(); };
+        commandPaletteQueryEditor_.onEscapeKey = [this] { closeCommandPaletteFromUi(); };
+        commandPaletteQueryEditor_.addKeyListener(this);
 
         addAndMakeVisible(menuBar_);
         addAndMakeVisible(titleLabel_);
@@ -413,6 +444,14 @@ public:
         addAndMakeVisible(extendMidiClipEndButton_);
         addAndMakeVisible(deleteMidiClipButton_);
         addAndMakeVisible(renameMidiClipButton_);
+        addAndMakeVisible(commandPaletteBackground_);
+        addAndMakeVisible(commandPalettePanel_);
+        addAndMakeVisible(commandPaletteTitleLabel_);
+        addAndMakeVisible(commandPaletteQueryEditor_);
+        for (auto& rowLabel : commandPaletteRowLabels_) {
+            addAndMakeVisible(rowLabel);
+        }
+        addAndMakeVisible(commandPaletteEmptyLabel_);
 
         // MainComponent 主动获取键盘焦点后，Space 键才能先交给 keyPressed 处理。
         setWantsKeyboardFocus(true);
@@ -634,10 +673,55 @@ public:
         openRecentProjectButton_.setBounds(recentProjectRow.removeFromLeft(124));
         rightColumn.removeFromTop(8);
         recentProjectsText_.setBounds(rightColumn);
+
+        const auto paletteWidth = std::max(320, std::min(720, getWidth() - 80));
+        juce::Rectangle<int> paletteBounds(
+            (getWidth() - paletteWidth) / 2,
+            76,
+            paletteWidth,
+            292);
+        commandPaletteBackground_.setBounds(paletteBounds);
+        commandPalettePanel_.setBounds(paletteBounds);
+
+        auto paletteInner = paletteBounds.reduced(18);
+        commandPaletteTitleLabel_.setBounds(paletteInner.removeFromTop(24));
+        paletteInner.removeFromTop(8);
+        commandPaletteQueryEditor_.setBounds(paletteInner.removeFromTop(34));
+        paletteInner.removeFromTop(10);
+
+        for (auto& rowLabel : commandPaletteRowLabels_) {
+            rowLabel.setBounds(paletteInner.removeFromTop(28));
+            paletteInner.removeFromTop(4);
+        }
+
+        commandPaletteEmptyLabel_.setBounds(commandPaletteRowLabels_.front().getBounds());
     }
 
     bool keyPressed(const juce::KeyPress& key) override
     {
+        if (commandPaletteSession_.status().open) {
+            if (key.getKeyCode() == juce::KeyPress::escapeKey) {
+                closeCommandPaletteFromUi();
+                return true;
+            }
+
+            if (key.getKeyCode() == juce::KeyPress::returnKey) {
+                return activateCommandPaletteSelectionFromUi();
+            }
+
+            if (key.getKeyCode() == juce::KeyPress::downKey) {
+                commandPaletteSession_.moveHighlightDown();
+                refreshCommandPalettePanel();
+                return true;
+            }
+
+            if (key.getKeyCode() == juce::KeyPress::upKey) {
+                commandPaletteSession_.moveHighlightUp();
+                refreshCommandPalettePanel();
+                return true;
+            }
+        }
+
         if (const auto commandId = trackloom::appCommandIdForShortcut(appShortcutChordFromKeyPress(key))) {
             return dispatchAppCommandFromUi(commandId.value());
         }
@@ -649,6 +733,11 @@ public:
         }
 
         return false;
+    }
+
+    bool keyPressed(const juce::KeyPress& key, juce::Component*) override
+    {
+        return keyPressed(key);
     }
 
     juce::StringArray getMenuBarNames() override
@@ -688,6 +777,8 @@ public:
     }
 
 private:
+    static constexpr std::size_t commandPaletteVisibleRowCount = 6;
+
     bool dispatchAppCommandFromUi(int commandId)
     {
         const auto result = trackloom::dispatchAppCommand(commandId, makeAppCommandHandlers());
@@ -732,11 +823,136 @@ private:
         // 当前阶段先建立可测试的会话状态；后续弹窗 UI 将直接渲染这个快照。
         commandPaletteSession_.open(palette);
         const auto view = trackloom::describeAppCommandPaletteSession(commandPaletteSession_.status());
+        syncingCommandPaletteQuery_ = true;
+        commandPaletteQueryEditor_.setText({}, false);
+        syncingCommandPaletteQuery_ = false;
 
         lastActionMessage_ = "命令面板：已准备 "
             + std::to_string(view.rows.size())
-            + " 个命令入口，弹窗界面将在后续接入。";
+            + " 个命令入口。";
         refreshFromSession();
+        commandPaletteQueryEditor_.grabKeyboardFocus();
+        commandPaletteQueryEditor_.selectAll();
+    }
+
+    void updateCommandPaletteQueryFromUi()
+    {
+        if (syncingCommandPaletteQuery_) {
+            return;
+        }
+
+        commandPaletteSession_.updateQuery(juceStringToUtf8(commandPaletteQueryEditor_.getText()));
+        refreshCommandPalettePanel();
+    }
+
+    bool activateCommandPaletteSelectionFromUi()
+    {
+        const auto result = trackloom::activateHighlightedAppCommandPaletteCommand(
+            commandPaletteSession_.status(),
+            makeAppCommandHandlers());
+
+        if (result.executed) {
+            if (result.dispatch.command != trackloom::AppCommandKind::OpenCommandPalette) {
+                commandPaletteSession_.close();
+            }
+            refreshFromSession();
+            grabKeyboardFocus();
+            return true;
+        }
+
+        switch (result.kind) {
+        case trackloom::AppCommandPaletteActivationResultKind::NoMatchingCommand:
+            lastActionMessage_ = "命令面板：没有匹配的命令。";
+            break;
+        case trackloom::AppCommandPaletteActivationResultKind::OnlyDisabledMatches:
+            lastActionMessage_ = "命令面板：匹配命令当前不可用。";
+            break;
+        case trackloom::AppCommandPaletteActivationResultKind::DispatchFailed:
+            lastActionMessage_ = "命令面板：命令缺少处理函数。";
+            break;
+        case trackloom::AppCommandPaletteActivationResultKind::Executed:
+            break;
+        }
+
+        refreshFromSession();
+        commandPaletteQueryEditor_.grabKeyboardFocus();
+        return true;
+    }
+
+    void closeCommandPaletteFromUi()
+    {
+        commandPaletteSession_.close();
+        lastActionMessage_ = "命令面板：已关闭。";
+        refreshFromSession();
+        grabKeyboardFocus();
+    }
+
+    std::size_t firstVisibleCommandPaletteRowIndex(
+        const trackloom::AppCommandPaletteSessionView& view) const
+    {
+        for (std::size_t index = 0; index < view.rows.size(); ++index) {
+            if (view.rows[index].highlighted && index >= commandPaletteVisibleRowCount) {
+                return index - commandPaletteVisibleRowCount + 1;
+            }
+        }
+
+        return 0;
+    }
+
+    void refreshCommandPalettePanel()
+    {
+        const auto view = trackloom::describeAppCommandPaletteSession(commandPaletteSession_.status());
+        const auto visible = view.open;
+
+        commandPaletteBackground_.setVisible(visible);
+        commandPalettePanel_.setVisible(visible);
+        commandPaletteTitleLabel_.setVisible(visible);
+        commandPaletteQueryEditor_.setVisible(visible);
+        commandPaletteEmptyLabel_.setVisible(visible && view.rows.empty());
+
+        if (!visible) {
+            for (auto& rowLabel : commandPaletteRowLabels_) {
+                rowLabel.setVisible(false);
+            }
+            return;
+        }
+
+        syncingCommandPaletteQuery_ = true;
+        commandPaletteQueryEditor_.setText(toJuceString(view.query), false);
+        syncingCommandPaletteQuery_ = false;
+
+        const auto firstVisibleRow = firstVisibleCommandPaletteRowIndex(view);
+        for (std::size_t visibleIndex = 0; visibleIndex < commandPaletteRowLabels_.size(); ++visibleIndex) {
+            auto& rowLabel = commandPaletteRowLabels_[visibleIndex];
+            const auto rowIndex = firstVisibleRow + visibleIndex;
+
+            if (rowIndex >= view.rows.size()) {
+                rowLabel.setVisible(false);
+                continue;
+            }
+
+            const auto& row = view.rows[rowIndex];
+            rowLabel.setVisible(true);
+            rowLabel.setText(
+                toJuceString(trackloom::describeAppCommandPaletteSessionRow(row)),
+                juce::dontSendNotification);
+            rowLabel.setColour(
+                juce::Label::backgroundColourId,
+                row.highlighted ? juce::Colour(0xff284634) : juce::Colour(0xff20231f));
+            rowLabel.setColour(
+                juce::Label::textColourId,
+                row.enabled ? juce::Colour(0xffdfe9d8) : juce::Colour(0xff84917f));
+        }
+
+        commandPaletteEmptyLabel_.setText(toJuceString(view.emptyMessage), juce::dontSendNotification);
+        commandPaletteBackground_.toFront(false);
+        commandPalettePanel_.toFront(false);
+        commandPaletteTitleLabel_.toFront(false);
+        commandPaletteQueryEditor_.toFront(false);
+        for (auto& rowLabel : commandPaletteRowLabels_) {
+            rowLabel.toFront(false);
+        }
+        commandPaletteEmptyLabel_.toFront(false);
     }
 
     void undoProjectEditFromMenu()
@@ -2175,6 +2391,7 @@ private:
         recentProjectsText_.setText(
             toJuceString(recentProjectsText(recentStatus)),
             false);
+        refreshCommandPalettePanel();
 
         if (titleChanged_) {
             titleChanged_(status.windowTitle);
@@ -2266,6 +2483,7 @@ private:
     std::filesystem::path recentProjectsSettingsPath_;
     trackloom::AppRecentProjects recentProjects_;
     trackloom::AppCommandPaletteSession commandPaletteSession_;
+    bool syncingCommandPaletteQuery_ = false;
     std::vector<std::string> selectableTrackIds_;
     std::vector<std::string> selectableAudioTrackIds_;
     std::vector<std::string> selectableAudioClipIds_;
@@ -2278,6 +2496,12 @@ private:
     std::string selectedMidiClipId_;
     std::size_t selectedRecentProjectNumber_ = 0;
     juce::MenuBarComponent menuBar_;
+    juce::Label commandPaletteBackground_;
+    juce::GroupComponent commandPalettePanel_;
+    juce::Label commandPaletteTitleLabel_;
+    juce::TextEditor commandPaletteQueryEditor_;
+    std::array<juce::Label, commandPaletteVisibleRowCount> commandPaletteRowLabels_;
+    juce::Label commandPaletteEmptyLabel_;
     juce::Label titleLabel_;
     juce::Label statusLabel_;
     juce::Label playbackStatusLabel_;

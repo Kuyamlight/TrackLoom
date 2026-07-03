@@ -63,4 +63,9 @@ AppCommandPaletteActivationResult activateHighlightedAppCommandPaletteCommand(
 AppCommandPaletteSessionView describeAppCommandPaletteSession(
     const AppCommandPaletteSessionStatus& status);
 
+// describeAppCommandPaletteSessionRow 生成单行可见文本。
+// JUCE、测试或后续诊断面板复用它，避免各处重复拼接菜单组、快捷键和禁用提示。
+std::string describeAppCommandPaletteSessionRow(
+    const AppCommandPaletteSessionRow& row);
+
 }

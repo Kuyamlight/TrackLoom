@@ -1434,6 +1434,33 @@ void commandPaletteSessionDescriptionReportsDisabledAndEmptyStates()
         "command palette session view should be empty when the session is closed");
 }
 
+void commandPaletteSessionRowTextFormatsUiLabels()
+{
+    trackloom::AppCommandPaletteSessionRow saveRow;
+    saveRow.enabled = true;
+    saveRow.groupName = "文件";
+    saveRow.label = "保存";
+    saveRow.shortcutLabel = "Ctrl+S";
+
+    trackloom::AppCommandPaletteSessionRow playRow;
+    playRow.enabled = true;
+    playRow.groupName = "播放";
+    playRow.label = "播放";
+
+    trackloom::AppCommandPaletteSessionRow disabledUndoRow;
+    disabledUndoRow.enabled = false;
+    disabledUndoRow.groupName = "编辑";
+    disabledUndoRow.label = "撤销";
+    disabledUndoRow.shortcutLabel = "Ctrl+Z";
+
+    require(trackloom::describeAppCommandPaletteSessionRow(saveRow) == "文件 / 保存    Ctrl+S",
+        "command palette row text should include group, command label and shortcut when present");
+    require(trackloom::describeAppCommandPaletteSessionRow(playRow) == "播放 / 播放",
+        "command palette row text should omit shortcut spacing when no shortcut is registered");
+    require(trackloom::describeAppCommandPaletteSessionRow(disabledUndoRow) == "编辑 / 撤销    Ctrl+Z    不可用",
+        "command palette row text should mark disabled commands without hiding them");
+}
+
 void commandDispatcherRunsOnlyTheSelectedMainMenuCommand()
 {
     int newProjectCalls = 0;
@@ -8149,6 +8176,7 @@ int main()
     commandPaletteSessionActivationRejectsClosedDisabledOrMissingHandler();
     commandPaletteSessionDescriptionMarksRowsForUi();
     commandPaletteSessionDescriptionReportsDisabledAndEmptyStates();
+    commandPaletteSessionRowTextFormatsUiLabels();
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
     commandDispatcherRunsRedoMainMenuCommand();
     commandDispatcherRunsTrackCreationMenuCommands();

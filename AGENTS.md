@@ -650,3 +650,8 @@ TrackLoom 应支持：
   - 根本原因：如果 JUCE 菜单、快捷键、命令面板和后续 AI 工具分别维护命令编号与回调，命令可见性、快捷键标签、disabled 状态和执行结果会逐步分叉。
   - 采用的解决方式：新增稳定 `AppMainMenuCommand::OpenCommandPalette`，同步映射到 `AppCommandKind`、`AppCommandHandlers`、`AppCommandShortcuts`、工具菜单和 JUCE 处理函数；打开时构建带快捷键标签的 `AppCommandPaletteSession`，CTest 覆盖菜单快照、命令面板展开、快捷键标签、分发器和 `Ctrl+K`/`Ctrl+Shift+P` 映射。
   - 后续规则：新增桌面全局命令时，应优先从 `AppMainMenuCommand` 建立稳定 id，再同步分发器、快捷键、命令面板标签和 JUCE 回调测试；UI 只渲染和触发应用层快照，不应自行复制命令映射。
+- 接入可见命令面板时：
+  - 触发场景：命令面板已有打开命令和会话状态后，需要在 JUCE 桌面壳中显示搜索框、结果行和高亮状态。
+  - 根本原因：如果可见 UI 自己拼接行文本、解释 disabled 状态或直接执行命令，后续菜单、快捷键、AI 工具和诊断面板会出现多套命令展示与执行规则。
+  - 采用的解决方式：在 `AppCommandPaletteSession` 中新增 `describeAppCommandPaletteSessionRow`，统一生成“菜单组 / 命令名 / 快捷键 / 不可用”行文本；JUCE 浮层只渲染 session view，通过 `AppCommandDispatcher` 执行当前高亮命令，并用 CTest 覆盖行文本格式、完整 Debug 构建和完整 CTest。
+  - 后续规则：命令面板 UI 扩展鼠标点击、滚动、图标、自定义快捷键或 AI 命令时，必须继续复用 `AppCommandPaletteSession` 和 `AppCommandDispatcher`；UI 不得重复实现命令过滤、disabled 判断、行文本拼接或执行分发。

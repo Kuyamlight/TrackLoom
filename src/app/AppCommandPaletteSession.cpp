@@ -205,4 +205,20 @@ AppCommandPaletteSessionView describeAppCommandPaletteSession(
     return view;
 }
 
+std::string describeAppCommandPaletteSessionRow(
+    const AppCommandPaletteSessionRow& row)
+{
+    auto text = row.groupName + " / " + row.label;
+
+    if (!row.shortcutLabel.empty()) {
+        text += "    " + row.shortcutLabel;
+    }
+
+    if (!row.enabled) {
+        text += "    不可用";
+    }
+
+    return text;
+}
+
 }
