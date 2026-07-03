@@ -58,6 +58,8 @@ public:
     // 这里只移动高亮，不滚动 JUCE 组件；可见窗口由只读 view helper 计算。
     void moveHighlightPageDown(std::size_t visibleRowCount);
     void moveHighlightPageUp(std::size_t visibleRowCount);
+    // 鼠标滚轮使用夹紧语义：正数向下、负数向上，滚到边界后停住，不像上下键那样循环。
+    void moveHighlightByWheelSteps(int stepCount);
 
 private:
     void refreshFilteredPalette();

@@ -238,6 +238,62 @@ void AppCommandPaletteSession::moveHighlightPageUp(std::size_t visibleRowCount)
     moveHighlightByPage(false, visibleRowCount);
 }
 
+void AppCommandPaletteSession::moveHighlightByWheelSteps(int stepCount)
+{
+    if (stepCount == 0) {
+        return;
+    }
+
+    if (!status_.open || status_.filteredPalette.items.empty()) {
+        status_.highlightedIndex = std::nullopt;
+        return;
+    }
+
+    if (!status_.highlightedIndex.has_value()
+        || status_.highlightedIndex.value() >= status_.filteredPalette.items.size()) {
+        status_.highlightedIndex = stepCount > 0
+            ? firstEnabledIndex(status_.filteredPalette)
+            : lastEnabledIndex(status_.filteredPalette);
+        return;
+    }
+
+    auto currentIndex = status_.highlightedIndex.value();
+
+    while (stepCount > 0) {
+        if (currentIndex + 1 >= status_.filteredPalette.items.size()) {
+            status_.highlightedIndex = lastEnabledIndex(status_.filteredPalette);
+            return;
+        }
+
+        const auto nextIndex = firstEnabledIndexAtOrAfter(status_.filteredPalette, currentIndex + 1);
+        if (!nextIndex.has_value()) {
+            status_.highlightedIndex = lastEnabledIndex(status_.filteredPalette);
+            return;
+        }
+
+        currentIndex = nextIndex.value();
+        status_.highlightedIndex = currentIndex;
+        --stepCount;
+    }
+
+    while (stepCount < 0) {
+        if (currentIndex == 0) {
+            status_.highlightedIndex = firstEnabledIndex(status_.filteredPalette);
+            return;
+        }
+
+        const auto previousIndex = lastEnabledIndexAtOrBefore(status_.filteredPalette, currentIndex - 1);
+        if (!previousIndex.has_value()) {
+            status_.highlightedIndex = firstEnabledIndex(status_.filteredPalette);
+            return;
+        }
+
+        currentIndex = previousIndex.value();
+        status_.highlightedIndex = currentIndex;
+        ++stepCount;
+    }
+}
+
 void AppCommandPaletteSession::refreshFilteredPalette()
 {
     status_.filteredPalette = filterAppCommandPalette(sourcePalette_, status_.query);

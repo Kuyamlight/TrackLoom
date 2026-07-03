@@ -680,3 +680,8 @@ TrackLoom 应支持：
   - 根本原因：范围提示如果由 JUCE 根据标签数量临时拼接，会再次复制一套 one-based 索引、单行格式、空窗口处理和总数规则；后续滚轮或诊断视图容易显示不同结果。
   - 采用的解决方式：新增 `describeAppCommandPaletteVisibleRowsRange`，从 `AppCommandPaletteVisibleRowsView` 生成 `"3-8 / 12"`、`"1 / 1"` 或空字符串；JUCE 只新增一个右对齐 label 显示该文本。CTest 覆盖中间页、末页、单行 disabled-only 和零可见行。
   - 后续规则：命令面板里所有结果范围、滚动提示、诊断摘要都必须复用应用层范围描述或等价测试边界；UI 层不得自行把 row index 转成人类可读范围。
+- 接入命令面板鼠标滚轮步进时：
+  - 触发场景：命令面板已经有可见行快照和范围提示后，需要让鼠标滚轮可以浏览较长命令结果。
+  - 根本原因：如果 JUCE 直接移动可见行或保存独立滚动偏移，会绕开 `AppCommandPaletteSession` 的 disabled 跳过、边界夹紧、范围提示和点击二次校验规则；如果沿用上下键循环语义，滚到底部会突然回到顶部，不符合滚轮预期。
+  - 采用的解决方式：新增 `moveHighlightByWheelSteps`，滚轮正数向下、负数向上，跳过 disabled，顶部/底部夹住不循环；JUCE 只把 `MouseWheelDetails::deltaY` 转成 `+1/-1` 步数，结果行也把 wheel 事件转交同一入口。CTest 覆盖步进、跳过 disabled、上下边界夹紧、零步数、disabled-only 和 closed session。
+  - 后续规则：命令面板滚轮、触控板和后续独立滚动条都必须先明确是否移动高亮、是否拥有独立滚动偏移；当前能力只是滚轮驱动高亮步进并让窗口跟随，不得宣称已经支持惯性触控板累计或独立列表滚动位置。

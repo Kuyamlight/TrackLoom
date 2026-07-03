@@ -1450,6 +1450,66 @@ void commandPaletteSessionPageNavigationSkipsDisabledTargetsAndInvalidCounts()
         "command palette visible window should reject a zero visible row count");
 }
 
+void commandPaletteSessionWheelStepsMoveHighlightWithoutWrapping()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleLongCommandPaletteForSession());
+
+    session.moveHighlightByWheelSteps(2);
+    require(session.status().highlightedIndex.has_value() && session.status().highlightedIndex.value() == 3,
+        "command palette wheel-down steps should move through enabled commands");
+
+    session.moveHighlightByWheelSteps(1);
+    require(session.status().highlightedIndex.has_value() && session.status().highlightedIndex.value() == 4,
+        "command palette wheel-down should move to the next enabled command before a disabled row");
+
+    session.moveHighlightByWheelSteps(1);
+    require(session.status().highlightedIndex.has_value() && session.status().highlightedIndex.value() == 6,
+        "command palette wheel-down should skip disabled commands");
+
+    session.moveHighlightByWheelSteps(20);
+    require(session.status().highlightedIndex.has_value() && session.status().highlightedIndex.value() == 11,
+        "command palette wheel-down should clamp to the last enabled command instead of wrapping");
+    require(trackloom::describeAppCommandPaletteVisibleRowsRange(
+                trackloom::describeVisibleAppCommandPaletteSessionRows(
+                    trackloom::describeAppCommandPaletteSession(session.status()),
+                    6)) == "7-12 / 12",
+        "command palette wheel-down should let the visible window follow the bottom highlight");
+
+    session.moveHighlightByWheelSteps(20);
+    require(session.status().highlightedIndex.has_value() && session.status().highlightedIndex.value() == 11,
+        "command palette wheel-down at the bottom should stay at the last enabled command");
+
+    session.moveHighlightByWheelSteps(-20);
+    require(session.status().highlightedIndex.has_value() && session.status().highlightedIndex.value() == 1,
+        "command palette wheel-up should clamp to the first enabled command instead of wrapping");
+    require(trackloom::describeAppCommandPaletteVisibleRowsRange(
+                trackloom::describeVisibleAppCommandPaletteSessionRows(
+                    trackloom::describeAppCommandPaletteSession(session.status()),
+                    6)) == "1-6 / 12",
+        "command palette wheel-up should return the visible window to the top");
+}
+
+void commandPaletteSessionWheelStepsHandleZeroDisabledOnlyAndClosedStates()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleLongCommandPaletteForSession());
+
+    session.moveHighlightByWheelSteps(0);
+    require(session.status().highlightedIndex.has_value() && session.status().highlightedIndex.value() == 1,
+        "command palette wheel navigation should ignore zero steps");
+
+    session.updateQuery("Ctrl+Z");
+    session.moveHighlightByWheelSteps(1);
+    require(!session.status().highlightedIndex.has_value(),
+        "command palette wheel navigation should not highlight disabled-only matches");
+
+    session.close();
+    session.moveHighlightByWheelSteps(1);
+    require(!session.status().open && !session.status().highlightedIndex.has_value(),
+        "command palette wheel navigation should leave a closed session closed and unhighlighted");
+}
+
 void commandPaletteSessionMovesHighlightToFirstAndLastEnabledCommand()
 {
     trackloom::AppCommandPaletteSession session;
@@ -8568,6 +8628,8 @@ int main()
     commandPaletteSessionMovesHighlightAcrossEnabledCommands();
     commandPaletteSessionPagesHighlightAcrossVisibleWindows();
     commandPaletteSessionPageNavigationSkipsDisabledTargetsAndInvalidCounts();
+    commandPaletteSessionWheelStepsMoveHighlightWithoutWrapping();
+    commandPaletteSessionWheelStepsHandleZeroDisabledOnlyAndClosedStates();
     commandPaletteSessionMovesHighlightToFirstAndLastEnabledCommand();
     commandPaletteSessionBoundaryNavigationKeepsDisabledOnlySearchesUnhighlighted();
     commandPaletteSessionVisibleRowsDescribeWindowSliceForUi();

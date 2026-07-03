@@ -114,6 +114,7 @@ void styleSingleLineTextEditor(juce::TextEditor& editor)
 class CommandPaletteRowLabel final : public juce::Label {
 public:
     std::function<void()> clicked;
+    std::function<void(const juce::MouseWheelDetails&)> wheelMoved;
 
     void mouseUp(const juce::MouseEvent& event) override
     {
@@ -126,6 +127,16 @@ public:
         if (clicked) {
             clicked();
         }
+    }
+
+    void mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override
+    {
+        if (wheelMoved) {
+            wheelMoved(wheel);
+            return;
+        }
+
+        juce::Label::mouseWheelMove(event, wheel);
     }
 };
 
@@ -257,6 +268,9 @@ public:
             rowLabel.setColour(juce::Label::backgroundColourId, juce::Colour(0xff20231f));
             rowLabel.setMouseCursor(juce::MouseCursor::PointingHandCursor);
             rowLabel.clicked = [this, rowIndex] { activateCommandPaletteRowFromUi(rowIndex); };
+            rowLabel.wheelMoved = [this](const juce::MouseWheelDetails& wheel) {
+                scrollCommandPaletteWithWheelFromUi(wheel);
+            };
         }
 
         commandPaletteEmptyLabel_.setFont(juce::FontOptions(15.0f));
@@ -793,6 +807,17 @@ public:
         return keyPressed(key);
     }
 
+    void mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override
+    {
+        if (commandPaletteSession_.status().open
+            && commandPalettePanel_.getBounds().contains(event.getPosition())) {
+            scrollCommandPaletteWithWheelFromUi(wheel);
+            return;
+        }
+
+        juce::Component::mouseWheelMove(event, wheel);
+    }
+
     juce::StringArray getMenuBarNames() override
     {
         juce::StringArray names;
@@ -895,6 +920,17 @@ private:
         }
 
         commandPaletteSession_.updateQuery(juceStringToUtf8(commandPaletteQueryEditor_.getText()));
+        refreshCommandPalettePanel();
+    }
+
+    void scrollCommandPaletteWithWheelFromUi(const juce::MouseWheelDetails& wheel)
+    {
+        if (!commandPaletteSession_.status().open || wheel.deltaY == 0.0f) {
+            return;
+        }
+
+        // 高精度触控板的滚动幅度暂不累计；当前只把一次 JUCE wheel 事件转换成一步高亮移动。
+        commandPaletteSession_.moveHighlightByWheelSteps(wheel.deltaY < 0.0f ? 1 : -1);
         refreshCommandPalettePanel();
     }
 
