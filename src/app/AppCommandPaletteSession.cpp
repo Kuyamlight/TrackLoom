@@ -59,6 +59,74 @@ AppCommandPaletteSelectionResult selectHighlightedItem(const AppCommandPaletteSe
     };
 }
 
+AppCommandPaletteSelectionResult selectVisibleItemByCommandId(
+    const AppCommandPaletteSessionStatus& status,
+    int commandId)
+{
+    if (!status.open || status.filteredPalette.items.empty()) {
+        return {
+            AppCommandPaletteSelectionResultKind::NoMatchingCommand,
+            std::nullopt
+        };
+    }
+
+    bool foundDisabledMatch = false;
+    for (const auto& item : status.filteredPalette.items) {
+        if (item.commandId != commandId) {
+            continue;
+        }
+
+        if (item.enabled) {
+            return {
+                AppCommandPaletteSelectionResultKind::Selected,
+                item
+            };
+        }
+
+        foundDisabledMatch = true;
+    }
+
+    return {
+        foundDisabledMatch
+            ? AppCommandPaletteSelectionResultKind::OnlyDisabledMatches
+            : AppCommandPaletteSelectionResultKind::NoMatchingCommand,
+        std::nullopt
+    };
+}
+
+AppCommandPaletteActivationResult activateSelectedPaletteItem(
+    AppCommandPaletteSelectionResult selection,
+    const AppCommandHandlers& handlers)
+{
+    AppCommandPaletteActivationResult result;
+    result.selection = std::move(selection);
+
+    if (result.selection.kind == AppCommandPaletteSelectionResultKind::NoMatchingCommand) {
+        result.kind = AppCommandPaletteActivationResultKind::NoMatchingCommand;
+        return result;
+    }
+
+    if (result.selection.kind == AppCommandPaletteSelectionResultKind::OnlyDisabledMatches) {
+        result.kind = AppCommandPaletteActivationResultKind::OnlyDisabledMatches;
+        return result;
+    }
+
+    if (!result.selection.item.has_value()) {
+        result.kind = AppCommandPaletteActivationResultKind::DispatchFailed;
+        return result;
+    }
+
+    result.dispatch = dispatchAppCommand(result.selection.item->commandId, handlers);
+    if (!result.dispatch.executed) {
+        result.kind = AppCommandPaletteActivationResultKind::DispatchFailed;
+        return result;
+    }
+
+    result.executed = true;
+    result.kind = AppCommandPaletteActivationResultKind::Executed;
+    return result;
+}
+
 }
 
 const AppCommandPaletteSessionStatus& AppCommandPaletteSession::status() const
@@ -144,33 +212,15 @@ AppCommandPaletteActivationResult activateHighlightedAppCommandPaletteCommand(
     const AppCommandPaletteSessionStatus& status,
     const AppCommandHandlers& handlers)
 {
-    AppCommandPaletteActivationResult result;
-    result.selection = selectHighlightedItem(status);
+    return activateSelectedPaletteItem(selectHighlightedItem(status), handlers);
+}
 
-    if (result.selection.kind == AppCommandPaletteSelectionResultKind::NoMatchingCommand) {
-        result.kind = AppCommandPaletteActivationResultKind::NoMatchingCommand;
-        return result;
-    }
-
-    if (result.selection.kind == AppCommandPaletteSelectionResultKind::OnlyDisabledMatches) {
-        result.kind = AppCommandPaletteActivationResultKind::OnlyDisabledMatches;
-        return result;
-    }
-
-    if (!result.selection.item.has_value()) {
-        result.kind = AppCommandPaletteActivationResultKind::DispatchFailed;
-        return result;
-    }
-
-    result.dispatch = dispatchAppCommand(result.selection.item->commandId, handlers);
-    if (!result.dispatch.executed) {
-        result.kind = AppCommandPaletteActivationResultKind::DispatchFailed;
-        return result;
-    }
-
-    result.executed = true;
-    result.kind = AppCommandPaletteActivationResultKind::Executed;
-    return result;
+AppCommandPaletteActivationResult activateAppCommandPaletteSessionRow(
+    const AppCommandPaletteSessionStatus& status,
+    int commandId,
+    const AppCommandHandlers& handlers)
+{
+    return activateSelectedPaletteItem(selectVisibleItemByCommandId(status, commandId), handlers);
 }
 
 AppCommandPaletteSessionView describeAppCommandPaletteSession(

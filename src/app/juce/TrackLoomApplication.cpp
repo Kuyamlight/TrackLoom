@@ -109,6 +109,26 @@ void styleSingleLineTextEditor(juce::TextEditor& editor)
     editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour(0xff6ccf8d));
 }
 
+// CommandPaletteRowLabel 只把 JUCE 鼠标事件转成一个简单回调。
+// 命令是否存在、是否可用、应该执行哪个 handler，都继续交给应用层验证。
+class CommandPaletteRowLabel final : public juce::Label {
+public:
+    std::function<void()> clicked;
+
+    void mouseUp(const juce::MouseEvent& event) override
+    {
+        juce::Label::mouseUp(event);
+
+        if (event.mods.isPopupMenu()) {
+            return;
+        }
+
+        if (clicked) {
+            clicked();
+        }
+    }
+};
+
 class MainComponent final
     : public juce::Component
     , public juce::MenuBarModel
@@ -226,11 +246,14 @@ public:
             toJuceString("搜索命令"),
             juce::Colour(0xff7f8c7d));
 
-        for (auto& rowLabel : commandPaletteRowLabels_) {
+        for (std::size_t rowIndex = 0; rowIndex < commandPaletteRowLabels_.size(); ++rowIndex) {
+            auto& rowLabel = commandPaletteRowLabels_[rowIndex];
             rowLabel.setFont(juce::FontOptions(15.0f));
             rowLabel.setJustificationType(juce::Justification::centredLeft);
             rowLabel.setColour(juce::Label::textColourId, juce::Colour(0xffdfe9d8));
             rowLabel.setColour(juce::Label::backgroundColourId, juce::Colour(0xff20231f));
+            rowLabel.setMouseCursor(juce::MouseCursor::PointingHandCursor);
+            rowLabel.clicked = [this, rowIndex] { activateCommandPaletteRowFromUi(rowIndex); };
         }
 
         commandPaletteEmptyLabel_.setFont(juce::FontOptions(15.0f));
@@ -851,6 +874,33 @@ private:
             commandPaletteSession_.status(),
             makeAppCommandHandlers());
 
+        return finishCommandPaletteActivationFromUi(result);
+    }
+
+    bool activateCommandPaletteRowFromUi(std::size_t visibleIndex)
+    {
+        if (visibleIndex >= visibleCommandPaletteRowCommandIds_.size()) {
+            return false;
+        }
+
+        // 可见行每次刷新都会重新绑定 commandId；0 表示这一行当前没有命令。
+        // 这里不直接用行号执行，避免过滤结果变化后点击到过期命令。
+        const auto commandId = visibleCommandPaletteRowCommandIds_[visibleIndex];
+        if (commandId <= 0) {
+            return false;
+        }
+
+        const auto result = trackloom::activateAppCommandPaletteSessionRow(
+            commandPaletteSession_.status(),
+            commandId,
+            makeAppCommandHandlers());
+
+        return finishCommandPaletteActivationFromUi(result);
+    }
+
+    bool finishCommandPaletteActivationFromUi(
+        const trackloom::AppCommandPaletteActivationResult& result)
+    {
         if (result.executed) {
             if (result.dispatch.command != trackloom::AppCommandKind::OpenCommandPalette) {
                 commandPaletteSession_.close();
@@ -911,7 +961,9 @@ private:
         commandPaletteEmptyLabel_.setVisible(visible && view.rows.empty());
 
         if (!visible) {
-            for (auto& rowLabel : commandPaletteRowLabels_) {
+            for (std::size_t visibleIndex = 0; visibleIndex < commandPaletteRowLabels_.size(); ++visibleIndex) {
+                visibleCommandPaletteRowCommandIds_[visibleIndex] = 0;
+                auto& rowLabel = commandPaletteRowLabels_[visibleIndex];
                 rowLabel.setVisible(false);
             }
             return;
@@ -927,11 +979,13 @@ private:
             const auto rowIndex = firstVisibleRow + visibleIndex;
 
             if (rowIndex >= view.rows.size()) {
+                visibleCommandPaletteRowCommandIds_[visibleIndex] = 0;
                 rowLabel.setVisible(false);
                 continue;
             }
 
             const auto& row = view.rows[rowIndex];
+            visibleCommandPaletteRowCommandIds_[visibleIndex] = row.commandId;
             rowLabel.setVisible(true);
             rowLabel.setText(
                 toJuceString(trackloom::describeAppCommandPaletteSessionRow(row)),
@@ -2483,6 +2537,9 @@ private:
     std::filesystem::path recentProjectsSettingsPath_;
     trackloom::AppRecentProjects recentProjects_;
     trackloom::AppCommandPaletteSession commandPaletteSession_;
+    // 这个数组保存“当前屏幕上第 N 行对应哪个命令”。
+    // 真正执行前仍会让 AppCommandPaletteSession 重新确认该命令仍在当前过滤结果里。
+    std::array<int, commandPaletteVisibleRowCount> visibleCommandPaletteRowCommandIds_{};
     bool syncingCommandPaletteQuery_ = false;
     std::vector<std::string> selectableTrackIds_;
     std::vector<std::string> selectableAudioTrackIds_;
@@ -2500,7 +2557,7 @@ private:
     juce::GroupComponent commandPalettePanel_;
     juce::Label commandPaletteTitleLabel_;
     juce::TextEditor commandPaletteQueryEditor_;
-    std::array<juce::Label, commandPaletteVisibleRowCount> commandPaletteRowLabels_;
+    std::array<CommandPaletteRowLabel, commandPaletteVisibleRowCount> commandPaletteRowLabels_;
     juce::Label commandPaletteEmptyLabel_;
     juce::Label titleLabel_;
     juce::Label statusLabel_;

@@ -58,6 +58,13 @@ AppCommandPaletteActivationResult activateHighlightedAppCommandPaletteCommand(
     const AppCommandPaletteSessionStatus& status,
     const AppCommandHandlers& handlers);
 
+// activateAppCommandPaletteSessionRow 是命令面板鼠标点击行的应用层边界。
+// UI 只传当前渲染行对应的 commandId；这里重新确认会话打开、命令仍在过滤结果中且可用。
+AppCommandPaletteActivationResult activateAppCommandPaletteSessionRow(
+    const AppCommandPaletteSessionStatus& status,
+    int commandId,
+    const AppCommandHandlers& handlers);
+
 // describeAppCommandPaletteSession 把会话状态转换成 UI 可直接渲染的只读快照。
 // UI 不需要自己解释 highlightedIndex、disabled 项或空查询结果。
 AppCommandPaletteSessionView describeAppCommandPaletteSession(

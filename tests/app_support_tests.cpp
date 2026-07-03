@@ -1377,6 +1377,85 @@ void commandPaletteSessionActivationRejectsClosedDisabledOrMissingHandler()
         "command palette session activation should distinguish selected command dispatch failure from search failure");
 }
 
+void commandPaletteSessionRowActivationExecutesEnabledVisibleCommand()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleCommandPaletteForSession());
+
+    int saveProjectCalls = 0;
+    int saveProjectAsCalls = 0;
+    trackloom::AppCommandHandlers handlers;
+    handlers.saveProject = [&] { ++saveProjectCalls; };
+    handlers.saveProjectAs = [&] { ++saveProjectAsCalls; };
+
+    const auto result = trackloom::activateAppCommandPaletteSessionRow(
+        session.status(),
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProjectAs),
+        handlers);
+
+    require(result.executed && result.kind == trackloom::AppCommandPaletteActivationResultKind::Executed,
+        "command palette row activation should execute the enabled command represented by the clicked row");
+    require(result.selection.item.has_value()
+            && result.selection.item->commandId == trackloom::appMainMenuCommandId(
+                trackloom::AppMainMenuCommand::SaveProjectAs),
+        "command palette row activation should preserve the clicked command id instead of the highlighted command");
+    require(result.dispatch.command == trackloom::AppCommandKind::SaveProjectAs,
+        "command palette row activation should dispatch the clicked command id through the shared dispatcher");
+    require(saveProjectCalls == 0 && saveProjectAsCalls == 1,
+        "command palette row activation should not execute the highlighted command when a different row is clicked");
+}
+
+void commandPaletteSessionRowActivationRejectsClosedDisabledMissingOrMissingHandler()
+{
+    int undoProjectCalls = 0;
+    trackloom::AppCommandHandlers handlers;
+    handlers.undoProject = [&] { ++undoProjectCalls; };
+
+    const auto closed = trackloom::activateAppCommandPaletteSessionRow(
+        trackloom::AppCommandPaletteSessionStatus{},
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject),
+        handlers);
+
+    require(!closed.executed
+            && closed.kind == trackloom::AppCommandPaletteActivationResultKind::NoMatchingCommand,
+        "command palette row activation should reject clicks when the session is closed");
+
+    trackloom::AppCommandPaletteSession disabledSession;
+    disabledSession.open(sampleCommandPaletteForSession());
+    const auto disabled = trackloom::activateAppCommandPaletteSessionRow(
+        disabledSession.status(),
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::UndoProject),
+        handlers);
+
+    require(!disabled.executed
+            && disabled.kind == trackloom::AppCommandPaletteActivationResultKind::OnlyDisabledMatches,
+        "command palette row activation should report disabled rows without dispatching them");
+    require(undoProjectCalls == 0,
+        "command palette row activation should not call handlers for disabled commands");
+
+    const auto missing = trackloom::activateAppCommandPaletteSessionRow(
+        disabledSession.status(),
+        999999,
+        handlers);
+
+    require(!missing.executed
+            && missing.kind == trackloom::AppCommandPaletteActivationResultKind::NoMatchingCommand,
+        "command palette row activation should reject stale row command ids that are no longer visible");
+
+    trackloom::AppCommandPaletteSession missingHandlerSession;
+    missingHandlerSession.open(sampleCommandPaletteForSession());
+    const auto missingHandler = trackloom::activateAppCommandPaletteSessionRow(
+        missingHandlerSession.status(),
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject),
+        trackloom::AppCommandHandlers{});
+
+    require(!missingHandler.executed
+            && missingHandler.kind == trackloom::AppCommandPaletteActivationResultKind::DispatchFailed,
+        "command palette row activation should preserve dispatcher failures for enabled clicked rows");
+    require(missingHandler.selection.kind == trackloom::AppCommandPaletteSelectionResultKind::Selected,
+        "command palette row activation should distinguish a selected row with no handler from a missing row");
+}
+
 void commandPaletteSessionDescriptionMarksRowsForUi()
 {
     trackloom::AppCommandPaletteSession session;
@@ -8174,6 +8253,8 @@ int main()
     commandPaletteSessionClosesAndClearsState();
     commandPaletteSessionActivationExecutesHighlightedCommand();
     commandPaletteSessionActivationRejectsClosedDisabledOrMissingHandler();
+    commandPaletteSessionRowActivationExecutesEnabledVisibleCommand();
+    commandPaletteSessionRowActivationRejectsClosedDisabledMissingOrMissingHandler();
     commandPaletteSessionDescriptionMarksRowsForUi();
     commandPaletteSessionDescriptionReportsDisabledAndEmptyStates();
     commandPaletteSessionRowTextFormatsUiLabels();

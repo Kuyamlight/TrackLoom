@@ -655,3 +655,8 @@ TrackLoom 应支持：
   - 根本原因：如果可见 UI 自己拼接行文本、解释 disabled 状态或直接执行命令，后续菜单、快捷键、AI 工具和诊断面板会出现多套命令展示与执行规则。
   - 采用的解决方式：在 `AppCommandPaletteSession` 中新增 `describeAppCommandPaletteSessionRow`，统一生成“菜单组 / 命令名 / 快捷键 / 不可用”行文本；JUCE 浮层只渲染 session view，通过 `AppCommandDispatcher` 执行当前高亮命令，并用 CTest 覆盖行文本格式、完整 Debug 构建和完整 CTest。
   - 后续规则：命令面板 UI 扩展鼠标点击、滚动、图标、自定义快捷键或 AI 命令时，必须继续复用 `AppCommandPaletteSession` 和 `AppCommandDispatcher`；UI 不得重复实现命令过滤、disabled 判断、行文本拼接或执行分发。
+- 接入命令面板鼠标行激活时：
+  - 触发场景：可见命令面板已经能用 Enter 执行高亮命令后，需要让用户直接点击结果行执行命令。
+  - 根本原因：JUCE 可见行只是当前过滤结果的窗口切片；如果 UI 直接按行号或旧 command id 执行，搜索文本变化、面板关闭、disabled 状态或可见窗口偏移都可能让点击路径绕过应用层校验。
+  - 采用的解决方式：新增 `activateAppCommandPaletteSessionRow`，UI 只传当前行绑定的 command id；应用层重新确认会话打开、命令仍在当前过滤结果里且 enabled，再复用 `AppCommandDispatcher` 执行；JUCE 行标签只负责把鼠标事件转成该应用层调用。
+  - 后续规则：命令面板的鼠标、触控、滚动窗口和未来图标行都不得直接执行可见行缓存；所有点击激活必须通过 `AppCommandPaletteSession` 按当前过滤结果二次校验，并覆盖关闭、disabled、缺失行和缺失 handler 测试。
