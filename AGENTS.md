@@ -670,3 +670,8 @@ TrackLoom 应支持：
   - 根本原因：Home/End 如果在 JUCE 层直接操作行号，容易把 disabled 跳过、closed session 和 disabled-only 查询的规则复制到 UI；如果把 Home/End 当作执行命令，也会混淆“移动高亮”和“确认执行”。
   - 采用的解决方式：在 `AppCommandPaletteSession` 中新增 `moveHighlightToFirst` 和 `moveHighlightToLast`，只把高亮移动到第一/最后 enabled 命令，closed、空结果和 disabled-only 查询保持无高亮；JUCE 只绑定 `homeKey`/`endKey` 并刷新面板。CTest 覆盖首尾移动、可见窗口跟随、disabled-only 查询和 closed session。
   - 后续规则：命令面板新增键盘导航时，必须先在会话层定义“移动高亮但不执行”的语义，并测试 disabled、空结果和关闭状态；JUCE 不得自行复制高亮边界规则。
+- 抽出命令面板可见行快照时：
+  - 触发场景：命令面板已有分页、Home/End 和鼠标点击后，JUCE 刷新函数仍在按 `firstVisibleRow + visibleIndex` 自行切片完整 rows，并维护可见行到 command id 的绑定。
+  - 根本原因：如果 UI 层保留切片、总数和上下是否还有隐藏行的判断，后续鼠标滚轮、范围提示或虚拟列表容易复制出不同规则，点击行缓存也会脱离应用层测试边界。
+  - 采用的解决方式：新增 `AppCommandPaletteVisibleRowsView` 和 `describeVisibleAppCommandPaletteSessionRows`，统一返回 `firstRowIndex`、`totalRowCount`、`hasPreviousRows`、`hasNextRows` 和裁剪后的 `rows`；JUCE 只渲染该快照并绑定当前可见行 command id。CTest 覆盖跨页切片、末页、closed、零可见行和 disabled-only 查询。
+  - 后续规则：命令面板滚轮、范围提示、虚拟列表或可见行点击扩展必须消费应用层可见行快照；UI 不得重新按完整 rows 自行切片或推断滚动提示。

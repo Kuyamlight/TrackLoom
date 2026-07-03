@@ -985,20 +985,19 @@ private:
         commandPaletteQueryEditor_.setText(toJuceString(view.query), false);
         syncingCommandPaletteQuery_ = false;
 
-        const auto firstVisibleRow = trackloom::firstVisibleAppCommandPaletteSessionRowIndex(
+        const auto visibleRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
             view,
             commandPaletteVisibleRowCount);
         for (std::size_t visibleIndex = 0; visibleIndex < commandPaletteRowLabels_.size(); ++visibleIndex) {
             auto& rowLabel = commandPaletteRowLabels_[visibleIndex];
-            const auto rowIndex = firstVisibleRow + visibleIndex;
 
-            if (rowIndex >= view.rows.size()) {
+            if (visibleIndex >= visibleRows.rows.size()) {
                 visibleCommandPaletteRowCommandIds_[visibleIndex] = 0;
                 rowLabel.setVisible(false);
                 continue;
             }
 
-            const auto& row = view.rows[rowIndex];
+            const auto& row = visibleRows.rows[visibleIndex];
             visibleCommandPaletteRowCommandIds_[visibleIndex] = row.commandId;
             rowLabel.setVisible(true);
             rowLabel.setText(

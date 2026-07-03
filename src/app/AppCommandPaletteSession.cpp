@@ -407,4 +407,32 @@ std::size_t firstVisibleAppCommandPaletteSessionRowIndex(
     return 0;
 }
 
+AppCommandPaletteVisibleRowsView describeVisibleAppCommandPaletteSessionRows(
+    const AppCommandPaletteSessionView& view,
+    std::size_t visibleRowCount)
+{
+    AppCommandPaletteVisibleRowsView visibleRows;
+    visibleRows.totalRowCount = view.rows.size();
+
+    if (!view.open || visibleRowCount == 0 || view.rows.empty()) {
+        return visibleRows;
+    }
+
+    visibleRows.firstRowIndex = firstVisibleAppCommandPaletteSessionRowIndex(
+        view,
+        visibleRowCount);
+
+    const auto lastRowIndexExclusive = visibleRows.firstRowIndex + visibleRowCount > view.rows.size()
+        ? view.rows.size()
+        : visibleRows.firstRowIndex + visibleRowCount;
+
+    for (auto rowIndex = visibleRows.firstRowIndex; rowIndex < lastRowIndexExclusive; ++rowIndex) {
+        visibleRows.rows.push_back(view.rows[rowIndex]);
+    }
+
+    visibleRows.hasPreviousRows = visibleRows.firstRowIndex > 0;
+    visibleRows.hasNextRows = lastRowIndexExclusive < view.rows.size();
+    return visibleRows;
+}
+
 }

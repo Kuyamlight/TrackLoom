@@ -1495,6 +1495,86 @@ void commandPaletteSessionBoundaryNavigationKeepsDisabledOnlySearchesUnhighlight
         "command palette boundary navigation should leave a closed session closed and unhighlighted");
 }
 
+void commandPaletteSessionVisibleRowsDescribeWindowSliceForUi()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleLongCommandPaletteForSession());
+
+    session.moveHighlightPageDown(6);
+    const auto firstPageDownRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        6);
+
+    require(firstPageDownRows.firstRowIndex == 2,
+        "command palette visible rows should start where the highlighted page-down row stays visible");
+    require(firstPageDownRows.totalRowCount == 12,
+        "command palette visible rows should report the full filtered result count");
+    require(firstPageDownRows.rows.size() == 6,
+        "command palette visible rows should return no more than the UI visible row count");
+    require(firstPageDownRows.hasPreviousRows && firstPageDownRows.hasNextRows,
+        "command palette visible rows should report when hidden rows exist above and below the slice");
+    require(firstPageDownRows.rows.front().commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenProject),
+        "command palette visible rows should expose the first clipped row for the UI");
+    require(firstPageDownRows.rows.back().commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::RewindProject)
+            && firstPageDownRows.rows.back().highlighted,
+        "command palette visible rows should preserve the highlighted row inside the clipped slice");
+
+    session.moveHighlightToLast();
+    const auto lastPageRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        6);
+
+    require(lastPageRows.firstRowIndex == 6,
+        "command palette visible rows should start at the last full page when the highlight is at the bottom");
+    require(lastPageRows.rows.size() == 6,
+        "command palette visible rows should keep the last page filled when enough rows remain");
+    require(lastPageRows.hasPreviousRows && !lastPageRows.hasNextRows,
+        "command palette visible rows should report that the last page has no rows below it");
+    require(lastPageRows.rows.back().commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenCommandPalette)
+            && lastPageRows.rows.back().highlighted,
+        "command palette visible rows should include the final highlighted command on the last page");
+}
+
+void commandPaletteSessionVisibleRowsHandleClosedZeroAndDisabledOnlyStates()
+{
+    trackloom::AppCommandPaletteSession session;
+
+    const auto closedRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        6);
+    require(closedRows.totalRowCount == 0 && closedRows.firstRowIndex == 0 && closedRows.rows.empty(),
+        "command palette visible rows should be empty for a closed session");
+    require(!closedRows.hasPreviousRows && !closedRows.hasNextRows,
+        "command palette visible rows should not report hidden rows for a closed session");
+
+    session.open(sampleLongCommandPaletteForSession());
+    const auto zeroVisibleRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        0);
+    require(zeroVisibleRows.totalRowCount == 12 && zeroVisibleRows.rows.empty(),
+        "command palette visible rows should keep the total count but return no slice for a zero visible row count");
+    require(zeroVisibleRows.firstRowIndex == 0
+            && !zeroVisibleRows.hasPreviousRows
+            && !zeroVisibleRows.hasNextRows,
+        "command palette visible rows should keep zero-row windows at the top with no scroll hints");
+
+    session.updateQuery("Ctrl+Z");
+    const auto disabledOnlyRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        6);
+    require(disabledOnlyRows.totalRowCount == 1 && disabledOnlyRows.rows.size() == 1,
+        "command palette visible rows should still expose disabled-only matches");
+    require(disabledOnlyRows.firstRowIndex == 0
+            && !disabledOnlyRows.hasPreviousRows
+            && !disabledOnlyRows.hasNextRows,
+        "command palette visible rows should not report scroll hints for one disabled-only row");
+    require(!disabledOnlyRows.rows.front().enabled && !disabledOnlyRows.rows.front().highlighted,
+        "command palette visible rows should preserve disabled-only row state without inventing a highlight");
+}
+
 void commandPaletteSessionClosesAndClearsState()
 {
     trackloom::AppCommandPaletteSession session;
@@ -8457,6 +8537,8 @@ int main()
     commandPaletteSessionPageNavigationSkipsDisabledTargetsAndInvalidCounts();
     commandPaletteSessionMovesHighlightToFirstAndLastEnabledCommand();
     commandPaletteSessionBoundaryNavigationKeepsDisabledOnlySearchesUnhighlighted();
+    commandPaletteSessionVisibleRowsDescribeWindowSliceForUi();
+    commandPaletteSessionVisibleRowsHandleClosedZeroAndDisabledOnlyStates();
     commandPaletteSessionClosesAndClearsState();
     commandPaletteSessionActivationExecutesHighlightedCommand();
     commandPaletteSessionActivationRejectsClosedDisabledOrMissingHandler();

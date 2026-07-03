@@ -32,6 +32,14 @@ struct AppCommandPaletteSessionView {
     std::string emptyMessage;
 };
 
+struct AppCommandPaletteVisibleRowsView {
+    std::size_t firstRowIndex = 0;
+    std::size_t totalRowCount = 0;
+    bool hasPreviousRows = false;
+    bool hasNextRows = false;
+    std::vector<AppCommandPaletteSessionRow> rows;
+};
+
 // AppCommandPaletteSession 保存命令面板弹出期间的临时 UI 状态。
 // 它不执行命令、不依赖 JUCE，也不写入 Project 工程文件。
 class AppCommandPaletteSession final {
@@ -86,6 +94,12 @@ std::string describeAppCommandPaletteSessionRow(
 // firstVisibleAppCommandPaletteSessionRowIndex 计算 UI 应显示的第一条结果。
 // 它只读取 view，不依赖 JUCE；高亮项超出可见范围时，让窗口刚好滚到能看到高亮行。
 std::size_t firstVisibleAppCommandPaletteSessionRowIndex(
+    const AppCommandPaletteSessionView& view,
+    std::size_t visibleRowCount);
+
+// describeVisibleAppCommandPaletteSessionRows 把完整命令面板结果裁剪成当前 UI 可显示的窗口。
+// JUCE 只负责渲染 rows；滚动起点、总数和上下是否还有隐藏行都由应用层统一计算。
+AppCommandPaletteVisibleRowsView describeVisibleAppCommandPaletteSessionRows(
     const AppCommandPaletteSessionView& view,
     std::size_t visibleRowCount);
 
