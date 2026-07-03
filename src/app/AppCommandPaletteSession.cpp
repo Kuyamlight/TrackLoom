@@ -28,6 +28,37 @@ std::optional<std::size_t> lastEnabledIndex(const AppCommandPaletteStatus& palet
     return std::nullopt;
 }
 
+AppCommandPaletteSelectionResult selectHighlightedItem(const AppCommandPaletteSessionStatus& status)
+{
+    if (!status.open || status.filteredPalette.items.empty()) {
+        return {
+            AppCommandPaletteSelectionResultKind::NoMatchingCommand,
+            std::nullopt
+        };
+    }
+
+    if (!status.highlightedIndex.has_value()
+        || status.highlightedIndex.value() >= status.filteredPalette.items.size()) {
+        return {
+            AppCommandPaletteSelectionResultKind::OnlyDisabledMatches,
+            std::nullopt
+        };
+    }
+
+    const auto& item = status.filteredPalette.items[status.highlightedIndex.value()];
+    if (!item.enabled) {
+        return {
+            AppCommandPaletteSelectionResultKind::OnlyDisabledMatches,
+            std::nullopt
+        };
+    }
+
+    return {
+        AppCommandPaletteSelectionResultKind::Selected,
+        item
+    };
+}
+
 }
 
 const AppCommandPaletteSessionStatus& AppCommandPaletteSession::status() const
@@ -107,6 +138,39 @@ void AppCommandPaletteSession::moveHighlight(bool forward)
     }
 
     status_.highlightedIndex = std::nullopt;
+}
+
+AppCommandPaletteActivationResult activateHighlightedAppCommandPaletteCommand(
+    const AppCommandPaletteSessionStatus& status,
+    const AppCommandHandlers& handlers)
+{
+    AppCommandPaletteActivationResult result;
+    result.selection = selectHighlightedItem(status);
+
+    if (result.selection.kind == AppCommandPaletteSelectionResultKind::NoMatchingCommand) {
+        result.kind = AppCommandPaletteActivationResultKind::NoMatchingCommand;
+        return result;
+    }
+
+    if (result.selection.kind == AppCommandPaletteSelectionResultKind::OnlyDisabledMatches) {
+        result.kind = AppCommandPaletteActivationResultKind::OnlyDisabledMatches;
+        return result;
+    }
+
+    if (!result.selection.item.has_value()) {
+        result.kind = AppCommandPaletteActivationResultKind::DispatchFailed;
+        return result;
+    }
+
+    result.dispatch = dispatchAppCommand(result.selection.item->commandId, handlers);
+    if (!result.dispatch.executed) {
+        result.kind = AppCommandPaletteActivationResultKind::DispatchFailed;
+        return result;
+    }
+
+    result.executed = true;
+    result.kind = AppCommandPaletteActivationResultKind::Executed;
+    return result;
 }
 
 }

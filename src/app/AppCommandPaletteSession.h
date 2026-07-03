@@ -35,4 +35,10 @@ private:
     AppCommandPaletteSessionStatus status_;
 };
 
+// activateHighlightedAppCommandPaletteCommand 是命令面板按 Enter 的应用层边界。
+// 它只执行当前高亮的 enabled 命令，不根据 query 重新选择第一条结果。
+AppCommandPaletteActivationResult activateHighlightedAppCommandPaletteCommand(
+    const AppCommandPaletteSessionStatus& status,
+    const AppCommandHandlers& handlers);
+
 }

@@ -473,8 +473,8 @@ TrackLoom 应支持：
 - 建立命令面板会话状态层时：
   - 触发场景：命令面板数据层已经能展开、过滤、选择和激活命令后，需要为后续可见弹窗准备打开/关闭、查询文本、过滤结果和当前高亮项，但还不应把这些状态散落到 JUCE 组件里。
   - 根本原因：如果 UI 自己保存查询和高亮索引，就会重复实现过滤、跳过 disabled 命令和循环导航规则；如果会话状态直接执行命令，又会混淆“浏览命令列表”和“确认执行命令”两个阶段。
-  - 采用的解决方式：新增纯应用层 `AppCommandPaletteSession`，保存原始 palette 和只读状态快照；打开时清空 query 并高亮第一个 enabled 命令，查询变化时复用 `filterAppCommandPalette` 并重置高亮，上下移动只在 enabled 命令之间循环，关闭时清空过滤结果和高亮。CTest 先红后绿覆盖打开初始状态、禁用项跳过、快捷键查询、禁用匹配无高亮、查询变化重置高亮、上下移动循环和关闭清空状态。
-  - 后续规则：可见命令面板 UI 应渲染 `AppCommandPaletteSessionStatus`，不要在 JUCE 组件里重新维护命令过滤、高亮索引或 disabled 跳过规则；执行确认仍应走已有激活或分发边界，会话状态层不得直接调用具体工程动作。
+  - 采用的解决方式：新增纯应用层 `AppCommandPaletteSession`，保存原始 palette 和只读状态快照；打开时清空 query 并高亮第一个 enabled 命令，查询变化时复用 `filterAppCommandPalette` 并重置高亮，上下移动只在 enabled 命令之间循环，关闭时清空过滤结果和高亮。随后新增 `activateHighlightedAppCommandPaletteCommand`，只执行当前高亮的 enabled 命令并复用 `AppCommandDispatcher`，关闭、无高亮、禁用匹配和分发失败都返回稳定结果。CTest 先红后绿覆盖打开初始状态、禁用项跳过、快捷键查询、禁用匹配无高亮、查询变化重置高亮、上下移动循环、关闭清空状态、高亮项执行、关闭或禁用状态不执行，以及缺失 handler 时报告分发失败。
+  - 后续规则：可见命令面板 UI 应渲染 `AppCommandPaletteSessionStatus`，不要在 JUCE 组件里重新维护命令过滤、高亮索引或 disabled 跳过规则；按 Enter 或点击确认时应执行当前高亮项，不得重新按 query 选择第一条命令；执行确认仍应走已有激活或分发边界，会话状态层不得直接调用具体工程动作。
 - 建立第一批桌面文件快捷键时：
   - 触发场景：基础文件/播放菜单和 `AppCommandDispatcher` 已存在后，需要让常见文件快捷键复用同一命令 id 和执行边界，而不是在 JUCE `keyPressed` 里重新写保存、打开和新建逻辑。
   - 根本原因：快捷键组合、平台主修饰键和命令执行是不同层次；如果直接在 JUCE 层判断 `Ctrl+S` 后调用保存函数，后续菜单、快捷键、命令面板和 AI 工具会逐渐分叉。Space 播放/停止是切换语义，不等同于菜单里的“播放”和“停止”两个独立命令，不能硬塞进同一批文件快捷键映射。

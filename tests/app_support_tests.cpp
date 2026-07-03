@@ -1293,6 +1293,72 @@ void commandPaletteSessionClosesAndClearsState()
         "command palette session should clear highlight when closed");
 }
 
+void commandPaletteSessionActivationExecutesHighlightedCommand()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleCommandPaletteForSession());
+    session.moveHighlightDown();
+
+    int saveProjectCalls = 0;
+    int saveProjectAsCalls = 0;
+    trackloom::AppCommandHandlers handlers;
+    handlers.saveProject = [&] { ++saveProjectCalls; };
+    handlers.saveProjectAs = [&] { ++saveProjectAsCalls; };
+
+    const auto result = trackloom::activateHighlightedAppCommandPaletteCommand(session.status(), handlers);
+
+    require(result.executed && result.kind == trackloom::AppCommandPaletteActivationResultKind::Executed,
+        "command palette session activation should execute the highlighted enabled command");
+    require(result.selection.item.has_value()
+            && result.selection.item->commandId == trackloom::appMainMenuCommandId(
+                trackloom::AppMainMenuCommand::SaveProjectAs),
+        "command palette session activation should preserve the exact highlighted item");
+    require(result.dispatch.command == trackloom::AppCommandKind::SaveProjectAs,
+        "command palette session activation should dispatch the highlighted command id");
+    require(saveProjectCalls == 0 && saveProjectAsCalls == 1,
+        "command palette session activation should not fall back to the first matching command");
+}
+
+void commandPaletteSessionActivationRejectsClosedDisabledOrMissingHandler()
+{
+    trackloom::AppCommandHandlers handlers;
+    int undoProjectCalls = 0;
+    handlers.undoProject = [&] { ++undoProjectCalls; };
+
+    const auto closed = trackloom::activateHighlightedAppCommandPaletteCommand(
+        trackloom::AppCommandPaletteSessionStatus{},
+        handlers);
+
+    require(!closed.executed
+            && closed.kind == trackloom::AppCommandPaletteActivationResultKind::NoMatchingCommand,
+        "command palette session activation should not execute when the session has no highlighted command");
+
+    trackloom::AppCommandPaletteSession disabledSession;
+    disabledSession.open(sampleCommandPaletteForSession());
+    disabledSession.updateQuery("ctrl+z");
+    const auto disabled = trackloom::activateHighlightedAppCommandPaletteCommand(
+        disabledSession.status(),
+        handlers);
+
+    require(!disabled.executed
+            && disabled.kind == trackloom::AppCommandPaletteActivationResultKind::OnlyDisabledMatches,
+        "command palette session activation should report disabled-only matches without dispatching");
+    require(undoProjectCalls == 0,
+        "command palette session activation should not dispatch disabled highlighted matches");
+
+    trackloom::AppCommandPaletteSession missingHandlerSession;
+    missingHandlerSession.open(sampleCommandPaletteForSession());
+    const auto missingHandler = trackloom::activateHighlightedAppCommandPaletteCommand(
+        missingHandlerSession.status(),
+        trackloom::AppCommandHandlers{});
+
+    require(!missingHandler.executed
+            && missingHandler.kind == trackloom::AppCommandPaletteActivationResultKind::DispatchFailed,
+        "command palette session activation should preserve dispatcher failures");
+    require(missingHandler.selection.kind == trackloom::AppCommandPaletteSelectionResultKind::Selected,
+        "command palette session activation should distinguish selected command dispatch failure from search failure");
+}
+
 void commandDispatcherRunsOnlyTheSelectedMainMenuCommand()
 {
     int newProjectCalls = 0;
@@ -7970,6 +8036,8 @@ int main()
     commandPaletteSessionUpdatesQueryAndResetsHighlight();
     commandPaletteSessionMovesHighlightAcrossEnabledCommands();
     commandPaletteSessionClosesAndClearsState();
+    commandPaletteSessionActivationExecutesHighlightedCommand();
+    commandPaletteSessionActivationRejectsClosedDisabledOrMissingHandler();
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
     commandDispatcherRunsRedoMainMenuCommand();
     commandDispatcherRunsTrackCreationMenuCommands();
