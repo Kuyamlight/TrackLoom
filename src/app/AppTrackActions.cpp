@@ -72,13 +72,13 @@ AppTrackActionFeedback renameSuccessFeedback(const Track& track, const std::stri
     return feedback;
 }
 
-AppTrackActionFeedback moveSuccessFeedback(const Track& track, bool movedUp)
+AppTrackActionFeedback moveSuccessFeedback(const Track& track, bool movedUp, const std::string& trackTypeLabel)
 {
     AppTrackActionFeedback feedback;
     feedback.success = true;
     feedback.kind = AppTrackActionFeedbackKind::Success;
     feedback.trackId = track.id;
-    feedback.message = std::string(movedUp ? "已上移乐器轨：" : "已下移乐器轨：") + track.name + "。";
+    feedback.message = std::string(movedUp ? "已上移" : "已下移") + trackTypeLabel + "：" + track.name + "。";
     return feedback;
 }
 
@@ -170,29 +170,31 @@ std::optional<Track> findTrackCreatedAfterCommand(
     return std::nullopt;
 }
 
-AppTrackActionFeedback moveInstrumentTrackByOffset(
+AppTrackActionFeedback moveTrackByOffset(
     AppProjectSession& session,
     const std::string& trackId,
+    TrackType expectedType,
+    const std::string& trackTypeLabel,
     int offset)
 {
     const auto targetTrack = session.project().findTrackById(trackId);
     if (!targetTrack.has_value()) {
         return failureFeedback(
             AppTrackActionFeedbackKind::MissingTrack,
-            "无法移动乐器轨：目标轨道不存在。");
+            "无法移动" + trackTypeLabel + "：目标轨道不存在。");
     }
 
-    if (targetTrack->type != TrackType::Instrument) {
+    if (targetTrack->type != expectedType) {
         return failureFeedback(
             AppTrackActionFeedbackKind::IncompatibleTrackType,
-            "无法移动乐器轨：当前入口只能移动乐器轨。");
+            "无法移动" + trackTypeLabel + "：当前入口只能移动" + trackTypeLabel + "。");
     }
 
     const auto currentIndex = trackIndexById(session.project(), trackId);
     if (!currentIndex.has_value()) {
         return failureFeedback(
             AppTrackActionFeedbackKind::MissingTrack,
-            "无法移动乐器轨：目标轨道不存在。");
+            "无法移动" + trackTypeLabel + "：目标轨道不存在。");
     }
 
     if ((offset < 0 && *currentIndex == 0)
@@ -200,8 +202,8 @@ AppTrackActionFeedback moveInstrumentTrackByOffset(
         return failureFeedback(
             AppTrackActionFeedbackKind::AlreadyAtBoundary,
             offset < 0
-                ? "无法上移乐器轨：目标轨道已经在列表顶部。"
-                : "无法下移乐器轨：目标轨道已经在列表底部。");
+                ? "无法上移" + trackTypeLabel + "：目标轨道已经在列表顶部。"
+                : "无法下移" + trackTypeLabel + "：目标轨道已经在列表底部。");
     }
 
     const auto targetIndex = offset < 0
@@ -214,10 +216,10 @@ AppTrackActionFeedback moveInstrumentTrackByOffset(
     if (!result.success) {
         return failureFeedback(
             AppTrackActionFeedbackKind::MoveFailed,
-            "无法移动乐器轨：工程模型拒绝了这次顺序调整。");
+            "无法移动" + trackTypeLabel + "：工程模型拒绝了这次顺序调整。");
     }
 
-    return moveSuccessFeedback(*targetTrack, offset < 0);
+    return moveSuccessFeedback(*targetTrack, offset < 0, trackTypeLabel);
 }
 
 }
@@ -369,14 +371,28 @@ AppTrackActionFeedback moveInstrumentTrackUp(
     AppProjectSession& session,
     const std::string& trackId)
 {
-    return moveInstrumentTrackByOffset(session, trackId, -1);
+    return moveTrackByOffset(session, trackId, TrackType::Instrument, "乐器轨", -1);
 }
 
 AppTrackActionFeedback moveInstrumentTrackDown(
     AppProjectSession& session,
     const std::string& trackId)
 {
-    return moveInstrumentTrackByOffset(session, trackId, 1);
+    return moveTrackByOffset(session, trackId, TrackType::Instrument, "乐器轨", 1);
+}
+
+AppTrackActionFeedback moveAudioTrackUp(
+    AppProjectSession& session,
+    const std::string& trackId)
+{
+    return moveTrackByOffset(session, trackId, TrackType::Audio, "音频轨", -1);
+}
+
+AppTrackActionFeedback moveAudioTrackDown(
+    AppProjectSession& session,
+    const std::string& trackId)
+{
+    return moveTrackByOffset(session, trackId, TrackType::Audio, "音频轨", 1);
 }
 
 }

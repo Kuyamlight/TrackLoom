@@ -114,7 +114,17 @@ void styleSingleLineTextEditor(juce::TextEditor& editor)
 class CommandPaletteRowLabel final : public juce::Label {
 public:
     std::function<void()> clicked;
+    std::function<void()> hovered;
     std::function<void(const juce::MouseWheelDetails&)> wheelMoved;
+
+    void mouseEnter(const juce::MouseEvent& event) override
+    {
+        juce::Label::mouseEnter(event);
+
+        if (hovered) {
+            hovered();
+        }
+    }
 
     void mouseUp(const juce::MouseEvent& event) override
     {
@@ -267,6 +277,7 @@ public:
             rowLabel.setColour(juce::Label::textColourId, juce::Colour(0xffdfe9d8));
             rowLabel.setColour(juce::Label::backgroundColourId, juce::Colour(0xff20231f));
             rowLabel.setMouseCursor(juce::MouseCursor::PointingHandCursor);
+            rowLabel.hovered = [this, rowIndex] { highlightCommandPaletteRowFromUi(rowIndex); };
             rowLabel.clicked = [this, rowIndex] { activateCommandPaletteRowFromUi(rowIndex); };
             rowLabel.wheelMoved = [this](const juce::MouseWheelDetails& wheel) {
                 scrollCommandPaletteWithWheelFromUi(wheel);
@@ -789,7 +800,12 @@ public:
             }
         }
 
-        if (const auto commandId = trackloom::appCommandIdForShortcut(appShortcutChordFromKeyPress(key))) {
+        const auto shortcutContext = commandPaletteSession_.status().open
+            ? trackloom::AppShortcutContext::CommandPaletteOpen
+            : trackloom::AppShortcutContext::MainWindow;
+        if (const auto commandId = trackloom::appCommandIdForShortcut(
+                appShortcutChordFromKeyPress(key),
+                shortcutContext)) {
             return dispatchAppCommandFromUi(commandId.value());
         }
 
@@ -821,7 +837,7 @@ public:
     juce::StringArray getMenuBarNames() override
     {
         juce::StringArray names;
-        for (const auto& group : trackloom::describeAppMainMenu(session_, playback_, recentProjects_).groups) {
+        for (const auto& group : describeCurrentMainMenu().groups) {
             names.add(toJuceString(group.name));
         }
 
@@ -831,7 +847,7 @@ public:
     juce::PopupMenu getMenuForIndex(int menuIndex, const juce::String&) override
     {
         juce::PopupMenu menu;
-        const auto status = trackloom::describeAppMainMenu(session_, playback_, recentProjects_);
+        const auto status = describeCurrentMainMenu();
         if (menuIndex < 0 || static_cast<std::size_t>(menuIndex) >= status.groups.size()) {
             return menu;
         }
@@ -857,6 +873,25 @@ public:
 private:
     static constexpr std::size_t commandPaletteVisibleRowCount = 6;
 
+    trackloom::AppMainMenuSelection currentMainMenuSelection() const
+    {
+        return {
+            selectedTrackId_,
+            selectedAudioTrackId_,
+            selectedMidiClipId_,
+            selectedAudioClipId_
+        };
+    }
+
+    trackloom::AppMainMenuStatus describeCurrentMainMenu() const
+    {
+        return trackloom::describeAppMainMenu(
+            session_,
+            playback_,
+            recentProjects_,
+            currentMainMenuSelection());
+    }
+
     bool dispatchAppCommandFromUi(int commandId)
     {
         const auto result = trackloom::dispatchAppCommand(commandId, makeAppCommandHandlers());
@@ -881,6 +916,43 @@ private:
         handlers.addInstrumentTrack = [this] { addDefaultInstrumentTrack(); };
         handlers.addAudioTrack = [this] { addDefaultAudioTrack(); };
         handlers.addFolderTrack = [this] { addDefaultFolderTrack(); };
+        handlers.renameSelectedInstrumentTrack = [this] { renameSelectedTrack(); };
+        handlers.deleteSelectedInstrumentTrack = [this] { deleteSelectedInstrumentTrack(); };
+        handlers.moveSelectedInstrumentTrackUp = [this] { moveSelectedTrackUp(); };
+        handlers.moveSelectedInstrumentTrackDown = [this] { moveSelectedTrackDown(); };
+        handlers.toggleSelectedInstrumentTrackMute = [this] { toggleSelectedTrackMute(); };
+        handlers.toggleSelectedInstrumentTrackSolo = [this] { toggleSelectedTrackSolo(); };
+        handlers.toggleSelectedInstrumentTrackDisabled = [this] { toggleSelectedTrackDisabled(); };
+        handlers.toggleSelectedInstrumentTrackHidden = [this] { toggleSelectedTrackHidden(); };
+        handlers.deleteSelectedAudioTrack = [this] { deleteSelectedAudioTrack(); };
+        handlers.moveSelectedAudioTrackUp = [this] { moveSelectedAudioTrackUp(); };
+        handlers.moveSelectedAudioTrackDown = [this] { moveSelectedAudioTrackDown(); };
+        handlers.toggleSelectedAudioTrackMute = [this] { toggleSelectedAudioTrackMute(); };
+        handlers.toggleSelectedAudioTrackSolo = [this] { toggleSelectedAudioTrackSolo(); };
+        handlers.toggleSelectedAudioTrackDisabled = [this] { toggleSelectedAudioTrackDisabled(); };
+        handlers.toggleSelectedAudioTrackHidden = [this] { toggleSelectedAudioTrackHidden(); };
+        handlers.renameSelectedMidiClip = [this] { renameSelectedMidiClip(); };
+        handlers.renameSelectedAudioClip = [this] { renameSelectedAudioClip(); };
+        handlers.deleteSelectedMidiClip = [this] { deleteSelectedMidiClip(); };
+        handlers.deleteSelectedAudioClip = [this] { deleteSelectedAudioClip(); };
+        handlers.duplicateSelectedMidiClip = [this] { duplicateSelectedMidiClip(); };
+        handlers.duplicateSelectedAudioClip = [this] { duplicateSelectedAudioClip(); };
+        handlers.splitSelectedMidiClip = [this] { splitSelectedMidiClip(); };
+        handlers.splitSelectedAudioClip = [this] { splitSelectedAudioClip(); };
+        handlers.moveSelectedMidiClipToTargetTrack = [this] { moveSelectedMidiClipToSelectedTrack(); };
+        handlers.moveSelectedAudioClipToTargetTrack = [this] { moveSelectedAudioClipToAudioTrack(); };
+        handlers.moveSelectedMidiClipLeft = [this] { moveSelectedMidiClipLeft(); };
+        handlers.moveSelectedMidiClipRight = [this] { moveSelectedMidiClipRight(); };
+        handlers.trimSelectedMidiClipEnd = [this] { trimSelectedMidiClipEnd(); };
+        handlers.extendSelectedMidiClipEnd = [this] { extendSelectedMidiClipEnd(); };
+        handlers.trimSelectedMidiClipStart = [this] { trimSelectedMidiClipStart(); };
+        handlers.extendSelectedMidiClipStart = [this] { extendSelectedMidiClipStart(); };
+        handlers.moveSelectedAudioClipLeft = [this] { moveSelectedAudioClipLeft(); };
+        handlers.moveSelectedAudioClipRight = [this] { moveSelectedAudioClipRight(); };
+        handlers.trimSelectedAudioClipEnd = [this] { trimSelectedAudioClipEnd(); };
+        handlers.extendSelectedAudioClipEnd = [this] { extendSelectedAudioClipEnd(); };
+        handlers.trimSelectedAudioClipStart = [this] { trimSelectedAudioClipStart(); };
+        handlers.extendSelectedAudioClipStart = [this] { extendSelectedAudioClipStart(); };
         handlers.playProject = [this] { startProjectPlayback(); };
         handlers.stopProject = [this] { stopProjectPlayback(); };
         handlers.rewindProject = [this] { rewindProjectPlayback(); };
@@ -895,10 +967,10 @@ private:
     void openCommandPaletteFromUi()
     {
         const auto palette = trackloom::addAppCommandPaletteShortcutLabels(
-            trackloom::describeAppCommandPalette(trackloom::describeAppMainMenu(session_, playback_, recentProjects_)),
+            trackloom::describeAppCommandPalette(describeCurrentMainMenu()),
             trackloom::defaultAppShortcutBindings());
 
-        // 当前阶段先建立可测试的会话状态；后续弹窗 UI 将直接渲染这个快照。
+        // 菜单、快捷键和工具入口都在这里汇合，避免可见浮层自己复制命令列表规则。
         commandPaletteSession_.open(palette);
         const auto view = trackloom::describeAppCommandPaletteSession(commandPaletteSession_.status());
         syncingCommandPaletteQuery_ = true;
@@ -929,9 +1001,26 @@ private:
             return;
         }
 
-        // 高精度触控板的滚动幅度暂不累计；当前只把一次 JUCE wheel 事件转换成一步高亮移动。
-        commandPaletteSession_.moveHighlightByWheelSteps(wheel.deltaY < 0.0f ? 1 : -1);
+        // 高精度触控板的滚动幅度暂不累计；当前只把一次 JUCE wheel 事件转换成一行窗口滚动。
+        commandPaletteSession_.scrollVisibleRowsByWheelSteps(
+            wheel.deltaY < 0.0f ? 1 : -1,
+            commandPaletteVisibleRowCount);
         refreshCommandPalettePanel();
+    }
+
+    bool highlightCommandPaletteRowFromUi(std::size_t visibleIndex)
+    {
+        if (visibleIndex >= visibleCommandPaletteRowCommandIds_.size()) {
+            return false;
+        }
+
+        const auto commandId = visibleCommandPaletteRowCommandIds_[visibleIndex];
+        if (commandId <= 0 || !commandPaletteSession_.highlightCommandById(commandId)) {
+            return false;
+        }
+
+        refreshCommandPalettePanel();
+        return true;
     }
 
     bool activateCommandPaletteSelectionFromUi()
@@ -1404,6 +1493,93 @@ private:
 
         lastActionMessage_ = feedback.message;
         refreshFromSession();
+    }
+
+    void moveSelectedAudioTrackUp()
+    {
+        if (selectedAudioTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条音频轨，再上移音频轨。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::moveAudioTrackUp(session_, selectedAudioTrackId_);
+        if (feedback.success) {
+            selectedAudioTrackId_ = feedback.trackId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void moveSelectedAudioTrackDown()
+    {
+        if (selectedAudioTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条音频轨，再下移音频轨。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto feedback = trackloom::moveAudioTrackDown(session_, selectedAudioTrackId_);
+        if (feedback.success) {
+            selectedAudioTrackId_ = feedback.trackId;
+        }
+
+        lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void setAudioTrackStateFeedback(const trackloom::AppTrackStateActionFeedback& feedback)
+    {
+        lastActionMessage_ = feedback.message;
+        if (feedback.success) {
+            selectedAudioTrackId_ = feedback.trackId;
+        }
+        refreshFromSession();
+    }
+
+    void toggleSelectedAudioTrackMute()
+    {
+        if (selectedAudioTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条音频轨，再切换静音状态。";
+            refreshFromSession();
+            return;
+        }
+
+        setAudioTrackStateFeedback(trackloom::toggleTrackMuted(session_, selectedAudioTrackId_));
+    }
+
+    void toggleSelectedAudioTrackSolo()
+    {
+        if (selectedAudioTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条音频轨，再切换独奏状态。";
+            refreshFromSession();
+            return;
+        }
+
+        setAudioTrackStateFeedback(trackloom::toggleTrackSoloed(session_, selectedAudioTrackId_));
+    }
+
+    void toggleSelectedAudioTrackDisabled()
+    {
+        if (selectedAudioTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条音频轨，再切换禁用状态。";
+            refreshFromSession();
+            return;
+        }
+
+        setAudioTrackStateFeedback(trackloom::toggleTrackDisabled(session_, selectedAudioTrackId_));
+    }
+
+    void toggleSelectedAudioTrackHidden()
+    {
+        if (selectedAudioTrackId_.empty()) {
+            lastActionMessage_ = "请先选择一条音频轨，再切换隐藏状态。";
+            refreshFromSession();
+            return;
+        }
+
+        setAudioTrackStateFeedback(trackloom::toggleTrackHidden(session_, selectedAudioTrackId_));
     }
 
     void createMidiClipOnSelectedTrack()

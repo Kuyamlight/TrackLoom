@@ -61,11 +61,19 @@ AppTrackActionFeedback renameTrackById(
     std::string name);
 
 // moveInstrumentTrackUp / Down 调整当前乐器轨在工程轨道列表中的顺序。
-// 当前首屏只暴露乐器轨选择，因此这里保持与删除入口相同的类型边界。
 AppTrackActionFeedback moveInstrumentTrackUp(
     AppProjectSession& session,
     const std::string& trackId);
 AppTrackActionFeedback moveInstrumentTrackDown(
+    AppProjectSession& session,
+    const std::string& trackId);
+
+// moveAudioTrackUp / Down 调整当前音频轨在工程轨道列表中的顺序。
+// 它只接受 Audio 轨道，避免音频轨菜单绕过类型边界。
+AppTrackActionFeedback moveAudioTrackUp(
+    AppProjectSession& session,
+    const std::string& trackId);
+AppTrackActionFeedback moveAudioTrackDown(
     AppProjectSession& session,
     const std::string& trackId);
 

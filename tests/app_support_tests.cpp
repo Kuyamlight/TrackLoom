@@ -829,18 +829,20 @@ void mainMenuDescribesFileAndPlaybackCommands()
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
 
-    require(menu.groups.size() == 5,
-        "main menu should expose file, edit, track, playback and tools menu groups");
+    require(menu.groups.size() == 6,
+        "main menu should expose file, edit, track, clip, playback and tools menu groups");
     require(menu.groups[0].name == "文件",
         "first main menu group should be the file menu");
     require(menu.groups[1].name == "编辑",
         "second main menu group should be the edit menu");
     require(menu.groups[2].name == "轨道",
         "third main menu group should be the track menu");
-    require(menu.groups[3].name == "播放",
-        "fourth main menu group should be the playback menu");
-    require(menu.groups[4].name == "工具",
-        "fifth main menu group should be the tools menu");
+    require(menu.groups[3].name == "片段",
+        "fourth main menu group should be the clip menu");
+    require(menu.groups[4].name == "播放",
+        "fifth main menu group should be the playback menu");
+    require(menu.groups[5].name == "工具",
+        "sixth main menu group should be the tools menu");
     require(menu.groups[0].items.size() == 6,
         "file menu should include project commands, a separator and an empty recent-project row");
     require(menu.groups[0].items[0].commandId
@@ -891,22 +893,61 @@ void mainMenuDescribesFileAndPlaybackCommands()
         "track menu should expose the add-folder-track label");
     require(menu.groups[2].items[2].enabled,
         "add-folder-track command should be enabled without a current selection");
-    require(menu.groups[3].items[0].label == "播放",
+    struct ExpectedClipMenuItem {
+        trackloom::AppMainMenuCommand command;
+        const char* label;
+    };
+    const ExpectedClipMenuItem expectedClipItems[] = {
+        { trackloom::AppMainMenuCommand::RenameSelectedMidiClip, "重命名所选 MIDI 片段" },
+        { trackloom::AppMainMenuCommand::DeleteSelectedMidiClip, "删除所选 MIDI 片段" },
+        { trackloom::AppMainMenuCommand::DuplicateSelectedMidiClip, "复制所选 MIDI 片段" },
+        { trackloom::AppMainMenuCommand::SplitSelectedMidiClip, "拆分所选 MIDI 片段" },
+        { trackloom::AppMainMenuCommand::MoveSelectedMidiClipToTargetTrack, "移动所选 MIDI 片段到目标乐器轨" },
+        { trackloom::AppMainMenuCommand::MoveSelectedMidiClipLeft, "左移所选 MIDI 片段" },
+        { trackloom::AppMainMenuCommand::MoveSelectedMidiClipRight, "右移所选 MIDI 片段" },
+        { trackloom::AppMainMenuCommand::TrimSelectedMidiClipEnd, "缩短所选 MIDI 片尾" },
+        { trackloom::AppMainMenuCommand::ExtendSelectedMidiClipEnd, "延长所选 MIDI 片尾" },
+        { trackloom::AppMainMenuCommand::TrimSelectedMidiClipStart, "缩短所选 MIDI 片头" },
+        { trackloom::AppMainMenuCommand::ExtendSelectedMidiClipStart, "延长所选 MIDI 片头" },
+        { trackloom::AppMainMenuCommand::RenameSelectedAudioClip, "重命名所选音频片段" },
+        { trackloom::AppMainMenuCommand::DeleteSelectedAudioClip, "删除所选音频片段" },
+        { trackloom::AppMainMenuCommand::DuplicateSelectedAudioClip, "复制所选音频片段" },
+        { trackloom::AppMainMenuCommand::SplitSelectedAudioClip, "拆分所选音频片段" },
+        { trackloom::AppMainMenuCommand::MoveSelectedAudioClipToTargetTrack, "移动所选音频片段到目标音频轨" },
+        { trackloom::AppMainMenuCommand::MoveSelectedAudioClipLeft, "左移所选音频片段" },
+        { trackloom::AppMainMenuCommand::MoveSelectedAudioClipRight, "右移所选音频片段" },
+        { trackloom::AppMainMenuCommand::TrimSelectedAudioClipEnd, "缩短所选音频片尾" },
+        { trackloom::AppMainMenuCommand::ExtendSelectedAudioClipEnd, "延长所选音频片尾" },
+        { trackloom::AppMainMenuCommand::TrimSelectedAudioClipStart, "缩短所选音频片头" },
+        { trackloom::AppMainMenuCommand::ExtendSelectedAudioClipStart, "延长所选音频片头" }
+    };
+    require(menu.groups[3].items.size() == sizeof(expectedClipItems) / sizeof(expectedClipItems[0]),
+        "clip menu should expose the current selected-clip commands");
+    for (std::size_t index = 0; index < sizeof(expectedClipItems) / sizeof(expectedClipItems[0]); ++index) {
+        require(menu.groups[3].items[index].commandId
+                == trackloom::appMainMenuCommandId(expectedClipItems[index].command),
+            "clip menu should expose stable selected-clip command ids in order");
+        require(menu.groups[3].items[index].label == expectedClipItems[index].label,
+            "clip menu should expose selected-clip command labels in order");
+        require(!menu.groups[3].items[index].enabled,
+            "selected clip commands should be disabled without a selected clip");
+    }
+    require(menu.groups[4].items[0].label == "播放",
         "playback menu should expose the play command label");
-    require(menu.groups[3].items[0].enabled,
+    require(menu.groups[4].items[0].enabled,
         "play command should be enabled while playback is stopped");
-    require(!menu.groups[3].items[1].enabled,
+    require(!menu.groups[4].items[1].enabled,
         "stop command should be disabled while playback is stopped");
-    require(!menu.groups[3].items[2].enabled,
+    require(!menu.groups[4].items[2].enabled,
         "rewind command should be disabled before the playback head moves");
-    require(menu.groups[4].items.size() == 1,
+    require(menu.groups[5].items.size() == 1,
         "tools menu should expose the first utility command");
-    require(menu.groups[4].items[0].commandId
+    require(menu.groups[5].items[0].commandId
             == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenCommandPalette),
         "tools menu should expose a stable command id for opening the command palette");
-    require(menu.groups[4].items[0].label == "命令面板...",
+    require(menu.groups[5].items[0].label == "命令面板...",
         "tools menu should expose the command palette label");
-    require(menu.groups[4].items[0].enabled,
+    require(menu.groups[5].items[0].enabled,
         "command palette command should be enabled because it only opens local UI state");
 }
 
@@ -940,6 +981,200 @@ void mainMenuReflectsUndoRedoHistory()
         "redo command should be enabled after undoing an edit");
 }
 
+void mainMenuReflectsSelectedTrackCommands()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Selected Track Menu");
+    const auto first = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto second = session.editProject().createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+
+    trackloom::AppMainMenuSelection selection;
+    selection.selectedInstrumentTrackId = second.id;
+    selection.selectedAudioTrackId = audio.id;
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent, selection);
+    const auto& trackItems = menu.groups[2].items;
+
+    require(trackItems.size() == 20,
+        "track menu should include creation commands, selected-instrument commands and selected-audio commands");
+    require(trackItems[3].separator && trackItems[12].separator,
+        "track menu should separate creation commands from selection-dependent command groups");
+    require(trackItems[4].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::RenameSelectedInstrumentTrack),
+        "track menu should expose a stable command id for selected instrument track rename");
+    require(trackItems[4].label == "重命名所选乐器轨" && trackItems[4].enabled,
+        "selected instrument track rename should be enabled for a valid selected instrument track");
+    require(trackItems[5].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::DeleteSelectedInstrumentTrack),
+        "track menu should expose a stable command id for selected instrument track delete");
+    require(trackItems[5].enabled,
+        "selected instrument track delete should be enabled for a valid selected instrument track");
+    require(trackItems[6].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedInstrumentTrackUp),
+        "track menu should expose a stable command id for selected instrument track move-up");
+    require(trackItems[6].enabled,
+        "selected instrument track move-up should be enabled when the selected track is not first");
+    require(trackItems[7].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedInstrumentTrackDown),
+        "track menu should expose a stable command id for selected instrument track move-down");
+    require(trackItems[7].enabled,
+        "selected instrument track move-down should be enabled when the selected track is not last");
+    require(trackItems[8].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedInstrumentTrackMute),
+        "track menu should expose a stable command id for selected instrument track mute toggle");
+    require(trackItems[8].label == "切换所选乐器轨静音" && trackItems[8].enabled,
+        "selected instrument track mute toggle should be enabled for a valid selected instrument track");
+    require(trackItems[9].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedInstrumentTrackSolo),
+        "track menu should expose a stable command id for selected instrument track solo toggle");
+    require(trackItems[9].enabled,
+        "selected instrument track solo toggle should be enabled for a valid selected instrument track");
+    require(trackItems[10].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedInstrumentTrackDisabled),
+        "track menu should expose a stable command id for selected instrument track disabled toggle");
+    require(trackItems[10].enabled,
+        "selected instrument track disabled toggle should be enabled for a valid selected instrument track");
+    require(trackItems[11].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedInstrumentTrackHidden),
+        "track menu should expose a stable command id for selected instrument track hidden toggle");
+    require(trackItems[11].enabled,
+        "selected instrument track hidden toggle should be enabled for a valid selected instrument track");
+    require(trackItems[13].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::DeleteSelectedAudioTrack),
+        "track menu should expose a stable command id for selected audio track delete");
+    require(trackItems[13].label == "删除所选音频轨" && trackItems[13].enabled,
+        "selected audio track delete should be enabled for a valid selected audio track");
+    require(trackItems[14].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedAudioTrackUp),
+        "track menu should expose a stable command id for selected audio track move-up");
+    require(trackItems[14].enabled,
+        "selected audio track move-up should be enabled when the selected track is not first");
+    require(trackItems[15].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedAudioTrackDown),
+        "track menu should expose a stable command id for selected audio track move-down");
+    require(!trackItems[15].enabled,
+        "selected audio track move-down should be disabled when the selected track is last");
+    require(trackItems[16].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedAudioTrackMute),
+        "track menu should expose a stable command id for selected audio track mute toggle");
+    require(trackItems[16].enabled,
+        "selected audio track mute toggle should be enabled for a valid selected audio track");
+    require(trackItems[17].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedAudioTrackSolo),
+        "track menu should expose a stable command id for selected audio track solo toggle");
+    require(trackItems[17].enabled,
+        "selected audio track solo toggle should be enabled for a valid selected audio track");
+    require(trackItems[18].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedAudioTrackDisabled),
+        "track menu should expose a stable command id for selected audio track disabled toggle");
+    require(trackItems[18].enabled,
+        "selected audio track disabled toggle should be enabled for a valid selected audio track");
+    require(trackItems[19].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedAudioTrackHidden),
+        "track menu should expose a stable command id for selected audio track hidden toggle");
+    require(trackItems[19].enabled,
+        "selected audio track hidden toggle should be enabled for a valid selected audio track");
+
+    selection.selectedInstrumentTrackId = first.id;
+    selection.selectedAudioTrackId = first.id;
+    const auto boundaryMenu = trackloom::describeAppMainMenu(session, playback, recent, selection);
+    const auto& boundaryTrackItems = boundaryMenu.groups[2].items;
+    require(!boundaryTrackItems[6].enabled && boundaryTrackItems[7].enabled,
+        "selected instrument track move-up should be disabled at the top boundary");
+    require(boundaryTrackItems[8].enabled && boundaryTrackItems[11].enabled,
+        "selected instrument track state toggles should stay enabled at move boundaries");
+    require(!boundaryTrackItems[13].enabled
+            && !boundaryTrackItems[14].enabled
+            && !boundaryTrackItems[15].enabled
+            && !boundaryTrackItems[16].enabled
+            && !boundaryTrackItems[17].enabled
+            && !boundaryTrackItems[18].enabled
+            && !boundaryTrackItems[19].enabled,
+        "selected audio track commands should be disabled when the selected id is not an audio track");
+}
+
+void mainMenuReflectsSelectedClipCommands()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Selected Clip Menu");
+    const auto instrument = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audioTrack = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto targetInstrument = session.editProject().createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto targetAudioTrack = session.editProject().createTrack("Drums", trackloom::TrackType::Audio);
+    const auto midiClip = trackloom::createDefaultMidiClipOnTrack(session, instrument.id);
+    const auto audioClip = trackloom::createDefaultAudioClipOnTrack(session, audioTrack.id);
+    require(midiClip.success && audioClip.success,
+        "selected clip menu test should create MIDI and audio clips");
+
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+    trackloom::AppMainMenuSelection selection;
+    selection.selectedInstrumentTrackId = targetInstrument.id;
+    selection.selectedAudioTrackId = targetAudioTrack.id;
+    selection.selectedMidiClipId = midiClip.clipId;
+    selection.selectedAudioClipId = audioClip.clipId;
+
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent, selection);
+    const auto& clipItems = menu.groups[3].items;
+
+    struct ExpectedClipMenuItem {
+        trackloom::AppMainMenuCommand command;
+        const char* label;
+    };
+    const ExpectedClipMenuItem expectedClipItems[] = {
+        { trackloom::AppMainMenuCommand::RenameSelectedMidiClip, "重命名所选 MIDI 片段" },
+        { trackloom::AppMainMenuCommand::DeleteSelectedMidiClip, "删除所选 MIDI 片段" },
+        { trackloom::AppMainMenuCommand::DuplicateSelectedMidiClip, "复制所选 MIDI 片段" },
+        { trackloom::AppMainMenuCommand::SplitSelectedMidiClip, "拆分所选 MIDI 片段" },
+        { trackloom::AppMainMenuCommand::MoveSelectedMidiClipToTargetTrack, "移动所选 MIDI 片段到目标乐器轨" },
+        { trackloom::AppMainMenuCommand::MoveSelectedMidiClipLeft, "左移所选 MIDI 片段" },
+        { trackloom::AppMainMenuCommand::MoveSelectedMidiClipRight, "右移所选 MIDI 片段" },
+        { trackloom::AppMainMenuCommand::TrimSelectedMidiClipEnd, "缩短所选 MIDI 片尾" },
+        { trackloom::AppMainMenuCommand::ExtendSelectedMidiClipEnd, "延长所选 MIDI 片尾" },
+        { trackloom::AppMainMenuCommand::TrimSelectedMidiClipStart, "缩短所选 MIDI 片头" },
+        { trackloom::AppMainMenuCommand::ExtendSelectedMidiClipStart, "延长所选 MIDI 片头" },
+        { trackloom::AppMainMenuCommand::RenameSelectedAudioClip, "重命名所选音频片段" },
+        { trackloom::AppMainMenuCommand::DeleteSelectedAudioClip, "删除所选音频片段" },
+        { trackloom::AppMainMenuCommand::DuplicateSelectedAudioClip, "复制所选音频片段" },
+        { trackloom::AppMainMenuCommand::SplitSelectedAudioClip, "拆分所选音频片段" },
+        { trackloom::AppMainMenuCommand::MoveSelectedAudioClipToTargetTrack, "移动所选音频片段到目标音频轨" },
+        { trackloom::AppMainMenuCommand::MoveSelectedAudioClipLeft, "左移所选音频片段" },
+        { trackloom::AppMainMenuCommand::MoveSelectedAudioClipRight, "右移所选音频片段" },
+        { trackloom::AppMainMenuCommand::TrimSelectedAudioClipEnd, "缩短所选音频片尾" },
+        { trackloom::AppMainMenuCommand::ExtendSelectedAudioClipEnd, "延长所选音频片尾" },
+        { trackloom::AppMainMenuCommand::TrimSelectedAudioClipStart, "缩短所选音频片头" },
+        { trackloom::AppMainMenuCommand::ExtendSelectedAudioClipStart, "延长所选音频片头" }
+    };
+    require(clipItems.size() == sizeof(expectedClipItems) / sizeof(expectedClipItems[0]),
+        "clip menu should include selected MIDI and selected audio clip edit commands");
+    for (std::size_t index = 0; index < sizeof(expectedClipItems) / sizeof(expectedClipItems[0]); ++index) {
+        require(clipItems[index].commandId == trackloom::appMainMenuCommandId(expectedClipItems[index].command),
+            "clip menu should expose stable selected-clip command ids in order");
+        require(clipItems[index].label == expectedClipItems[index].label,
+            "clip menu should expose selected-clip command labels in order");
+        require(clipItems[index].enabled,
+            "selected clip commands should be enabled when their clip and target selections are valid");
+    }
+
+    selection.selectedInstrumentTrackId = instrument.id;
+    selection.selectedAudioTrackId = audioTrack.id;
+    const auto sameTrackMenu = trackloom::describeAppMainMenu(session, playback, recent, selection);
+    require(!sameTrackMenu.groups[3].items[4].enabled && !sameTrackMenu.groups[3].items[15].enabled,
+        "selected clip move-to-target commands should be disabled when the target is already the clip owner");
+
+    selection.selectedMidiClipId = audioClip.clipId;
+    selection.selectedAudioClipId = midiClip.clipId;
+    const auto invalidMenu = trackloom::describeAppMainMenu(session, playback, recent, selection);
+    const auto& invalidClipItems = invalidMenu.groups[3].items;
+    for (const auto& item : invalidClipItems) {
+        require(!item.enabled,
+            "selected clip edit commands should be disabled when selected clip ids have the wrong type");
+    }
+}
+
 void mainMenuReflectsPlayingTransportState()
 {
     trackloom::AppProjectSession session;
@@ -953,7 +1188,7 @@ void mainMenuReflectsPlayingTransportState()
         "playing menu test should move the playback head before describing rewind state");
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
-    const auto& playbackItems = menu.groups[3].items;
+    const auto& playbackItems = menu.groups[4].items;
 
     require(!playbackItems[0].enabled,
         "play command should be disabled while playback is already running");
@@ -1002,7 +1237,7 @@ void commandPaletteFlattensMenuCommandsWithoutSeparatorsOrInfoRows()
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
     const auto palette = trackloom::describeAppCommandPalette(menu);
 
-    require(palette.items.size() == 13,
+    require(palette.items.size() == 35,
         "command palette should include menu commands but skip separators and disabled info rows");
     require(palette.items[0].groupName == "文件" && palette.items[0].label == "新建工程",
         "command palette should preserve the file menu group and command label");
@@ -1015,9 +1250,27 @@ void commandPaletteFlattensMenuCommandsWithoutSeparatorsOrInfoRows()
         "command palette should preserve disabled command state");
     require(palette.items[6].groupName == "轨道" && palette.items[6].label == "添加乐器轨",
         "command palette should include the current no-selection track creation commands");
-    require(palette.items[9].groupName == "播放" && palette.items[9].label == "播放",
-        "command palette should preserve playback commands after track commands");
-    require(palette.items[12].groupName == "工具" && palette.items[12].label == "命令面板...",
+    require(palette.items[9].groupName == "片段" && palette.items[9].label == "重命名所选 MIDI 片段",
+        "command palette should include disabled selected-clip commands for discoverability");
+    require(palette.items[11].groupName == "片段" && palette.items[11].label == "复制所选 MIDI 片段",
+        "command palette should include disabled selected MIDI clip duplicate for discoverability");
+    require(palette.items[12].groupName == "片段" && palette.items[12].label == "拆分所选 MIDI 片段",
+        "command palette should include disabled selected MIDI clip split for discoverability");
+    require(palette.items[13].groupName == "片段" && palette.items[13].label == "移动所选 MIDI 片段到目标乐器轨",
+        "command palette should include disabled selected MIDI clip move-to-target for discoverability");
+    require(palette.items[14].groupName == "片段" && palette.items[14].label == "左移所选 MIDI 片段",
+        "command palette should include disabled selected MIDI clip move-left for discoverability");
+    require(palette.items[16].groupName == "片段" && palette.items[16].label == "缩短所选 MIDI 片尾",
+        "command palette should include disabled selected MIDI clip trim-end for discoverability");
+    require(palette.items[17].groupName == "片段" && palette.items[17].label == "延长所选 MIDI 片尾",
+        "command palette should include disabled selected MIDI clip extend-end for discoverability");
+    require(palette.items[18].groupName == "片段" && palette.items[18].label == "缩短所选 MIDI 片头",
+        "command palette should include disabled selected MIDI clip trim-start for discoverability");
+    require(palette.items[19].groupName == "片段" && palette.items[19].label == "延长所选 MIDI 片头",
+        "command palette should include disabled selected MIDI clip extend-start for discoverability");
+    require(palette.items[31].groupName == "播放" && palette.items[31].label == "播放",
+        "command palette should preserve playback commands after clip commands");
+    require(palette.items[34].groupName == "工具" && palette.items[34].label == "命令面板...",
         "command palette should include the tools command for reopening itself by search");
 }
 
@@ -1473,7 +1726,7 @@ void commandPaletteSessionWheelStepsMoveHighlightWithoutWrapping()
     require(trackloom::describeAppCommandPaletteVisibleRowsRange(
                 trackloom::describeVisibleAppCommandPaletteSessionRows(
                     trackloom::describeAppCommandPaletteSession(session.status()),
-                    6)) == "7-12 / 12",
+                    6)) == "↑ 7-12 / 12",
         "command palette wheel-down should let the visible window follow the bottom highlight");
 
     session.moveHighlightByWheelSteps(20);
@@ -1486,7 +1739,7 @@ void commandPaletteSessionWheelStepsMoveHighlightWithoutWrapping()
     require(trackloom::describeAppCommandPaletteVisibleRowsRange(
                 trackloom::describeVisibleAppCommandPaletteSessionRows(
                     trackloom::describeAppCommandPaletteSession(session.status()),
-                    6)) == "1-6 / 12",
+                    6)) == "1-6 / 12 ↓",
         "command palette wheel-up should return the visible window to the top");
 }
 
@@ -1508,6 +1761,116 @@ void commandPaletteSessionWheelStepsHandleZeroDisabledOnlyAndClosedStates()
     session.moveHighlightByWheelSteps(1);
     require(!session.status().open && !session.status().highlightedIndex.has_value(),
         "command palette wheel navigation should leave a closed session closed and unhighlighted");
+}
+
+void commandPaletteSessionScrollsVisibleWindowWithoutMovingHighlight()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleLongCommandPaletteForSession());
+
+    session.scrollVisibleRowsByWheelSteps(3, 6);
+
+    require(session.status().highlightedIndex.has_value() && session.status().highlightedIndex.value() == 1,
+        "command palette visible-row scrolling should not change the highlighted command");
+
+    const auto scrolledRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        6);
+    require(scrolledRows.firstRowIndex == 3,
+        "command palette visible-row scrolling should move the visible window independently");
+    require(trackloom::describeAppCommandPaletteVisibleRowsRange(scrolledRows) == "↑ 4-9 / 12 ↓",
+        "command palette visible-row scrolling should update the visible range hint");
+
+    bool anyVisibleHighlight = false;
+    for (const auto& row : scrolledRows.rows) {
+        anyVisibleHighlight = anyVisibleHighlight || row.highlighted;
+    }
+    require(!anyVisibleHighlight,
+        "command palette visible-row scrolling should allow the current highlight to be outside the visible window");
+}
+
+void commandPaletteSessionScrollWindowResetsWhenQueryOrKeyboardNavigationChangesHighlight()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleLongCommandPaletteForSession());
+
+    session.scrollVisibleRowsByWheelSteps(20, 6);
+    auto bottomRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        6);
+    require(bottomRows.firstRowIndex == 6,
+        "command palette visible-row scrolling should clamp to the last possible visible window");
+
+    session.updateQuery("播放");
+    auto queriedRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        6);
+    require(queriedRows.firstRowIndex == 0,
+        "command palette query changes should reset the independent visible window");
+
+    session.updateQuery("");
+    session.scrollVisibleRowsByWheelSteps(20, 6);
+    session.moveHighlightDown();
+    auto keyboardRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        6);
+    require(keyboardRows.firstRowIndex == 0,
+        "command palette keyboard navigation should return to highlight-driven visible windows");
+}
+
+void commandPaletteSessionHighlightsEnabledCommandByIdForMouseHover()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleLongCommandPaletteForSession());
+    session.scrollVisibleRowsByWheelSteps(20, 6);
+
+    const auto highlighted = session.highlightCommandById(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddAudioTrack));
+
+    require(highlighted,
+        "command palette hover highlighting should report when it finds an enabled command");
+    require(session.status().highlightedIndex.has_value() && session.status().highlightedIndex.value() == 9,
+        "command palette hover highlighting should move highlight to the hovered enabled command");
+
+    const auto visibleRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
+        trackloom::describeAppCommandPaletteSession(session.status()),
+        6);
+    require(visibleRows.firstRowIndex == 6,
+        "command palette hover highlighting should preserve the current independently scrolled window");
+
+    bool addAudioTrackHighlighted = false;
+    for (const auto& row : visibleRows.rows) {
+        if (row.commandId == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::AddAudioTrack)) {
+            addAudioTrackHighlighted = row.highlighted;
+        }
+    }
+    require(addAudioTrackHighlighted,
+        "command palette visible rows should mark the hovered enabled command as highlighted");
+}
+
+void commandPaletteSessionHoverHighlightRejectsDisabledMissingAndClosedCommands()
+{
+    trackloom::AppCommandPaletteSession session;
+    session.open(sampleLongCommandPaletteForSession());
+
+    const auto disabled = session.highlightCommandById(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::UndoProject));
+    require(!disabled,
+        "command palette hover highlighting should reject disabled commands");
+    require(session.status().highlightedIndex.has_value() && session.status().highlightedIndex.value() == 1,
+        "command palette hover highlighting should keep the old highlight when a disabled command is hovered");
+
+    const auto missing = session.highlightCommandById(999999);
+    require(!missing,
+        "command palette hover highlighting should reject missing commands");
+    require(session.status().highlightedIndex.has_value() && session.status().highlightedIndex.value() == 1,
+        "command palette hover highlighting should keep the old highlight when the command is missing");
+
+    session.close();
+    const auto closed = session.highlightCommandById(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject));
+    require(!closed && !session.status().highlightedIndex.has_value(),
+        "command palette hover highlighting should reject closed sessions without reopening them");
 }
 
 void commandPaletteSessionMovesHighlightToFirstAndLastEnabledCommand()
@@ -1644,15 +2007,15 @@ void commandPaletteSessionVisibleRowsFormatRangeHintForUi()
     const auto firstPageDownRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
         trackloom::describeAppCommandPaletteSession(session.status()),
         6);
-    require(trackloom::describeAppCommandPaletteVisibleRowsRange(firstPageDownRows) == "3-8 / 12",
-        "command palette range text should use one-based indexes for a middle visible window");
+    require(trackloom::describeAppCommandPaletteVisibleRowsRange(firstPageDownRows) == "↑ 3-8 / 12 ↓",
+        "command palette range text should show overflow indicators around a middle visible window");
 
     session.moveHighlightToLast();
     const auto lastPageRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
         trackloom::describeAppCommandPaletteSession(session.status()),
         6);
-    require(trackloom::describeAppCommandPaletteVisibleRowsRange(lastPageRows) == "7-12 / 12",
-        "command palette range text should describe the final visible window");
+    require(trackloom::describeAppCommandPaletteVisibleRowsRange(lastPageRows) == "↑ 7-12 / 12",
+        "command palette range text should show only the previous-row indicator on the final visible window");
 
     session.updateQuery("Ctrl+Z");
     const auto disabledOnlyRows = trackloom::describeVisibleAppCommandPaletteSessionRows(
@@ -1996,6 +2359,346 @@ void commandDispatcherRunsTrackCreationMenuCommands()
         "track creation menu commands should each call exactly their own handler once");
 }
 
+void commandDispatcherRunsSelectedTrackMenuCommands()
+{
+    int renameInstrumentTrackCalls = 0;
+    int deleteInstrumentTrackCalls = 0;
+    int moveInstrumentTrackUpCalls = 0;
+    int moveInstrumentTrackDownCalls = 0;
+    int toggleInstrumentTrackMuteCalls = 0;
+    int toggleInstrumentTrackSoloCalls = 0;
+    int toggleInstrumentTrackDisabledCalls = 0;
+    int toggleInstrumentTrackHiddenCalls = 0;
+    int deleteAudioTrackCalls = 0;
+    int moveAudioTrackUpCalls = 0;
+    int moveAudioTrackDownCalls = 0;
+    int toggleAudioTrackMuteCalls = 0;
+    int toggleAudioTrackSoloCalls = 0;
+    int toggleAudioTrackDisabledCalls = 0;
+    int toggleAudioTrackHiddenCalls = 0;
+
+    trackloom::AppCommandHandlers handlers;
+    handlers.renameSelectedInstrumentTrack = [&] { ++renameInstrumentTrackCalls; };
+    handlers.deleteSelectedInstrumentTrack = [&] { ++deleteInstrumentTrackCalls; };
+    handlers.moveSelectedInstrumentTrackUp = [&] { ++moveInstrumentTrackUpCalls; };
+    handlers.moveSelectedInstrumentTrackDown = [&] { ++moveInstrumentTrackDownCalls; };
+    handlers.toggleSelectedInstrumentTrackMute = [&] { ++toggleInstrumentTrackMuteCalls; };
+    handlers.toggleSelectedInstrumentTrackSolo = [&] { ++toggleInstrumentTrackSoloCalls; };
+    handlers.toggleSelectedInstrumentTrackDisabled = [&] { ++toggleInstrumentTrackDisabledCalls; };
+    handlers.toggleSelectedInstrumentTrackHidden = [&] { ++toggleInstrumentTrackHiddenCalls; };
+    handlers.deleteSelectedAudioTrack = [&] { ++deleteAudioTrackCalls; };
+    handlers.moveSelectedAudioTrackUp = [&] { ++moveAudioTrackUpCalls; };
+    handlers.moveSelectedAudioTrackDown = [&] { ++moveAudioTrackDownCalls; };
+    handlers.toggleSelectedAudioTrackMute = [&] { ++toggleAudioTrackMuteCalls; };
+    handlers.toggleSelectedAudioTrackSolo = [&] { ++toggleAudioTrackSoloCalls; };
+    handlers.toggleSelectedAudioTrackDisabled = [&] { ++toggleAudioTrackDisabledCalls; };
+    handlers.toggleSelectedAudioTrackHidden = [&] { ++toggleAudioTrackHiddenCalls; };
+
+    const auto renameResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::RenameSelectedInstrumentTrack),
+        handlers);
+    const auto deleteInstrumentResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::DeleteSelectedInstrumentTrack),
+        handlers);
+    const auto moveUpResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedInstrumentTrackUp),
+        handlers);
+    const auto moveDownResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedInstrumentTrackDown),
+        handlers);
+    const auto toggleMuteResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedInstrumentTrackMute),
+        handlers);
+    const auto toggleSoloResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedInstrumentTrackSolo),
+        handlers);
+    const auto toggleDisabledResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedInstrumentTrackDisabled),
+        handlers);
+    const auto toggleHiddenResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedInstrumentTrackHidden),
+        handlers);
+    const auto deleteAudioResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::DeleteSelectedAudioTrack),
+        handlers);
+    const auto moveAudioUpResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedAudioTrackUp),
+        handlers);
+    const auto moveAudioDownResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedAudioTrackDown),
+        handlers);
+    const auto toggleAudioMuteResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedAudioTrackMute),
+        handlers);
+    const auto toggleAudioSoloResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedAudioTrackSolo),
+        handlers);
+    const auto toggleAudioDisabledResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedAudioTrackDisabled),
+        handlers);
+    const auto toggleAudioHiddenResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ToggleSelectedAudioTrackHidden),
+        handlers);
+
+    require(renameResult.executed
+            && renameResult.command == trackloom::AppCommandKind::RenameSelectedInstrumentTrack,
+        "selected instrument track rename command should dispatch to the rename handler");
+    require(deleteInstrumentResult.executed
+            && deleteInstrumentResult.command == trackloom::AppCommandKind::DeleteSelectedInstrumentTrack,
+        "selected instrument track delete command should dispatch to the delete handler");
+    require(moveUpResult.executed
+            && moveUpResult.command == trackloom::AppCommandKind::MoveSelectedInstrumentTrackUp,
+        "selected instrument track move-up command should dispatch to the move-up handler");
+    require(moveDownResult.executed
+            && moveDownResult.command == trackloom::AppCommandKind::MoveSelectedInstrumentTrackDown,
+        "selected instrument track move-down command should dispatch to the move-down handler");
+    require(toggleMuteResult.executed
+            && toggleMuteResult.command == trackloom::AppCommandKind::ToggleSelectedInstrumentTrackMute,
+        "selected instrument track mute toggle command should dispatch to the mute handler");
+    require(toggleSoloResult.executed
+            && toggleSoloResult.command == trackloom::AppCommandKind::ToggleSelectedInstrumentTrackSolo,
+        "selected instrument track solo toggle command should dispatch to the solo handler");
+    require(toggleDisabledResult.executed
+            && toggleDisabledResult.command == trackloom::AppCommandKind::ToggleSelectedInstrumentTrackDisabled,
+        "selected instrument track disabled toggle command should dispatch to the disabled handler");
+    require(toggleHiddenResult.executed
+            && toggleHiddenResult.command == trackloom::AppCommandKind::ToggleSelectedInstrumentTrackHidden,
+        "selected instrument track hidden toggle command should dispatch to the hidden handler");
+    require(deleteAudioResult.executed
+            && deleteAudioResult.command == trackloom::AppCommandKind::DeleteSelectedAudioTrack,
+        "selected audio track delete command should dispatch to the delete-audio handler");
+    require(moveAudioUpResult.executed
+            && moveAudioUpResult.command == trackloom::AppCommandKind::MoveSelectedAudioTrackUp,
+        "selected audio track move-up command should dispatch to the audio move-up handler");
+    require(moveAudioDownResult.executed
+            && moveAudioDownResult.command == trackloom::AppCommandKind::MoveSelectedAudioTrackDown,
+        "selected audio track move-down command should dispatch to the audio move-down handler");
+    require(toggleAudioMuteResult.executed
+            && toggleAudioMuteResult.command == trackloom::AppCommandKind::ToggleSelectedAudioTrackMute,
+        "selected audio track mute toggle command should dispatch to the audio mute handler");
+    require(toggleAudioSoloResult.executed
+            && toggleAudioSoloResult.command == trackloom::AppCommandKind::ToggleSelectedAudioTrackSolo,
+        "selected audio track solo toggle command should dispatch to the audio solo handler");
+    require(toggleAudioDisabledResult.executed
+            && toggleAudioDisabledResult.command == trackloom::AppCommandKind::ToggleSelectedAudioTrackDisabled,
+        "selected audio track disabled toggle command should dispatch to the audio disabled handler");
+    require(toggleAudioHiddenResult.executed
+            && toggleAudioHiddenResult.command == trackloom::AppCommandKind::ToggleSelectedAudioTrackHidden,
+        "selected audio track hidden toggle command should dispatch to the audio hidden handler");
+    require(renameInstrumentTrackCalls == 1
+            && deleteInstrumentTrackCalls == 1
+            && moveInstrumentTrackUpCalls == 1
+            && moveInstrumentTrackDownCalls == 1
+            && toggleInstrumentTrackMuteCalls == 1
+            && toggleInstrumentTrackSoloCalls == 1
+            && toggleInstrumentTrackDisabledCalls == 1
+            && toggleInstrumentTrackHiddenCalls == 1
+            && deleteAudioTrackCalls == 1
+            && moveAudioTrackUpCalls == 1
+            && moveAudioTrackDownCalls == 1
+            && toggleAudioTrackMuteCalls == 1
+            && toggleAudioTrackSoloCalls == 1
+            && toggleAudioTrackDisabledCalls == 1
+            && toggleAudioTrackHiddenCalls == 1,
+        "selected track menu commands should each call exactly their own handler once");
+}
+
+void commandDispatcherRunsSelectedClipMenuCommands()
+{
+    int deleteMidiClipCalls = 0;
+    int deleteAudioClipCalls = 0;
+    int duplicateMidiClipCalls = 0;
+    int duplicateAudioClipCalls = 0;
+    int renameMidiClipCalls = 0;
+    int renameAudioClipCalls = 0;
+    int splitMidiClipCalls = 0;
+    int splitAudioClipCalls = 0;
+    int moveMidiClipToTargetTrackCalls = 0;
+    int moveAudioClipToTargetTrackCalls = 0;
+    int moveMidiClipLeftCalls = 0;
+    int moveMidiClipRightCalls = 0;
+    int trimMidiClipEndCalls = 0;
+    int extendMidiClipEndCalls = 0;
+    int trimMidiClipStartCalls = 0;
+    int extendMidiClipStartCalls = 0;
+    int moveAudioClipLeftCalls = 0;
+    int moveAudioClipRightCalls = 0;
+    int trimAudioClipEndCalls = 0;
+    int extendAudioClipEndCalls = 0;
+    int trimAudioClipStartCalls = 0;
+    int extendAudioClipStartCalls = 0;
+
+    trackloom::AppCommandHandlers handlers;
+    handlers.deleteSelectedMidiClip = [&] { ++deleteMidiClipCalls; };
+    handlers.deleteSelectedAudioClip = [&] { ++deleteAudioClipCalls; };
+    handlers.duplicateSelectedMidiClip = [&] { ++duplicateMidiClipCalls; };
+    handlers.duplicateSelectedAudioClip = [&] { ++duplicateAudioClipCalls; };
+    handlers.renameSelectedMidiClip = [&] { ++renameMidiClipCalls; };
+    handlers.renameSelectedAudioClip = [&] { ++renameAudioClipCalls; };
+    handlers.splitSelectedMidiClip = [&] { ++splitMidiClipCalls; };
+    handlers.splitSelectedAudioClip = [&] { ++splitAudioClipCalls; };
+    handlers.moveSelectedMidiClipToTargetTrack = [&] { ++moveMidiClipToTargetTrackCalls; };
+    handlers.moveSelectedAudioClipToTargetTrack = [&] { ++moveAudioClipToTargetTrackCalls; };
+    handlers.moveSelectedMidiClipLeft = [&] { ++moveMidiClipLeftCalls; };
+    handlers.moveSelectedMidiClipRight = [&] { ++moveMidiClipRightCalls; };
+    handlers.trimSelectedMidiClipEnd = [&] { ++trimMidiClipEndCalls; };
+    handlers.extendSelectedMidiClipEnd = [&] { ++extendMidiClipEndCalls; };
+    handlers.trimSelectedMidiClipStart = [&] { ++trimMidiClipStartCalls; };
+    handlers.extendSelectedMidiClipStart = [&] { ++extendMidiClipStartCalls; };
+    handlers.moveSelectedAudioClipLeft = [&] { ++moveAudioClipLeftCalls; };
+    handlers.moveSelectedAudioClipRight = [&] { ++moveAudioClipRightCalls; };
+    handlers.trimSelectedAudioClipEnd = [&] { ++trimAudioClipEndCalls; };
+    handlers.extendSelectedAudioClipEnd = [&] { ++extendAudioClipEndCalls; };
+    handlers.trimSelectedAudioClipStart = [&] { ++trimAudioClipStartCalls; };
+    handlers.extendSelectedAudioClipStart = [&] { ++extendAudioClipStartCalls; };
+
+    const auto renameMidiClipResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::RenameSelectedMidiClip),
+        handlers);
+    const auto renameAudioClipResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::RenameSelectedAudioClip),
+        handlers);
+    const auto deleteMidiClipResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::DeleteSelectedMidiClip),
+        handlers);
+    const auto deleteAudioClipResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::DeleteSelectedAudioClip),
+        handlers);
+    const auto duplicateMidiClipResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::DuplicateSelectedMidiClip),
+        handlers);
+    const auto duplicateAudioClipResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::DuplicateSelectedAudioClip),
+        handlers);
+    const auto splitMidiClipResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SplitSelectedMidiClip),
+        handlers);
+    const auto splitAudioClipResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SplitSelectedAudioClip),
+        handlers);
+    const auto moveMidiClipToTargetTrackResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedMidiClipToTargetTrack),
+        handlers);
+    const auto moveAudioClipToTargetTrackResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedAudioClipToTargetTrack),
+        handlers);
+    const auto moveMidiClipLeftResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedMidiClipLeft),
+        handlers);
+    const auto moveMidiClipRightResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedMidiClipRight),
+        handlers);
+    const auto trimMidiClipEndResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::TrimSelectedMidiClipEnd),
+        handlers);
+    const auto extendMidiClipEndResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ExtendSelectedMidiClipEnd),
+        handlers);
+    const auto trimMidiClipStartResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::TrimSelectedMidiClipStart),
+        handlers);
+    const auto extendMidiClipStartResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ExtendSelectedMidiClipStart),
+        handlers);
+    const auto moveAudioClipLeftResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedAudioClipLeft),
+        handlers);
+    const auto moveAudioClipRightResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::MoveSelectedAudioClipRight),
+        handlers);
+    const auto trimAudioClipEndResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::TrimSelectedAudioClipEnd),
+        handlers);
+    const auto extendAudioClipEndResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ExtendSelectedAudioClipEnd),
+        handlers);
+    const auto trimAudioClipStartResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::TrimSelectedAudioClipStart),
+        handlers);
+    const auto extendAudioClipStartResult = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::ExtendSelectedAudioClipStart),
+        handlers);
+
+    require(renameMidiClipResult.executed
+            && renameMidiClipResult.command == trackloom::AppCommandKind::RenameSelectedMidiClip,
+        "selected MIDI clip rename command should dispatch to the MIDI clip rename handler");
+    require(renameAudioClipResult.executed
+            && renameAudioClipResult.command == trackloom::AppCommandKind::RenameSelectedAudioClip,
+        "selected audio clip rename command should dispatch to the audio clip rename handler");
+    require(deleteMidiClipResult.executed
+            && deleteMidiClipResult.command == trackloom::AppCommandKind::DeleteSelectedMidiClip,
+        "selected MIDI clip delete command should dispatch to the MIDI clip delete handler");
+    require(deleteAudioClipResult.executed
+            && deleteAudioClipResult.command == trackloom::AppCommandKind::DeleteSelectedAudioClip,
+        "selected audio clip delete command should dispatch to the audio clip delete handler");
+    require(duplicateMidiClipResult.executed
+            && duplicateMidiClipResult.command == trackloom::AppCommandKind::DuplicateSelectedMidiClip,
+        "selected MIDI clip duplicate command should dispatch to the MIDI clip duplicate handler");
+    require(duplicateAudioClipResult.executed
+            && duplicateAudioClipResult.command == trackloom::AppCommandKind::DuplicateSelectedAudioClip,
+        "selected audio clip duplicate command should dispatch to the audio clip duplicate handler");
+    require(splitMidiClipResult.executed
+            && splitMidiClipResult.command == trackloom::AppCommandKind::SplitSelectedMidiClip,
+        "selected MIDI clip split command should dispatch to the MIDI clip split handler");
+    require(splitAudioClipResult.executed
+            && splitAudioClipResult.command == trackloom::AppCommandKind::SplitSelectedAudioClip,
+        "selected audio clip split command should dispatch to the audio clip split handler");
+    require(moveMidiClipToTargetTrackResult.executed
+            && moveMidiClipToTargetTrackResult.command == trackloom::AppCommandKind::MoveSelectedMidiClipToTargetTrack,
+        "selected MIDI clip move-to-target command should dispatch to the MIDI clip move-to-target handler");
+    require(moveAudioClipToTargetTrackResult.executed
+            && moveAudioClipToTargetTrackResult.command == trackloom::AppCommandKind::MoveSelectedAudioClipToTargetTrack,
+        "selected audio clip move-to-target command should dispatch to the audio clip move-to-target handler");
+    require(moveMidiClipLeftResult.executed
+            && moveMidiClipLeftResult.command == trackloom::AppCommandKind::MoveSelectedMidiClipLeft,
+        "selected MIDI clip move-left command should dispatch to the MIDI clip move-left handler");
+    require(moveMidiClipRightResult.executed
+            && moveMidiClipRightResult.command == trackloom::AppCommandKind::MoveSelectedMidiClipRight,
+        "selected MIDI clip move-right command should dispatch to the MIDI clip move-right handler");
+    require(trimMidiClipEndResult.executed
+            && trimMidiClipEndResult.command == trackloom::AppCommandKind::TrimSelectedMidiClipEnd,
+        "selected MIDI clip trim-end command should dispatch to the MIDI clip trim-end handler");
+    require(extendMidiClipEndResult.executed
+            && extendMidiClipEndResult.command == trackloom::AppCommandKind::ExtendSelectedMidiClipEnd,
+        "selected MIDI clip extend-end command should dispatch to the MIDI clip extend-end handler");
+    require(trimMidiClipStartResult.executed
+            && trimMidiClipStartResult.command == trackloom::AppCommandKind::TrimSelectedMidiClipStart,
+        "selected MIDI clip trim-start command should dispatch to the MIDI clip trim-start handler");
+    require(extendMidiClipStartResult.executed
+            && extendMidiClipStartResult.command == trackloom::AppCommandKind::ExtendSelectedMidiClipStart,
+        "selected MIDI clip extend-start command should dispatch to the MIDI clip extend-start handler");
+    require(moveAudioClipLeftResult.executed
+            && moveAudioClipLeftResult.command == trackloom::AppCommandKind::MoveSelectedAudioClipLeft,
+        "selected audio clip move-left command should dispatch to the audio clip move-left handler");
+    require(moveAudioClipRightResult.executed
+            && moveAudioClipRightResult.command == trackloom::AppCommandKind::MoveSelectedAudioClipRight,
+        "selected audio clip move-right command should dispatch to the audio clip move-right handler");
+    require(trimAudioClipEndResult.executed
+            && trimAudioClipEndResult.command == trackloom::AppCommandKind::TrimSelectedAudioClipEnd,
+        "selected audio clip trim-end command should dispatch to the audio clip trim-end handler");
+    require(extendAudioClipEndResult.executed
+            && extendAudioClipEndResult.command == trackloom::AppCommandKind::ExtendSelectedAudioClipEnd,
+        "selected audio clip extend-end command should dispatch to the audio clip extend-end handler");
+    require(trimAudioClipStartResult.executed
+            && trimAudioClipStartResult.command == trackloom::AppCommandKind::TrimSelectedAudioClipStart,
+        "selected audio clip trim-start command should dispatch to the audio clip trim-start handler");
+    require(extendAudioClipStartResult.executed
+            && extendAudioClipStartResult.command == trackloom::AppCommandKind::ExtendSelectedAudioClipStart,
+        "selected audio clip extend-start command should dispatch to the audio clip extend-start handler");
+    require(renameMidiClipCalls == 1 && renameAudioClipCalls == 1
+            && deleteMidiClipCalls == 1 && deleteAudioClipCalls == 1
+            && duplicateMidiClipCalls == 1 && duplicateAudioClipCalls == 1
+            && splitMidiClipCalls == 1 && splitAudioClipCalls == 1
+            && moveMidiClipToTargetTrackCalls == 1 && moveAudioClipToTargetTrackCalls == 1
+            && moveMidiClipLeftCalls == 1 && moveMidiClipRightCalls == 1
+            && trimMidiClipEndCalls == 1 && extendMidiClipEndCalls == 1
+            && trimMidiClipStartCalls == 1 && extendMidiClipStartCalls == 1
+            && moveAudioClipLeftCalls == 1 && moveAudioClipRightCalls == 1
+            && trimAudioClipEndCalls == 1 && extendAudioClipEndCalls == 1
+            && trimAudioClipStartCalls == 1 && extendAudioClipStartCalls == 1,
+        "selected clip menu commands should each call exactly their own handler once");
+}
+
 void commandDispatcherRunsCommandPaletteMenuCommand()
 {
     int openCommandPaletteCalls = 0;
@@ -2123,6 +2826,27 @@ void commandShortcutsIgnoreUnregisteredOrAmbiguousChords()
         "Ctrl+X is not registered in the first shortcut slice");
     require(!trackloom::appCommandIdForShortcut({ '\0', true, false, false }).has_value(),
         "empty shortcut characters should not map to commands");
+}
+
+void commandShortcutsAreSuppressedWhileCommandPaletteIsOpen()
+{
+    const auto saveProject = trackloom::appCommandIdForShortcut(
+        { 's', true, false, false },
+        trackloom::AppShortcutContext::MainWindow);
+    const auto saveWhilePaletteOpen = trackloom::appCommandIdForShortcut(
+        { 's', true, false, false },
+        trackloom::AppShortcutContext::CommandPaletteOpen);
+    const auto reopenPaletteWhileOpen = trackloom::appCommandIdForShortcut(
+        { 'k', true, false, false },
+        trackloom::AppShortcutContext::CommandPaletteOpen);
+
+    require(saveProject.has_value()
+            && saveProject.value() == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject),
+        "shortcut context should keep normal main-window shortcuts registered");
+    require(!saveWhilePaletteOpen.has_value(),
+        "command palette context should suppress global save shortcuts while the search box is active");
+    require(!reopenPaletteWhileOpen.has_value(),
+        "command palette context should suppress global palette-open shortcuts instead of rebuilding the open session");
 }
 
 void trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty()
@@ -2556,6 +3280,50 @@ void trackActionMovesInstrumentTrackUpAndDown()
         "track move down should keep the selected track id stable");
     require(session.isDirty(),
         "successful track move down should mark the app session dirty");
+}
+
+void trackActionMovesAudioTrackUpAndDown()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "audio-track-action-move.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    session.createNewProject("Move Audio Tracks");
+    const auto first = session.editProject().createTrack("First", trackloom::TrackType::Instrument);
+    const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
+    const auto third = session.editProject().createTrack("Third", trackloom::TrackType::Instrument);
+    require(session.saveAs(path).success,
+        "audio track move action test should save setup edits before moving");
+
+    const auto up = trackloom::moveAudioTrackUp(session, audio.id);
+
+    require(up.success,
+        "audio track move action should move the selected audio track up");
+    require(up.kind == trackloom::AppTrackActionFeedbackKind::Success,
+        "successful audio track move up should expose a stable success kind");
+    require(up.trackId == audio.id,
+        "audio track move up feedback should report the moved track id");
+    require(session.project().tracks()[0].id == audio.id,
+        "audio track move up should swap the selected track toward the top");
+    require(session.project().tracks()[1].id == first.id,
+        "audio track move up should shift the previous neighbor down");
+    require(session.project().tracks()[2].id == third.id,
+        "audio track move up should keep unrelated tracks in order");
+    require(session.isDirty(),
+        "successful audio track move up should mark the app session dirty");
+
+    require(session.save().success,
+        "audio track move action test should save after the first move before checking next dirty state");
+    const auto down = trackloom::moveAudioTrackDown(session, audio.id);
+
+    require(down.success,
+        "audio track move action should move the selected audio track down");
+    require(session.project().tracks()[0].id == first.id,
+        "audio track move down should move the selected track below its next neighbor");
+    require(session.project().tracks()[1].id == audio.id,
+        "audio track move down should keep the selected track id stable");
+    require(session.isDirty(),
+        "successful audio track move down should mark the app session dirty");
 }
 
 void trackActionRejectsMoveAtBoundariesWithoutDirtyingSession()
@@ -8608,6 +9376,8 @@ int main()
     recentProjectsOpenByNumberRejectsMissingFileWithoutMutation();
     mainMenuDescribesFileAndPlaybackCommands();
     mainMenuReflectsUndoRedoHistory();
+    mainMenuReflectsSelectedTrackCommands();
+    mainMenuReflectsSelectedClipCommands();
     mainMenuReflectsPlayingTransportState();
     mainMenuListsRecentProjectsWithStableCommandIds();
     commandPaletteFlattensMenuCommandsWithoutSeparatorsOrInfoRows();
@@ -8630,6 +9400,10 @@ int main()
     commandPaletteSessionPageNavigationSkipsDisabledTargetsAndInvalidCounts();
     commandPaletteSessionWheelStepsMoveHighlightWithoutWrapping();
     commandPaletteSessionWheelStepsHandleZeroDisabledOnlyAndClosedStates();
+    commandPaletteSessionScrollsVisibleWindowWithoutMovingHighlight();
+    commandPaletteSessionScrollWindowResetsWhenQueryOrKeyboardNavigationChangesHighlight();
+    commandPaletteSessionHighlightsEnabledCommandByIdForMouseHover();
+    commandPaletteSessionHoverHighlightRejectsDisabledMissingAndClosedCommands();
     commandPaletteSessionMovesHighlightToFirstAndLastEnabledCommand();
     commandPaletteSessionBoundaryNavigationKeepsDisabledOnlySearchesUnhighlighted();
     commandPaletteSessionVisibleRowsDescribeWindowSliceForUi();
@@ -8646,6 +9420,8 @@ int main()
     commandDispatcherRunsOnlyTheSelectedMainMenuCommand();
     commandDispatcherRunsRedoMainMenuCommand();
     commandDispatcherRunsTrackCreationMenuCommands();
+    commandDispatcherRunsSelectedTrackMenuCommands();
+    commandDispatcherRunsSelectedClipMenuCommands();
     commandDispatcherRunsCommandPaletteMenuCommand();
     commandDispatcherPassesRecentProjectNumber();
     commandDispatcherRejectsUnknownOrUnboundCommands();
@@ -8653,6 +9429,7 @@ int main()
     commandShortcutsMapUndoRedoKeysToEditMenuCommands();
     commandShortcutsMapCommandPaletteKeysToToolCommand();
     commandShortcutsIgnoreUnregisteredOrAmbiguousChords();
+    commandShortcutsAreSuppressedWhileCommandPaletteIsOpen();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionCreateCanBeUndoneAndRedoneThroughSessionHistory();
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
@@ -8670,6 +9447,7 @@ int main()
     trackActionRejectsEmptyTrackNameWithoutDirtyingSession();
     trackActionRejectsMissingTrackRenameWithoutDirtyingSession();
     trackActionMovesInstrumentTrackUpAndDown();
+    trackActionMovesAudioTrackUpAndDown();
     trackActionRejectsMoveAtBoundariesWithoutDirtyingSession();
     trackActionRejectsInvalidMoveTargetsWithoutDirtyingSession();
     trackStateActionTogglesMuteAndMarksSessionDirty();

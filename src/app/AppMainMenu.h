@@ -26,6 +26,43 @@ enum class AppMainMenuCommand {
     AddInstrumentTrack = 1201,
     AddAudioTrack = 1202,
     AddFolderTrack = 1203,
+    RenameSelectedInstrumentTrack = 1211,
+    DeleteSelectedInstrumentTrack = 1212,
+    MoveSelectedInstrumentTrackUp = 1213,
+    MoveSelectedInstrumentTrackDown = 1214,
+    ToggleSelectedInstrumentTrackMute = 1215,
+    ToggleSelectedInstrumentTrackSolo = 1216,
+    ToggleSelectedInstrumentTrackDisabled = 1217,
+    ToggleSelectedInstrumentTrackHidden = 1218,
+    DeleteSelectedAudioTrack = 1221,
+    MoveSelectedAudioTrackUp = 1222,
+    MoveSelectedAudioTrackDown = 1223,
+    ToggleSelectedAudioTrackMute = 1224,
+    ToggleSelectedAudioTrackSolo = 1225,
+    ToggleSelectedAudioTrackDisabled = 1226,
+    ToggleSelectedAudioTrackHidden = 1227,
+    DeleteSelectedMidiClip = 1251,
+    DeleteSelectedAudioClip = 1252,
+    DuplicateSelectedMidiClip = 1253,
+    DuplicateSelectedAudioClip = 1254,
+    RenameSelectedMidiClip = 1255,
+    RenameSelectedAudioClip = 1256,
+    SplitSelectedMidiClip = 1257,
+    SplitSelectedAudioClip = 1258,
+    MoveSelectedMidiClipLeft = 1259,
+    MoveSelectedMidiClipRight = 1260,
+    MoveSelectedAudioClipLeft = 1261,
+    MoveSelectedAudioClipRight = 1262,
+    TrimSelectedMidiClipEnd = 1263,
+    ExtendSelectedMidiClipEnd = 1264,
+    TrimSelectedAudioClipEnd = 1265,
+    ExtendSelectedAudioClipEnd = 1266,
+    TrimSelectedMidiClipStart = 1267,
+    ExtendSelectedMidiClipStart = 1268,
+    TrimSelectedAudioClipStart = 1269,
+    ExtendSelectedAudioClipStart = 1270,
+    MoveSelectedMidiClipToTargetTrack = 1271,
+    MoveSelectedAudioClipToTargetTrack = 1272,
     // 命令面板属于工具入口；它打开本地 UI 状态，不直接修改工程。
     OpenCommandPalette = 1301
 };
@@ -46,6 +83,13 @@ struct AppMainMenuStatus {
     std::vector<AppMainMenuGroup> groups;
 };
 
+struct AppMainMenuSelection {
+    std::string selectedInstrumentTrackId;
+    std::string selectedAudioTrackId;
+    std::string selectedMidiClipId;
+    std::string selectedAudioClipId;
+};
+
 // appMainMenuCommandId 把强类型命令转换成 JUCE PopupMenu 需要的正整数 id。
 int appMainMenuCommandId(AppMainMenuCommand command);
 
@@ -59,5 +103,13 @@ AppMainMenuStatus describeAppMainMenu(
     const AppProjectSession& session,
     const AppPlaybackController& playback,
     const AppRecentProjects& recentProjects);
+
+// 带选择状态的重载用于桌面壳和命令面板暴露依赖目标轨道的菜单命令。
+// 选择只作为启用状态输入；真正执行仍由 AppCommandDispatcher 调用已有 AppTrackActions。
+AppMainMenuStatus describeAppMainMenu(
+    const AppProjectSession& session,
+    const AppPlaybackController& playback,
+    const AppRecentProjects& recentProjects,
+    const AppMainMenuSelection& selection);
 
 }

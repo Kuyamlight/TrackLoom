@@ -20,6 +20,43 @@ enum class AppCommandKind {
     AddInstrumentTrack,
     AddAudioTrack,
     AddFolderTrack,
+    RenameSelectedInstrumentTrack,
+    DeleteSelectedInstrumentTrack,
+    MoveSelectedInstrumentTrackUp,
+    MoveSelectedInstrumentTrackDown,
+    ToggleSelectedInstrumentTrackMute,
+    ToggleSelectedInstrumentTrackSolo,
+    ToggleSelectedInstrumentTrackDisabled,
+    ToggleSelectedInstrumentTrackHidden,
+    DeleteSelectedAudioTrack,
+    MoveSelectedAudioTrackUp,
+    MoveSelectedAudioTrackDown,
+    ToggleSelectedAudioTrackMute,
+    ToggleSelectedAudioTrackSolo,
+    ToggleSelectedAudioTrackDisabled,
+    ToggleSelectedAudioTrackHidden,
+    RenameSelectedMidiClip,
+    RenameSelectedAudioClip,
+    DeleteSelectedMidiClip,
+    DeleteSelectedAudioClip,
+    DuplicateSelectedMidiClip,
+    DuplicateSelectedAudioClip,
+    SplitSelectedMidiClip,
+    SplitSelectedAudioClip,
+    MoveSelectedMidiClipToTargetTrack,
+    MoveSelectedAudioClipToTargetTrack,
+    MoveSelectedMidiClipLeft,
+    MoveSelectedMidiClipRight,
+    TrimSelectedMidiClipEnd,
+    ExtendSelectedMidiClipEnd,
+    TrimSelectedMidiClipStart,
+    ExtendSelectedMidiClipStart,
+    MoveSelectedAudioClipLeft,
+    MoveSelectedAudioClipRight,
+    TrimSelectedAudioClipEnd,
+    ExtendSelectedAudioClipEnd,
+    TrimSelectedAudioClipStart,
+    ExtendSelectedAudioClipStart,
     PlayProject,
     StopProject,
     RewindProject,
@@ -55,6 +92,43 @@ struct AppCommandHandlers {
     std::function<void()> addInstrumentTrack;
     std::function<void()> addAudioTrack;
     std::function<void()> addFolderTrack;
+    std::function<void()> renameSelectedInstrumentTrack;
+    std::function<void()> deleteSelectedInstrumentTrack;
+    std::function<void()> moveSelectedInstrumentTrackUp;
+    std::function<void()> moveSelectedInstrumentTrackDown;
+    std::function<void()> toggleSelectedInstrumentTrackMute;
+    std::function<void()> toggleSelectedInstrumentTrackSolo;
+    std::function<void()> toggleSelectedInstrumentTrackDisabled;
+    std::function<void()> toggleSelectedInstrumentTrackHidden;
+    std::function<void()> deleteSelectedAudioTrack;
+    std::function<void()> moveSelectedAudioTrackUp;
+    std::function<void()> moveSelectedAudioTrackDown;
+    std::function<void()> toggleSelectedAudioTrackMute;
+    std::function<void()> toggleSelectedAudioTrackSolo;
+    std::function<void()> toggleSelectedAudioTrackDisabled;
+    std::function<void()> toggleSelectedAudioTrackHidden;
+    std::function<void()> renameSelectedMidiClip;
+    std::function<void()> renameSelectedAudioClip;
+    std::function<void()> deleteSelectedMidiClip;
+    std::function<void()> deleteSelectedAudioClip;
+    std::function<void()> duplicateSelectedMidiClip;
+    std::function<void()> duplicateSelectedAudioClip;
+    std::function<void()> splitSelectedMidiClip;
+    std::function<void()> splitSelectedAudioClip;
+    std::function<void()> moveSelectedMidiClipToTargetTrack;
+    std::function<void()> moveSelectedAudioClipToTargetTrack;
+    std::function<void()> moveSelectedMidiClipLeft;
+    std::function<void()> moveSelectedMidiClipRight;
+    std::function<void()> trimSelectedMidiClipEnd;
+    std::function<void()> extendSelectedMidiClipEnd;
+    std::function<void()> trimSelectedMidiClipStart;
+    std::function<void()> extendSelectedMidiClipStart;
+    std::function<void()> moveSelectedAudioClipLeft;
+    std::function<void()> moveSelectedAudioClipRight;
+    std::function<void()> trimSelectedAudioClipEnd;
+    std::function<void()> extendSelectedAudioClipEnd;
+    std::function<void()> trimSelectedAudioClipStart;
+    std::function<void()> extendSelectedAudioClipStart;
     std::function<void()> playProject;
     std::function<void()> stopProject;
     std::function<void()> rewindProject;

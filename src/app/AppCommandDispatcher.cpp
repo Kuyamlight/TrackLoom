@@ -48,6 +48,80 @@ AppCommandKind appCommandKindFromMainMenuCommand(AppMainMenuCommand command)
         return AppCommandKind::AddAudioTrack;
     case AppMainMenuCommand::AddFolderTrack:
         return AppCommandKind::AddFolderTrack;
+    case AppMainMenuCommand::RenameSelectedInstrumentTrack:
+        return AppCommandKind::RenameSelectedInstrumentTrack;
+    case AppMainMenuCommand::DeleteSelectedInstrumentTrack:
+        return AppCommandKind::DeleteSelectedInstrumentTrack;
+    case AppMainMenuCommand::MoveSelectedInstrumentTrackUp:
+        return AppCommandKind::MoveSelectedInstrumentTrackUp;
+    case AppMainMenuCommand::MoveSelectedInstrumentTrackDown:
+        return AppCommandKind::MoveSelectedInstrumentTrackDown;
+    case AppMainMenuCommand::ToggleSelectedInstrumentTrackMute:
+        return AppCommandKind::ToggleSelectedInstrumentTrackMute;
+    case AppMainMenuCommand::ToggleSelectedInstrumentTrackSolo:
+        return AppCommandKind::ToggleSelectedInstrumentTrackSolo;
+    case AppMainMenuCommand::ToggleSelectedInstrumentTrackDisabled:
+        return AppCommandKind::ToggleSelectedInstrumentTrackDisabled;
+    case AppMainMenuCommand::ToggleSelectedInstrumentTrackHidden:
+        return AppCommandKind::ToggleSelectedInstrumentTrackHidden;
+    case AppMainMenuCommand::DeleteSelectedAudioTrack:
+        return AppCommandKind::DeleteSelectedAudioTrack;
+    case AppMainMenuCommand::MoveSelectedAudioTrackUp:
+        return AppCommandKind::MoveSelectedAudioTrackUp;
+    case AppMainMenuCommand::MoveSelectedAudioTrackDown:
+        return AppCommandKind::MoveSelectedAudioTrackDown;
+    case AppMainMenuCommand::ToggleSelectedAudioTrackMute:
+        return AppCommandKind::ToggleSelectedAudioTrackMute;
+    case AppMainMenuCommand::ToggleSelectedAudioTrackSolo:
+        return AppCommandKind::ToggleSelectedAudioTrackSolo;
+    case AppMainMenuCommand::ToggleSelectedAudioTrackDisabled:
+        return AppCommandKind::ToggleSelectedAudioTrackDisabled;
+    case AppMainMenuCommand::ToggleSelectedAudioTrackHidden:
+        return AppCommandKind::ToggleSelectedAudioTrackHidden;
+    case AppMainMenuCommand::RenameSelectedMidiClip:
+        return AppCommandKind::RenameSelectedMidiClip;
+    case AppMainMenuCommand::RenameSelectedAudioClip:
+        return AppCommandKind::RenameSelectedAudioClip;
+    case AppMainMenuCommand::DeleteSelectedMidiClip:
+        return AppCommandKind::DeleteSelectedMidiClip;
+    case AppMainMenuCommand::DeleteSelectedAudioClip:
+        return AppCommandKind::DeleteSelectedAudioClip;
+    case AppMainMenuCommand::DuplicateSelectedMidiClip:
+        return AppCommandKind::DuplicateSelectedMidiClip;
+    case AppMainMenuCommand::DuplicateSelectedAudioClip:
+        return AppCommandKind::DuplicateSelectedAudioClip;
+    case AppMainMenuCommand::SplitSelectedMidiClip:
+        return AppCommandKind::SplitSelectedMidiClip;
+    case AppMainMenuCommand::SplitSelectedAudioClip:
+        return AppCommandKind::SplitSelectedAudioClip;
+    case AppMainMenuCommand::MoveSelectedMidiClipToTargetTrack:
+        return AppCommandKind::MoveSelectedMidiClipToTargetTrack;
+    case AppMainMenuCommand::MoveSelectedAudioClipToTargetTrack:
+        return AppCommandKind::MoveSelectedAudioClipToTargetTrack;
+    case AppMainMenuCommand::MoveSelectedMidiClipLeft:
+        return AppCommandKind::MoveSelectedMidiClipLeft;
+    case AppMainMenuCommand::MoveSelectedMidiClipRight:
+        return AppCommandKind::MoveSelectedMidiClipRight;
+    case AppMainMenuCommand::TrimSelectedMidiClipEnd:
+        return AppCommandKind::TrimSelectedMidiClipEnd;
+    case AppMainMenuCommand::ExtendSelectedMidiClipEnd:
+        return AppCommandKind::ExtendSelectedMidiClipEnd;
+    case AppMainMenuCommand::TrimSelectedMidiClipStart:
+        return AppCommandKind::TrimSelectedMidiClipStart;
+    case AppMainMenuCommand::ExtendSelectedMidiClipStart:
+        return AppCommandKind::ExtendSelectedMidiClipStart;
+    case AppMainMenuCommand::MoveSelectedAudioClipLeft:
+        return AppCommandKind::MoveSelectedAudioClipLeft;
+    case AppMainMenuCommand::MoveSelectedAudioClipRight:
+        return AppCommandKind::MoveSelectedAudioClipRight;
+    case AppMainMenuCommand::TrimSelectedAudioClipEnd:
+        return AppCommandKind::TrimSelectedAudioClipEnd;
+    case AppMainMenuCommand::ExtendSelectedAudioClipEnd:
+        return AppCommandKind::ExtendSelectedAudioClipEnd;
+    case AppMainMenuCommand::TrimSelectedAudioClipStart:
+        return AppCommandKind::TrimSelectedAudioClipStart;
+    case AppMainMenuCommand::ExtendSelectedAudioClipStart:
+        return AppCommandKind::ExtendSelectedAudioClipStart;
     case AppMainMenuCommand::PlayProject:
         return AppCommandKind::PlayProject;
     case AppMainMenuCommand::StopProject:
@@ -111,6 +185,80 @@ AppCommandDispatchResult dispatchAppCommand(
         return runSimpleCommand(command, handlers.addAudioTrack);
     case AppCommandKind::AddFolderTrack:
         return runSimpleCommand(command, handlers.addFolderTrack);
+    case AppCommandKind::RenameSelectedInstrumentTrack:
+        return runSimpleCommand(command, handlers.renameSelectedInstrumentTrack);
+    case AppCommandKind::DeleteSelectedInstrumentTrack:
+        return runSimpleCommand(command, handlers.deleteSelectedInstrumentTrack);
+    case AppCommandKind::MoveSelectedInstrumentTrackUp:
+        return runSimpleCommand(command, handlers.moveSelectedInstrumentTrackUp);
+    case AppCommandKind::MoveSelectedInstrumentTrackDown:
+        return runSimpleCommand(command, handlers.moveSelectedInstrumentTrackDown);
+    case AppCommandKind::ToggleSelectedInstrumentTrackMute:
+        return runSimpleCommand(command, handlers.toggleSelectedInstrumentTrackMute);
+    case AppCommandKind::ToggleSelectedInstrumentTrackSolo:
+        return runSimpleCommand(command, handlers.toggleSelectedInstrumentTrackSolo);
+    case AppCommandKind::ToggleSelectedInstrumentTrackDisabled:
+        return runSimpleCommand(command, handlers.toggleSelectedInstrumentTrackDisabled);
+    case AppCommandKind::ToggleSelectedInstrumentTrackHidden:
+        return runSimpleCommand(command, handlers.toggleSelectedInstrumentTrackHidden);
+    case AppCommandKind::DeleteSelectedAudioTrack:
+        return runSimpleCommand(command, handlers.deleteSelectedAudioTrack);
+    case AppCommandKind::MoveSelectedAudioTrackUp:
+        return runSimpleCommand(command, handlers.moveSelectedAudioTrackUp);
+    case AppCommandKind::MoveSelectedAudioTrackDown:
+        return runSimpleCommand(command, handlers.moveSelectedAudioTrackDown);
+    case AppCommandKind::ToggleSelectedAudioTrackMute:
+        return runSimpleCommand(command, handlers.toggleSelectedAudioTrackMute);
+    case AppCommandKind::ToggleSelectedAudioTrackSolo:
+        return runSimpleCommand(command, handlers.toggleSelectedAudioTrackSolo);
+    case AppCommandKind::ToggleSelectedAudioTrackDisabled:
+        return runSimpleCommand(command, handlers.toggleSelectedAudioTrackDisabled);
+    case AppCommandKind::ToggleSelectedAudioTrackHidden:
+        return runSimpleCommand(command, handlers.toggleSelectedAudioTrackHidden);
+    case AppCommandKind::RenameSelectedMidiClip:
+        return runSimpleCommand(command, handlers.renameSelectedMidiClip);
+    case AppCommandKind::RenameSelectedAudioClip:
+        return runSimpleCommand(command, handlers.renameSelectedAudioClip);
+    case AppCommandKind::DeleteSelectedMidiClip:
+        return runSimpleCommand(command, handlers.deleteSelectedMidiClip);
+    case AppCommandKind::DeleteSelectedAudioClip:
+        return runSimpleCommand(command, handlers.deleteSelectedAudioClip);
+    case AppCommandKind::DuplicateSelectedMidiClip:
+        return runSimpleCommand(command, handlers.duplicateSelectedMidiClip);
+    case AppCommandKind::DuplicateSelectedAudioClip:
+        return runSimpleCommand(command, handlers.duplicateSelectedAudioClip);
+    case AppCommandKind::SplitSelectedMidiClip:
+        return runSimpleCommand(command, handlers.splitSelectedMidiClip);
+    case AppCommandKind::SplitSelectedAudioClip:
+        return runSimpleCommand(command, handlers.splitSelectedAudioClip);
+    case AppCommandKind::MoveSelectedMidiClipToTargetTrack:
+        return runSimpleCommand(command, handlers.moveSelectedMidiClipToTargetTrack);
+    case AppCommandKind::MoveSelectedAudioClipToTargetTrack:
+        return runSimpleCommand(command, handlers.moveSelectedAudioClipToTargetTrack);
+    case AppCommandKind::MoveSelectedMidiClipLeft:
+        return runSimpleCommand(command, handlers.moveSelectedMidiClipLeft);
+    case AppCommandKind::MoveSelectedMidiClipRight:
+        return runSimpleCommand(command, handlers.moveSelectedMidiClipRight);
+    case AppCommandKind::TrimSelectedMidiClipEnd:
+        return runSimpleCommand(command, handlers.trimSelectedMidiClipEnd);
+    case AppCommandKind::ExtendSelectedMidiClipEnd:
+        return runSimpleCommand(command, handlers.extendSelectedMidiClipEnd);
+    case AppCommandKind::TrimSelectedMidiClipStart:
+        return runSimpleCommand(command, handlers.trimSelectedMidiClipStart);
+    case AppCommandKind::ExtendSelectedMidiClipStart:
+        return runSimpleCommand(command, handlers.extendSelectedMidiClipStart);
+    case AppCommandKind::MoveSelectedAudioClipLeft:
+        return runSimpleCommand(command, handlers.moveSelectedAudioClipLeft);
+    case AppCommandKind::MoveSelectedAudioClipRight:
+        return runSimpleCommand(command, handlers.moveSelectedAudioClipRight);
+    case AppCommandKind::TrimSelectedAudioClipEnd:
+        return runSimpleCommand(command, handlers.trimSelectedAudioClipEnd);
+    case AppCommandKind::ExtendSelectedAudioClipEnd:
+        return runSimpleCommand(command, handlers.extendSelectedAudioClipEnd);
+    case AppCommandKind::TrimSelectedAudioClipStart:
+        return runSimpleCommand(command, handlers.trimSelectedAudioClipStart);
+    case AppCommandKind::ExtendSelectedAudioClipStart:
+        return runSimpleCommand(command, handlers.extendSelectedAudioClipStart);
     case AppCommandKind::PlayProject:
         return runSimpleCommand(command, handlers.playProject);
     case AppCommandKind::StopProject:

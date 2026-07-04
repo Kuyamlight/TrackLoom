@@ -14,6 +14,7 @@ struct AppCommandPaletteSessionStatus {
     std::string query;
     AppCommandPaletteStatus filteredPalette;
     std::optional<std::size_t> highlightedIndex;
+    std::optional<std::size_t> firstVisibleRowIndex;
 };
 
 struct AppCommandPaletteSessionRow {
@@ -28,6 +29,7 @@ struct AppCommandPaletteSessionRow {
 struct AppCommandPaletteSessionView {
     bool open = false;
     std::string query;
+    std::optional<std::size_t> firstVisibleRowIndex;
     std::vector<AppCommandPaletteSessionRow> rows;
     std::string emptyMessage;
 };
@@ -60,6 +62,10 @@ public:
     void moveHighlightPageUp(std::size_t visibleRowCount);
     // 鼠标滚轮使用夹紧语义：正数向下、负数向上，滚到边界后停住，不像上下键那样循环。
     void moveHighlightByWheelSteps(int stepCount);
+    // 只滚动可见窗口，不移动当前高亮命令；正数向下、负数向上，按可见窗口范围夹紧。
+    void scrollVisibleRowsByWheelSteps(int stepCount, std::size_t visibleRowCount);
+    // 鼠标悬停行只移动高亮，不执行命令；disabled、缺失或关闭状态返回 false。
+    bool highlightCommandById(int commandId);
 
 private:
     void refreshFilteredPalette();

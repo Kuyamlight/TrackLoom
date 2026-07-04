@@ -92,4 +92,15 @@ std::optional<int> appCommandIdForShortcut(const AppShortcutChord& chord)
     return std::nullopt;
 }
 
+std::optional<int> appCommandIdForShortcut(
+    const AppShortcutChord& chord,
+    AppShortcutContext context)
+{
+    if (context == AppShortcutContext::CommandPaletteOpen) {
+        return std::nullopt;
+    }
+
+    return appCommandIdForShortcut(chord);
+}
+
 }

@@ -68,6 +68,21 @@ std::optional<std::size_t> lastEnabledIndexAtOrBefore(
     return std::nullopt;
 }
 
+std::size_t clampFirstVisibleRowIndex(
+    std::size_t firstVisibleRowIndex,
+    std::size_t totalRowCount,
+    std::size_t visibleRowCount)
+{
+    if (visibleRowCount == 0 || totalRowCount <= visibleRowCount) {
+        return 0;
+    }
+
+    const auto lastPossibleFirstVisible = totalRowCount - visibleRowCount;
+    return firstVisibleRowIndex > lastPossibleFirstVisible
+        ? lastPossibleFirstVisible
+        : firstVisibleRowIndex;
+}
+
 AppCommandPaletteSelectionResult selectHighlightedItem(const AppCommandPaletteSessionStatus& status)
 {
     if (!status.open || status.filteredPalette.items.empty()) {
@@ -210,6 +225,8 @@ void AppCommandPaletteSession::moveHighlightUp()
 
 void AppCommandPaletteSession::moveHighlightToFirst()
 {
+    status_.firstVisibleRowIndex = std::nullopt;
+
     if (!status_.open || status_.filteredPalette.items.empty()) {
         status_.highlightedIndex = std::nullopt;
         return;
@@ -220,6 +237,8 @@ void AppCommandPaletteSession::moveHighlightToFirst()
 
 void AppCommandPaletteSession::moveHighlightToLast()
 {
+    status_.firstVisibleRowIndex = std::nullopt;
+
     if (!status_.open || status_.filteredPalette.items.empty()) {
         status_.highlightedIndex = std::nullopt;
         return;
@@ -243,6 +262,8 @@ void AppCommandPaletteSession::moveHighlightByWheelSteps(int stepCount)
     if (stepCount == 0) {
         return;
     }
+
+    status_.firstVisibleRowIndex = std::nullopt;
 
     if (!status_.open || status_.filteredPalette.items.empty()) {
         status_.highlightedIndex = std::nullopt;
@@ -294,14 +315,77 @@ void AppCommandPaletteSession::moveHighlightByWheelSteps(int stepCount)
     }
 }
 
+void AppCommandPaletteSession::scrollVisibleRowsByWheelSteps(
+    int stepCount,
+    std::size_t visibleRowCount)
+{
+    if (stepCount == 0 || visibleRowCount == 0) {
+        return;
+    }
+
+    if (!status_.open || status_.filteredPalette.items.empty()) {
+        status_.firstVisibleRowIndex = std::nullopt;
+        return;
+    }
+
+    const auto totalRowCount = status_.filteredPalette.items.size();
+    const auto currentFirstVisible = firstVisibleAppCommandPaletteSessionRowIndex(
+        describeAppCommandPaletteSession(status_),
+        visibleRowCount);
+
+    const auto maxFirstVisible = totalRowCount > visibleRowCount
+        ? totalRowCount - visibleRowCount
+        : std::size_t{0};
+
+    const auto stepMagnitude = stepCount > 0
+        ? static_cast<std::size_t>(stepCount)
+        : static_cast<std::size_t>(-(static_cast<long long>(stepCount)));
+
+    if (stepCount > 0) {
+        status_.firstVisibleRowIndex = stepMagnitude > maxFirstVisible - currentFirstVisible
+            ? maxFirstVisible
+            : currentFirstVisible + stepMagnitude;
+    } else {
+        status_.firstVisibleRowIndex = stepMagnitude > currentFirstVisible
+            ? std::size_t{0}
+            : currentFirstVisible - stepMagnitude;
+    }
+}
+
+bool AppCommandPaletteSession::highlightCommandById(int commandId)
+{
+    if (!status_.open || status_.filteredPalette.items.empty()) {
+        return false;
+    }
+
+    for (std::size_t index = 0; index < status_.filteredPalette.items.size(); ++index) {
+        const auto& item = status_.filteredPalette.items[index];
+        if (item.commandId != commandId) {
+            continue;
+        }
+
+        if (!item.enabled) {
+            return false;
+        }
+
+        status_.highlightedIndex = index;
+        return true;
+    }
+
+    return false;
+}
+
 void AppCommandPaletteSession::refreshFilteredPalette()
 {
     status_.filteredPalette = filterAppCommandPalette(sourcePalette_, status_.query);
     status_.highlightedIndex = firstEnabledIndex(status_.filteredPalette);
+    status_.firstVisibleRowIndex = std::nullopt;
 }
 
 void AppCommandPaletteSession::moveHighlight(bool forward)
 {
+    status_.firstVisibleRowIndex = std::nullopt;
+
     if (!status_.open || status_.filteredPalette.items.empty()) {
         status_.highlightedIndex = std::nullopt;
         return;
@@ -339,6 +423,8 @@ void AppCommandPaletteSession::moveHighlightByPage(bool forward, std::size_t vis
     if (visibleRowCount == 0) {
         return;
     }
+
+    status_.firstVisibleRowIndex = std::nullopt;
 
     if (!status_.open || status_.filteredPalette.items.empty()) {
         status_.highlightedIndex = std::nullopt;
@@ -394,6 +480,7 @@ AppCommandPaletteSessionView describeAppCommandPaletteSession(
     AppCommandPaletteSessionView view;
     view.open = status.open;
     view.query = status.query;
+    view.firstVisibleRowIndex = status.firstVisibleRowIndex;
 
     if (!status.open) {
         return view;
@@ -442,6 +529,13 @@ std::size_t firstVisibleAppCommandPaletteSessionRowIndex(
 {
     if (!view.open || visibleRowCount == 0 || view.rows.size() <= visibleRowCount) {
         return 0;
+    }
+
+    if (view.firstVisibleRowIndex.has_value()) {
+        return clampFirstVisibleRowIndex(
+            view.firstVisibleRowIndex.value(),
+            view.rows.size(),
+            visibleRowCount);
     }
 
     for (std::size_t index = 0; index < view.rows.size(); ++index) {
@@ -501,17 +595,28 @@ std::string describeAppCommandPaletteVisibleRowsRange(
     const auto firstVisibleNumber = visibleRows.firstRowIndex + 1;
     const auto lastVisibleNumber = visibleRows.firstRowIndex + visibleRows.rows.size();
 
+    std::string text;
+    if (visibleRows.hasPreviousRows) {
+        text += "↑ ";
+    }
+
     if (firstVisibleNumber == lastVisibleNumber) {
-        return std::to_string(firstVisibleNumber)
+        text += std::to_string(firstVisibleNumber)
+            + " / "
+            + std::to_string(visibleRows.totalRowCount);
+    } else {
+        text += std::to_string(firstVisibleNumber)
+            + "-"
+            + std::to_string(lastVisibleNumber)
             + " / "
             + std::to_string(visibleRows.totalRowCount);
     }
 
-    return std::to_string(firstVisibleNumber)
-        + "-"
-        + std::to_string(lastVisibleNumber)
-        + " / "
-        + std::to_string(visibleRows.totalRowCount);
+    if (visibleRows.hasNextRows) {
+        text += " ↓";
+    }
+
+    return text;
 }
 
 }
