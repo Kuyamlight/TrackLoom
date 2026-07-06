@@ -28,18 +28,11 @@ bool sameShortcutChord(const AppShortcutChord& left, const AppShortcutChord& rig
         && left.alt == right.alt;
 }
 
-bool isSupportedShortcutChord(const AppShortcutChord& chord)
-{
-    // 首期只接受“主修饰键 + 字母”的应用内快捷键。
-    // Alt 组合常被系统菜单占用，先显式拒绝，避免以后出现平台行为差异。
-    return chord.primaryModifier && !chord.alt && chord.key != '\0';
-}
-
 std::optional<int> commandIdForShortcutInBindings(
     const AppShortcutChord& chord,
     const std::vector<AppShortcutBinding>& bindings)
 {
-    if (!isSupportedShortcutChord(chord)) {
+    if (!isSupportedAppShortcutChord(chord)) {
         return std::nullopt;
     }
 
@@ -85,6 +78,13 @@ std::vector<AppShortcutBinding> defaultAppShortcutBindings()
     };
 }
 
+bool isSupportedAppShortcutChord(const AppShortcutChord& chord)
+{
+    // 首期只接受“主修饰键 + 字母”的应用内快捷键。
+    // Alt 组合常被系统菜单占用，先显式拒绝，避免以后出现平台行为差异。
+    return chord.primaryModifier && !chord.alt && chord.key != '\0';
+}
+
 AppShortcutCustomizationResult customizeAppShortcutBindings(
     const std::vector<AppShortcutBinding>& customBindings)
 {
@@ -92,7 +92,7 @@ AppShortcutCustomizationResult customizeAppShortcutBindings(
     result.bindings = defaultAppShortcutBindings();
 
     for (const auto& customBinding : customBindings) {
-        if (customBinding.commandId <= 0 || !isSupportedShortcutChord(customBinding.chord)) {
+        if (customBinding.commandId <= 0 || !isSupportedAppShortcutChord(customBinding.chord)) {
             continue;
         }
 

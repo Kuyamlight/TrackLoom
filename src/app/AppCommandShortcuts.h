@@ -44,6 +44,10 @@ enum class AppShortcutContext {
 // 它只描述快捷键和 command id 的关系，不执行命令，也不读取菜单启用状态。
 std::vector<AppShortcutBinding> defaultAppShortcutBindings();
 
+// isSupportedAppShortcutChord 只判断当前应用层愿意接管的快捷键形态。
+// 设置加载、键盘触发和命令面板标签应共用它，避免本地设置接受运行时无法触发的组合键。
+bool isSupportedAppShortcutChord(const AppShortcutChord& chord);
+
 // customizeAppShortcutBindings 从默认表生成活动表，再应用用户覆盖。
 // 合法且不冲突的覆盖会移除同一命令的旧绑定；冲突覆盖会被记录并保留原绑定。
 AppShortcutCustomizationResult customizeAppShortcutBindings(

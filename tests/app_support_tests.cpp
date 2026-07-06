@@ -3,6 +3,7 @@
 #include "AppCommandPalette.h"
 #include "AppCommandPaletteSession.h"
 #include "AppCommandShortcuts.h"
+#include "AppShortcutSettings.h"
 #include "AppProjectFileActions.h"
 #include "AppRecentProjects.h"
 #include "AppMidiClipActions.h"
@@ -24,6 +25,7 @@
 #endif
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -2913,6 +2915,115 @@ void commandShortcutCustomizationAddsBindingForCommandWithoutDefault()
         "shortcut customization should allow a non-conflicting binding for a command without a default chord");
     require(duplicateMidiClip.has_value() && duplicateMidiClip.value() == duplicateMidiClipId,
         "shortcut customization should add accepted bindings for commands that have no default shortcut");
+}
+
+void shortcutSettingsSaveAndLoadCustomBindings()
+{
+    removeTestWorkspace();
+    const auto settingsPath = testWorkspace() / "settings" / "shortcuts.txt";
+    const auto saveProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject);
+
+    const std::vector<trackloom::AppShortcutBinding> customBindings = {
+        {{ 'r', true, true, false }, saveProjectId}
+    };
+
+    require(trackloom::saveAppShortcutCustomBindings(customBindings, settingsPath),
+        "shortcut settings should save custom bindings to a local UTF-8 text file");
+    require(std::filesystem::exists(settingsPath),
+        "saving shortcut settings should create the settings file");
+
+    const auto loadedBindings = trackloom::loadAppShortcutCustomBindings(settingsPath);
+    const auto customized = trackloom::customizeAppShortcutBindings(loadedBindings);
+    const auto oldSave = trackloom::appCommandIdForShortcut({ 's', true, false, false }, customized.bindings);
+    const auto newSave = trackloom::appCommandIdForShortcut({ 'r', true, true, false }, customized.bindings);
+
+    require(loadedBindings.size() == 1,
+        "shortcut settings should reload the saved custom binding");
+    require(loadedBindings[0].commandId == saveProjectId,
+        "shortcut settings should preserve the saved command id");
+    require(loadedBindings[0].chord.key == 'r'
+            && loadedBindings[0].chord.primaryModifier
+            && loadedBindings[0].chord.shift
+            && !loadedBindings[0].chord.alt,
+        "shortcut settings should preserve the saved shortcut chord");
+    require(!oldSave.has_value(),
+        "loaded shortcut customization should replace the command's old default binding");
+    require(newSave.has_value() && newSave.value() == saveProjectId,
+        "loaded shortcut customization should activate the saved custom binding");
+}
+
+void shortcutSettingsLoadMissingFileAsEmptyBindings()
+{
+    removeTestWorkspace();
+    const auto missingPath = testWorkspace() / "missing" / "shortcuts.txt";
+
+    const auto loadedBindings = trackloom::loadAppShortcutCustomBindings(missingPath);
+    const auto customized = trackloom::loadAppShortcutCustomization(missingPath);
+    const auto saveProject = trackloom::appCommandIdForShortcut({ 's', true, false, false }, customized.bindings);
+
+    require(loadedBindings.empty(),
+        "missing shortcut settings should load as an empty custom binding list");
+    require(customized.conflicts.empty(),
+        "missing shortcut settings should not invent shortcut conflicts");
+    require(saveProject.has_value()
+            && saveProject.value() == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject),
+        "missing shortcut settings should keep default shortcuts active");
+}
+
+void shortcutSettingsReportsLoadedConflictsThroughCustomization()
+{
+    removeTestWorkspace();
+    const auto settingsPath = testWorkspace() / "settings" / "shortcut-conflict.txt";
+    const auto saveProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject);
+    const auto openProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenProject);
+
+    require(trackloom::saveAppShortcutCustomBindings({
+                {{ 'o', true, false, false }, saveProjectId}
+            },
+                settingsPath),
+        "conflicting shortcut settings should still save so load can report the conflict");
+
+    const auto customized = trackloom::loadAppShortcutCustomization(settingsPath);
+    const auto openProject = trackloom::appCommandIdForShortcut({ 'o', true, false, false }, customized.bindings);
+    const auto saveProject = trackloom::appCommandIdForShortcut({ 's', true, false, false }, customized.bindings);
+
+    require(customized.conflicts.size() == 1,
+        "loaded shortcut settings should surface conflicts through the normal customization result");
+    require(customized.conflicts[0].existingCommandId == openProjectId,
+        "loaded shortcut conflict should identify the existing default command");
+    require(customized.conflicts[0].requestedCommandId == saveProjectId,
+        "loaded shortcut conflict should identify the requested custom command");
+    require(openProject.has_value() && openProject.value() == openProjectId,
+        "conflicting loaded shortcut should keep the original owner active");
+    require(saveProject.has_value() && saveProject.value() == saveProjectId,
+        "conflicting loaded shortcut should keep the rejected command's old default binding active");
+}
+
+void shortcutSettingsIgnoreMalformedOrUnsupportedRows()
+{
+    removeTestWorkspace();
+    const auto settingsPath = testWorkspace() / "settings" / "shortcut-invalid.txt";
+    std::filesystem::create_directories(settingsPath.parent_path());
+
+    const auto duplicateMidiClipId = trackloom::appMainMenuCommandId(
+        trackloom::AppMainMenuCommand::DuplicateSelectedMidiClip);
+    std::ofstream output(settingsPath, std::ios::binary | std::ios::trunc);
+    output << "# TrackLoom shortcut settings v1\n";
+    output << "not-a-valid-row\n";
+    output << duplicateMidiClipId << " d 0 1 0\n";
+    output << duplicateMidiClipId << " d 1 1 0\n";
+    output.close();
+
+    const auto loadedBindings = trackloom::loadAppShortcutCustomBindings(settingsPath);
+    const auto customized = trackloom::customizeAppShortcutBindings(loadedBindings);
+    const auto duplicateMidiClip = trackloom::appCommandIdForShortcut(
+        { 'd', true, true, false },
+        customized.bindings);
+
+    require(loadedBindings.size() == 1,
+        "shortcut settings should ignore malformed rows and unsupported chords while keeping valid rows");
+    require(duplicateMidiClip.has_value() && duplicateMidiClip.value() == duplicateMidiClipId,
+        "shortcut settings should keep valid rows after ignoring invalid settings rows");
 }
 
 void trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty()
@@ -9499,6 +9610,10 @@ int main()
     commandShortcutCustomizationReplacesDefaultBinding();
     commandShortcutCustomizationRejectsConflictingBinding();
     commandShortcutCustomizationAddsBindingForCommandWithoutDefault();
+    shortcutSettingsSaveAndLoadCustomBindings();
+    shortcutSettingsLoadMissingFileAsEmptyBindings();
+    shortcutSettingsReportsLoadedConflictsThroughCustomization();
+    shortcutSettingsIgnoreMalformedOrUnsupportedRows();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionCreateCanBeUndoneAndRedoneThroughSessionHistory();
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();

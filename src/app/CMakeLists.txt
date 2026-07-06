@@ -4,6 +4,7 @@ add_library(trackloom_app_support STATIC
     AppCommandPalette.cpp
     AppCommandPaletteSession.cpp
     AppCommandShortcuts.cpp
+    AppShortcutSettings.cpp
     AppMainMenu.cpp
     AppMidiClipActions.cpp
     AppMidiNoteActions.cpp
