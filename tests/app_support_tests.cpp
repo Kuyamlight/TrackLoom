@@ -4,6 +4,7 @@
 #include "AppCommandPaletteSession.h"
 #include "AppCommandShortcuts.h"
 #include "AppShortcutSettings.h"
+#include "AppShortcutStatus.h"
 #include "AppProjectFileActions.h"
 #include "AppRecentProjects.h"
 #include "AppMidiClipActions.h"
@@ -84,6 +85,19 @@ const trackloom::AppCommandPaletteItem* findPaletteItem(
     for (const auto& item : palette.items) {
         if (item.commandId == commandId) {
             return &item;
+        }
+    }
+
+    return nullptr;
+}
+
+const trackloom::AppShortcutStatusRow* findShortcutStatusRow(
+    const trackloom::AppShortcutStatus& status,
+    int commandId)
+{
+    for (const auto& row : status.rows) {
+        if (row.commandId == commandId) {
+            return &row;
         }
     }
 
@@ -3081,6 +3095,82 @@ void shortcutSettingsIgnoreMalformedOrUnsupportedRows()
         "shortcut settings should ignore malformed rows and unsupported chords while keeping valid rows");
     require(duplicateMidiClip.has_value() && duplicateMidiClip.value() == duplicateMidiClipId,
         "shortcut settings should keep valid rows after ignoring invalid settings rows");
+}
+
+void shortcutStatusDescribesActiveRowsAndSummary()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Shortcut Status");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+    const auto saveProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject);
+    const auto openProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenProject);
+    const std::vector<trackloom::AppShortcutBinding> customBindings = {
+        {{ 'r', true, true, false }, saveProjectId}
+    };
+    const auto customized = trackloom::customizeAppShortcutBindings(customBindings);
+
+    const auto status = trackloom::describeAppShortcutStatus(
+        trackloom::describeAppMainMenu(session, playback, recent),
+        customized,
+        customBindings);
+    const auto saveProject = findShortcutStatusRow(status, saveProjectId);
+    const auto openProject = findShortcutStatusRow(status, openProjectId);
+
+    require(status.customBindingCount == 1,
+        "shortcut status should report how many custom rows were loaded from settings");
+    require(status.activeCustomBindingCount == 1,
+        "shortcut status should count accepted custom shortcut rows separately from raw settings rows");
+    require(status.conflicts.empty(),
+        "shortcut status should expose an empty conflict list when custom bindings are accepted");
+    require(status.summary.find("1 个自定义快捷键") != std::string::npos
+            && status.summary.find("0 个冲突") != std::string::npos,
+        "shortcut status summary should be ready for a settings surface to display");
+    require(saveProject != nullptr && saveProject->shortcutLabel == "Ctrl+Shift+R",
+        "shortcut status should show the active custom shortcut label for the affected command");
+    require(saveProject != nullptr && saveProject->customized,
+        "shortcut status should mark commands whose active shortcut came from user settings");
+    require(openProject != nullptr && openProject->shortcutLabel == "Ctrl+O" && !openProject->customized,
+        "shortcut status should keep unrelated default shortcuts visible and unmarked");
+}
+
+void shortcutStatusReportsConflictsWithMenuLabels()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Shortcut Conflict Status");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+    const auto saveProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject);
+    const auto openProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenProject);
+    const std::vector<trackloom::AppShortcutBinding> customBindings = {
+        {{ 'o', true, false, false }, saveProjectId}
+    };
+    const auto customized = trackloom::customizeAppShortcutBindings(customBindings);
+
+    const auto status = trackloom::describeAppShortcutStatus(
+        trackloom::describeAppMainMenu(session, playback, recent),
+        customized,
+        customBindings);
+    const auto saveProject = findShortcutStatusRow(status, saveProjectId);
+
+    require(status.customBindingCount == 1,
+        "shortcut status should keep the raw custom binding count even when a row conflicts");
+    require(status.activeCustomBindingCount == 0,
+        "conflicting custom bindings should not be counted as active custom shortcuts");
+    require(status.conflicts.size() == 1,
+        "shortcut status should expose conflicts for the future settings UI");
+    require(status.summary.find("1 个冲突") != std::string::npos,
+        "shortcut status summary should mention loaded shortcut conflicts");
+    require(status.conflicts[0].shortcutLabel == "Ctrl+O",
+        "shortcut conflict status should show the chord that caused the conflict");
+    require(status.conflicts[0].existingCommandId == openProjectId
+            && status.conflicts[0].existingCommandLabel == "打开工程...",
+        "shortcut conflict status should name the command that already owns the chord");
+    require(status.conflicts[0].requestedCommandId == saveProjectId
+            && status.conflicts[0].requestedCommandLabel == "保存",
+        "shortcut conflict status should name the command requested by user settings");
+    require(saveProject != nullptr && saveProject->shortcutLabel == "Ctrl+S" && !saveProject->customized,
+        "conflicting custom shortcuts should leave the rejected command on its default binding");
 }
 
 void trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty()
@@ -9673,6 +9763,8 @@ int main()
     shortcutSettingsLoadMissingFileAsEmptyBindings();
     shortcutSettingsReportsLoadedConflictsThroughCustomization();
     shortcutSettingsIgnoreMalformedOrUnsupportedRows();
+    shortcutStatusDescribesActiveRowsAndSummary();
+    shortcutStatusReportsConflictsWithMenuLabels();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionCreateCanBeUndoneAndRedoneThroughSessionHistory();
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
