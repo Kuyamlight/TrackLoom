@@ -60,7 +60,7 @@ AppCommandPaletteStatus filterAppCommandPalette(
     const std::string& query);
 
 // addAppCommandPaletteShortcutLabels 返回带快捷键显示文本的新快照。
-// 它不注册快捷键，也不执行命令；只是把已有默认快捷键表映射到 command id。
+// 它不注册快捷键，也不执行命令；只是把已有活动快捷键表映射到 command id。
 AppCommandPaletteStatus addAppCommandPaletteShortcutLabels(
     const AppCommandPaletteStatus& palette,
     const std::vector<AppShortcutBinding>& shortcutBindings);

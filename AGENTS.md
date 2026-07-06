@@ -700,3 +700,8 @@ TrackLoom 应支持：
   - 根本原因：默认快捷键由代码版本维护，用户覆盖属于本机应用偏好；如果保存完整活动表，会在升级后遮住新增默认快捷键；如果设置加载接受运行时无法触发的组合键，界面会显示但按键无效。
   - 采用的解决方式：新增 `AppShortcutSettings`，只保存用户覆盖项到 UTF-8 文本设置文件；缺失文件、坏行和当前不支持的 chord 会被忽略；加载后继续调用 `customizeAppShortcutBindings` 生成活动表和冲突列表。CTest 覆盖保存加载、缺失文件、冲突加载和坏行忽略。
   - 后续规则：快捷键设置持久化不得写入 `.trackloom` 工程文件；设置文件只保存用户覆盖，不复制默认表；加载入口必须复用 `isSupportedAppShortcutChord` 和 `customizeAppShortcutBindings`，冲突提示由统一结果驱动。
+- 接入运行态快捷键设置时：
+  - 触发场景：自定义快捷键设置已经能保存和加载后，JUCE 桌面壳仍直接使用默认表进行键盘分发和命令面板标签展示。
+  - 根本原因：如果键盘触发、命令面板标签和上下文抑制分别选择默认表或活动表，用户会看到一个快捷键，但实际触发另一个快捷键；命令面板打开时也可能漏掉对自定义快捷键的全局抑制。
+  - 采用的解决方式：启动时通过 `loadAppShortcutCustomization` 从本机 `TrackLoom/shortcuts.txt` 生成活动表；新增 `appCommandIdForShortcut(chord, context, bindings)`，让上下文抑制规则套到同一份活动表；JUCE 键盘分发和命令面板标签都读取 `shortcutCustomization_.bindings`。CTest 覆盖活动表标签、主窗口自定义快捷键分发和命令面板打开时自定义快捷键抑制。
+  - 后续规则：新增快捷键消费者、设置界面或菜单快捷键展示时，必须读取同一份活动绑定表；命令面板打开时的全局快捷键抑制必须继续覆盖默认和自定义快捷键。

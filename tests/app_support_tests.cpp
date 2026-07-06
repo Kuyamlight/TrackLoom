@@ -1498,6 +1498,35 @@ void commandPaletteAddsShortcutLabelsForVisibleCommands()
         "command palette should show both registered shortcuts for opening itself");
 }
 
+void commandPaletteUsesActiveShortcutBindingsForLabels()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Palette Active Shortcut Snapshot");
+    trackloom::AppPlaybackController playback;
+    trackloom::AppRecentProjects recent;
+    const auto saveProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject);
+
+    const auto customized = trackloom::customizeAppShortcutBindings({
+        {{ 'r', true, true, false }, saveProjectId}
+    });
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto palette = trackloom::addAppCommandPaletteShortcutLabels(
+        trackloom::describeAppCommandPalette(menu),
+        customized.bindings);
+
+    const auto saveProject = findPaletteItem(palette, saveProjectId);
+    const auto openProject = findPaletteItem(
+        palette,
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenProject));
+
+    require(customized.conflicts.empty(),
+        "accepted shortcut customization should be usable by command palette labels");
+    require(saveProject != nullptr && saveProject->shortcutLabel == "Ctrl+Shift+R",
+        "command palette should show the active custom shortcut instead of the old default");
+    require(openProject != nullptr && openProject->shortcutLabel == "Ctrl+O",
+        "command palette should keep unrelated default shortcut labels when using the active table");
+}
+
 void commandPaletteMergesMultipleShortcutLabelsForOneCommand()
 {
     trackloom::AppProjectSession session;
@@ -2849,6 +2878,34 @@ void commandShortcutsAreSuppressedWhileCommandPaletteIsOpen()
         "command palette context should suppress global save shortcuts while the search box is active");
     require(!reopenPaletteWhileOpen.has_value(),
         "command palette context should suppress global palette-open shortcuts instead of rebuilding the open session");
+}
+
+void commandShortcutsUseCustomBindingsWithContext()
+{
+    const auto saveProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject);
+    const auto customized = trackloom::customizeAppShortcutBindings({
+        {{ 'r', true, true, false }, saveProjectId}
+    });
+
+    const auto oldSave = trackloom::appCommandIdForShortcut(
+        { 's', true, false, false },
+        trackloom::AppShortcutContext::MainWindow,
+        customized.bindings);
+    const auto newSave = trackloom::appCommandIdForShortcut(
+        { 'r', true, true, false },
+        trackloom::AppShortcutContext::MainWindow,
+        customized.bindings);
+    const auto newSaveWhilePaletteOpen = trackloom::appCommandIdForShortcut(
+        { 'r', true, true, false },
+        trackloom::AppShortcutContext::CommandPaletteOpen,
+        customized.bindings);
+
+    require(!oldSave.has_value(),
+        "context-aware shortcut lookup should respect active bindings and remove replaced defaults");
+    require(newSave.has_value() && newSave.value() == saveProjectId,
+        "context-aware shortcut lookup should trigger accepted custom bindings in the main window");
+    require(!newSaveWhilePaletteOpen.has_value(),
+        "command palette context should suppress active custom shortcuts while the search box is active");
 }
 
 void commandShortcutCustomizationReplacesDefaultBinding()
@@ -9567,6 +9624,7 @@ int main()
     commandPaletteActivationDoesNotDispatchDisabledOrMissingCommands();
     commandPaletteActivationReportsDispatchFailure();
     commandPaletteAddsShortcutLabelsForVisibleCommands();
+    commandPaletteUsesActiveShortcutBindingsForLabels();
     commandPaletteMergesMultipleShortcutLabelsForOneCommand();
     commandPaletteFiltersByShortcutLabel();
     commandPaletteFiltersByMergedShortcutLabel();
@@ -9607,6 +9665,7 @@ int main()
     commandShortcutsMapCommandPaletteKeysToToolCommand();
     commandShortcutsIgnoreUnregisteredOrAmbiguousChords();
     commandShortcutsAreSuppressedWhileCommandPaletteIsOpen();
+    commandShortcutsUseCustomBindingsWithContext();
     commandShortcutCustomizationReplacesDefaultBinding();
     commandShortcutCustomizationRejectsConflictingBinding();
     commandShortcutCustomizationAddsBindingForCommandWithoutDefault();

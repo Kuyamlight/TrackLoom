@@ -2,6 +2,7 @@
 #include "AppCommandDispatcher.h"
 #include "AppCommandPaletteSession.h"
 #include "AppCommandShortcuts.h"
+#include "AppShortcutSettings.h"
 #include "AppMainMenu.h"
 #include "AppMidiClipActions.h"
 #include "AppMidiNoteActions.h"
@@ -63,6 +64,14 @@ std::filesystem::path appRecentProjectsSettingsPath()
     const auto settingsFile = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
         .getChildFile(toJuceString("TrackLoom"))
         .getChildFile(toJuceString("recent-projects.txt"));
+    return juceFileToPath(settingsFile);
+}
+
+std::filesystem::path appShortcutSettingsPath()
+{
+    const auto settingsFile = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+        .getChildFile(toJuceString("TrackLoom"))
+        .getChildFile(toJuceString("shortcuts.txt"));
     return juceFileToPath(settingsFile);
 }
 
@@ -160,6 +169,8 @@ public:
         : titleChanged_(std::move(titleChanged))
         , recentProjectsSettingsPath_(appRecentProjectsSettingsPath())
         , recentProjects_(trackloom::loadAppRecentProjects(recentProjectsSettingsPath_))
+        , shortcutSettingsPath_(appShortcutSettingsPath())
+        , shortcutCustomization_(trackloom::loadAppShortcutCustomization(shortcutSettingsPath_))
         , menuBar_(this)
     {
         // 首屏现在绑定真实 AppProjectSession；后续文件选择器和时间线 UI 继续沿着这个会话入口扩展。
@@ -507,6 +518,9 @@ public:
 
         // MainComponent 主动获取键盘焦点后，Space 键才能先交给 keyPressed 处理。
         setWantsKeyboardFocus(true);
+        if (!shortcutCustomization_.conflicts.empty()) {
+            lastActionMessage_ = "快捷键设置：检测到冲突，已保留默认绑定，请在后续设置界面中修正。";
+        }
         refreshFromSession();
         setSize(1040, 920);
     }
@@ -805,7 +819,8 @@ public:
             : trackloom::AppShortcutContext::MainWindow;
         if (const auto commandId = trackloom::appCommandIdForShortcut(
                 appShortcutChordFromKeyPress(key),
-                shortcutContext)) {
+                shortcutContext,
+                shortcutCustomization_.bindings)) {
             return dispatchAppCommandFromUi(commandId.value());
         }
 
@@ -968,7 +983,7 @@ private:
     {
         const auto palette = trackloom::addAppCommandPaletteShortcutLabels(
             trackloom::describeAppCommandPalette(describeCurrentMainMenu()),
-            trackloom::defaultAppShortcutBindings());
+            shortcutCustomization_.bindings);
 
         // 菜单、快捷键和工具入口都在这里汇合，避免可见浮层自己复制命令列表规则。
         commandPaletteSession_.open(palette);
@@ -2772,6 +2787,8 @@ private:
     std::unique_ptr<juce::FileChooser> fileChooser_;
     std::filesystem::path recentProjectsSettingsPath_;
     trackloom::AppRecentProjects recentProjects_;
+    std::filesystem::path shortcutSettingsPath_;
+    trackloom::AppShortcutCustomizationResult shortcutCustomization_;
     trackloom::AppCommandPaletteSession commandPaletteSession_;
     // 这个数组保存“当前屏幕上第 N 行对应哪个命令”。
     // 真正执行前仍会让 AppCommandPaletteSession 重新确认该命令仍在当前过滤结果里。

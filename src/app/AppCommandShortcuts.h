@@ -72,4 +72,11 @@ std::optional<int> appCommandIdForShortcut(
     const AppShortcutChord& chord,
     AppShortcutContext context);
 
+// 这个重载把上下文隔离规则套到指定活动表上。
+// 键盘分发和命令面板标签都应传入同一份 bindings，避免显示与实际触发不一致。
+std::optional<int> appCommandIdForShortcut(
+    const AppShortcutChord& chord,
+    AppShortcutContext context,
+    const std::vector<AppShortcutBinding>& bindings);
+
 }

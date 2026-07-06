@@ -159,11 +159,19 @@ std::optional<int> appCommandIdForShortcut(
     const AppShortcutChord& chord,
     AppShortcutContext context)
 {
+    return appCommandIdForShortcut(chord, context, defaultAppShortcutBindings());
+}
+
+std::optional<int> appCommandIdForShortcut(
+    const AppShortcutChord& chord,
+    AppShortcutContext context,
+    const std::vector<AppShortcutBinding>& bindings)
+{
     if (context == AppShortcutContext::CommandPaletteOpen) {
         return std::nullopt;
     }
 
-    return appCommandIdForShortcut(chord);
+    return appCommandIdForShortcut(chord, bindings);
 }
 
 }
