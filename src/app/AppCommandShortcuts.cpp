@@ -2,6 +2,7 @@
 
 #include "AppMainMenu.h"
 
+#include <algorithm>
 #include <cctype>
 #include <sstream>
 
@@ -27,6 +28,44 @@ bool sameShortcutChord(const AppShortcutChord& left, const AppShortcutChord& rig
         && left.alt == right.alt;
 }
 
+bool isSupportedShortcutChord(const AppShortcutChord& chord)
+{
+    // 首期只接受“主修饰键 + 字母”的应用内快捷键。
+    // Alt 组合常被系统菜单占用，先显式拒绝，避免以后出现平台行为差异。
+    return chord.primaryModifier && !chord.alt && chord.key != '\0';
+}
+
+std::optional<int> commandIdForShortcutInBindings(
+    const AppShortcutChord& chord,
+    const std::vector<AppShortcutBinding>& bindings)
+{
+    if (!isSupportedShortcutChord(chord)) {
+        return std::nullopt;
+    }
+
+    for (const auto& binding : bindings) {
+        if (sameShortcutChord(chord, binding.chord)) {
+            return binding.commandId;
+        }
+    }
+
+    return std::nullopt;
+}
+
+void removeBindingsForCommand(std::vector<AppShortcutBinding>& bindings, int commandId)
+{
+    // 一个命令可能有多个默认快捷键，例如命令面板同时支持 Ctrl+K 和 Ctrl+Shift+P。
+    // 用户覆盖该命令时，先移除旧绑定，避免同一命令留下多份来源不清的快捷键。
+    bindings.erase(
+        std::remove_if(
+            bindings.begin(),
+            bindings.end(),
+            [commandId](const AppShortcutBinding& binding) {
+                return binding.commandId == commandId;
+            }),
+        bindings.end());
+}
+
 }
 
 std::vector<AppShortcutBinding> defaultAppShortcutBindings()
@@ -44,6 +83,34 @@ std::vector<AppShortcutBinding> defaultAppShortcutBindings()
         {{ 'k', true, false, false }, appMainMenuCommandId(AppMainMenuCommand::OpenCommandPalette)},
         {{ 'p', true, true, false }, appMainMenuCommandId(AppMainMenuCommand::OpenCommandPalette)}
     };
+}
+
+AppShortcutCustomizationResult customizeAppShortcutBindings(
+    const std::vector<AppShortcutBinding>& customBindings)
+{
+    AppShortcutCustomizationResult result;
+    result.bindings = defaultAppShortcutBindings();
+
+    for (const auto& customBinding : customBindings) {
+        if (customBinding.commandId <= 0 || !isSupportedShortcutChord(customBinding.chord)) {
+            continue;
+        }
+
+        const auto existingCommandId = commandIdForShortcutInBindings(customBinding.chord, result.bindings);
+        if (existingCommandId.has_value() && existingCommandId.value() != customBinding.commandId) {
+            result.conflicts.push_back({
+                customBinding.chord,
+                existingCommandId.value(),
+                customBinding.commandId
+            });
+            continue;
+        }
+
+        removeBindingsForCommand(result.bindings, customBinding.commandId);
+        result.bindings.push_back(customBinding);
+    }
+
+    return result;
 }
 
 std::string describeAppShortcutChord(const AppShortcutChord& chord)
@@ -78,18 +145,14 @@ std::string describeAppShortcutChord(const AppShortcutChord& chord)
 
 std::optional<int> appCommandIdForShortcut(const AppShortcutChord& chord)
 {
-    // 第一批快捷键只接受“主修饰键 + 字母”，Alt 组合保留给系统菜单或未来明确设计。
-    if (!chord.primaryModifier || chord.alt || chord.key == '\0') {
-        return std::nullopt;
-    }
+    return appCommandIdForShortcut(chord, defaultAppShortcutBindings());
+}
 
-    for (const auto& binding : defaultAppShortcutBindings()) {
-        if (sameShortcutChord(chord, binding.chord)) {
-            return binding.commandId;
-        }
-    }
-
-    return std::nullopt;
+std::optional<int> appCommandIdForShortcut(
+    const AppShortcutChord& chord,
+    const std::vector<AppShortcutBinding>& bindings)
+{
+    return commandIdForShortcutInBindings(chord, bindings);
 }
 
 std::optional<int> appCommandIdForShortcut(

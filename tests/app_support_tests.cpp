@@ -2849,6 +2849,72 @@ void commandShortcutsAreSuppressedWhileCommandPaletteIsOpen()
         "command palette context should suppress global palette-open shortcuts instead of rebuilding the open session");
 }
 
+void commandShortcutCustomizationReplacesDefaultBinding()
+{
+    const auto saveProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject);
+    const auto openProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenProject);
+
+    const auto customized = trackloom::customizeAppShortcutBindings({
+        {{ 'r', true, true, false }, saveProjectId}
+    });
+
+    const auto oldSave = trackloom::appCommandIdForShortcut({ 's', true, false, false }, customized.bindings);
+    const auto newSave = trackloom::appCommandIdForShortcut({ 'r', true, true, false }, customized.bindings);
+    const auto openProject = trackloom::appCommandIdForShortcut({ 'o', true, false, false }, customized.bindings);
+
+    require(customized.conflicts.empty(),
+        "accepted shortcut customization should not report conflicts");
+    require(!oldSave.has_value(),
+        "accepted shortcut customization should remove the old binding for the same command");
+    require(newSave.has_value() && newSave.value() == saveProjectId,
+        "accepted shortcut customization should map the new chord to the requested command");
+    require(openProject.has_value() && openProject.value() == openProjectId,
+        "shortcut customization should keep unrelated default bindings active");
+}
+
+void commandShortcutCustomizationRejectsConflictingBinding()
+{
+    const auto saveProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject);
+    const auto openProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenProject);
+
+    const auto customized = trackloom::customizeAppShortcutBindings({
+        {{ 'o', true, false, false }, saveProjectId}
+    });
+
+    const auto openProject = trackloom::appCommandIdForShortcut({ 'o', true, false, false }, customized.bindings);
+    const auto saveProject = trackloom::appCommandIdForShortcut({ 's', true, false, false }, customized.bindings);
+
+    require(customized.conflicts.size() == 1,
+        "conflicting shortcut customization should report exactly one rejected binding");
+    require(customized.conflicts[0].existingCommandId == openProjectId,
+        "shortcut conflict should identify the command that already owns the chord");
+    require(customized.conflicts[0].requestedCommandId == saveProjectId,
+        "shortcut conflict should identify the command that requested the chord");
+    require(openProject.has_value() && openProject.value() == openProjectId,
+        "conflicting shortcut customization should keep the original chord owner active");
+    require(saveProject.has_value() && saveProject.value() == saveProjectId,
+        "conflicting shortcut customization should keep the rejected command's old binding active");
+}
+
+void commandShortcutCustomizationAddsBindingForCommandWithoutDefault()
+{
+    const auto duplicateMidiClipId = trackloom::appMainMenuCommandId(
+        trackloom::AppMainMenuCommand::DuplicateSelectedMidiClip);
+
+    const auto customized = trackloom::customizeAppShortcutBindings({
+        {{ 'd', true, true, false }, duplicateMidiClipId}
+    });
+
+    const auto duplicateMidiClip = trackloom::appCommandIdForShortcut(
+        { 'd', true, true, false },
+        customized.bindings);
+
+    require(customized.conflicts.empty(),
+        "shortcut customization should allow a non-conflicting binding for a command without a default chord");
+    require(duplicateMidiClip.has_value() && duplicateMidiClip.value() == duplicateMidiClipId,
+        "shortcut customization should add accepted bindings for commands that have no default shortcut");
+}
+
 void trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty()
 {
     removeTestWorkspace();
@@ -9430,6 +9496,9 @@ int main()
     commandShortcutsMapCommandPaletteKeysToToolCommand();
     commandShortcutsIgnoreUnregisteredOrAmbiguousChords();
     commandShortcutsAreSuppressedWhileCommandPaletteIsOpen();
+    commandShortcutCustomizationReplacesDefaultBinding();
+    commandShortcutCustomizationRejectsConflictingBinding();
+    commandShortcutCustomizationAddsBindingForCommandWithoutDefault();
     trackActionCreatesDefaultInstrumentTrackAndMarksSessionDirty();
     trackActionCreateCanBeUndoneAndRedoneThroughSessionHistory();
     trackActionNamesRepeatedDefaultInstrumentTracksByProjectOrder();
