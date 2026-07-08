@@ -63,8 +63,9 @@ enum class AppMainMenuCommand {
     ExtendSelectedAudioClipStart = 1270,
     MoveSelectedMidiClipToTargetTrack = 1271,
     MoveSelectedAudioClipToTargetTrack = 1272,
-    // 命令面板属于工具入口；它打开本地 UI 状态，不直接修改工程。
-    OpenCommandPalette = 1301
+    // 工具入口只打开本地 UI 状态，不直接修改工程。
+    OpenCommandPalette = 1301,
+    OpenShortcutStatus = 1302
 };
 
 struct AppMainMenuItem {

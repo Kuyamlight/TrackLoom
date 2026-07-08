@@ -3,6 +3,7 @@
 #include "AppCommandPaletteSession.h"
 #include "AppCommandShortcuts.h"
 #include "AppShortcutSettings.h"
+#include "AppShortcutStatus.h"
 #include "AppMainMenu.h"
 #include "AppMidiClipActions.h"
 #include "AppMidiNoteActions.h"
@@ -118,6 +119,35 @@ void styleSingleLineTextEditor(juce::TextEditor& editor)
     editor.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour(0xff6ccf8d));
 }
 
+std::string shortcutStatusDialogText(const trackloom::AppShortcutStatus& status)
+{
+    // 这里仅把应用层快照格式化成人类可读文本；冲突、自定义和启用状态都已由 AppShortcutStatus 判定。
+    std::string text = status.summary;
+
+    if (!status.conflicts.empty()) {
+        text += "\n\n冲突：";
+        for (const auto& conflict : status.conflicts) {
+            text += "\n- " + conflict.shortcutLabel
+                + "：已属于“" + conflict.existingCommandLabel
+                + "”，未应用到“" + conflict.requestedCommandLabel + "”。";
+        }
+    }
+
+    text += "\n\n当前命令：";
+    for (const auto& row : status.rows) {
+        text += "\n- " + row.groupName + " / " + row.label + "：";
+        text += row.shortcutLabel.empty() ? "未设置" : row.shortcutLabel;
+        if (row.customized) {
+            text += "（自定义）";
+        }
+        if (!row.enabled) {
+            text += "（当前不可用）";
+        }
+    }
+
+    return text;
+}
+
 // CommandPaletteRowLabel 只把 JUCE 鼠标事件转成一个简单回调。
 // 命令是否存在、是否可用、应该执行哪个 handler，都继续交给应用层验证。
 class CommandPaletteRowLabel final : public juce::Label {
@@ -170,7 +200,8 @@ public:
         , recentProjectsSettingsPath_(appRecentProjectsSettingsPath())
         , recentProjects_(trackloom::loadAppRecentProjects(recentProjectsSettingsPath_))
         , shortcutSettingsPath_(appShortcutSettingsPath())
-        , shortcutCustomization_(trackloom::loadAppShortcutCustomization(shortcutSettingsPath_))
+        , customShortcutBindings_(trackloom::loadAppShortcutCustomBindings(shortcutSettingsPath_))
+        , shortcutCustomization_(trackloom::customizeAppShortcutBindings(customShortcutBindings_))
         , menuBar_(this)
     {
         // 首屏现在绑定真实 AppProjectSession；后续文件选择器和时间线 UI 继续沿着这个会话入口扩展。
@@ -907,6 +938,14 @@ private:
             currentMainMenuSelection());
     }
 
+    trackloom::AppShortcutStatus describeCurrentShortcutStatus() const
+    {
+        return trackloom::describeAppShortcutStatus(
+            describeCurrentMainMenu(),
+            shortcutCustomization_,
+            customShortcutBindings_);
+    }
+
     bool dispatchAppCommandFromUi(int commandId)
     {
         const auto result = trackloom::dispatchAppCommand(commandId, makeAppCommandHandlers());
@@ -972,6 +1011,7 @@ private:
         handlers.stopProject = [this] { stopProjectPlayback(); };
         handlers.rewindProject = [this] { rewindProjectPlayback(); };
         handlers.openCommandPalette = [this] { openCommandPaletteFromUi(); };
+        handlers.openShortcutStatus = [this] { openShortcutStatusFromUi(); };
         handlers.openRecentProject = [this](std::size_t number) {
             selectedRecentProjectNumber_ = number;
             openSelectedRecentProject();
@@ -998,6 +1038,23 @@ private:
         refreshFromSession();
         commandPaletteQueryEditor_.grabKeyboardFocus();
         commandPaletteQueryEditor_.selectAll();
+    }
+
+    void openShortcutStatusFromUi()
+    {
+        const auto status = describeCurrentShortcutStatus();
+        lastActionMessage_ = status.conflicts.empty()
+            ? "快捷键状态：已打开当前快捷键列表。"
+            : "快捷键状态：已打开当前快捷键列表，但存在 "
+                + std::to_string(status.conflicts.size()) + " 个冲突。";
+
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::InfoIcon,
+            toJuceString("快捷键状态"),
+            toJuceString(shortcutStatusDialogText(status)),
+            toJuceString("关闭"),
+            this);
+        refreshFromSession();
     }
 
     void updateCommandPaletteQueryFromUi()
@@ -2788,6 +2845,7 @@ private:
     std::filesystem::path recentProjectsSettingsPath_;
     trackloom::AppRecentProjects recentProjects_;
     std::filesystem::path shortcutSettingsPath_;
+    std::vector<trackloom::AppShortcutBinding> customShortcutBindings_;
     trackloom::AppShortcutCustomizationResult shortcutCustomization_;
     trackloom::AppCommandPaletteSession commandPaletteSession_;
     // 这个数组保存“当前屏幕上第 N 行对应哪个命令”。

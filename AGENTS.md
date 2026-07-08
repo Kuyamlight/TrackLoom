@@ -710,3 +710,8 @@ TrackLoom 应支持：
   - 根本原因：如果 JUCE 设置界面直接拼接主菜单命令名、快捷键标签和冲突文案，会复制命令面板已有标签合并逻辑，并可能与活动绑定表、菜单名称或冲突报告脱节。
   - 采用的解决方式：新增纯应用层 `AppShortcutStatus`，从 `AppMainMenuStatus`、`AppShortcutCustomizationResult` 和用户覆盖项生成命令行、活动快捷键标签、自定义标记、冲突行和摘要。CTest 覆盖自定义快捷键行、默认快捷键保留、冲突快捷键标签、冲突双方命令名和摘要。
   - 后续规则：快捷键设置窗口、帮助页或诊断面板必须消费 `AppShortcutStatus` 或等价应用层快照；UI 层不得自行复制快捷键标签合并、冲突命令命名或自定义计数规则。
+- 接入只读快捷键状态入口时：
+  - 触发场景：`AppShortcutStatus` 已能生成快捷键状态快照后，需要让用户从桌面工具菜单和命令面板查看当前快捷键、用户覆盖项和冲突。
+  - 根本原因：如果 JUCE 弹窗直接读取默认快捷键或只保存合并后的活动表，就无法准确显示原始用户设置行数量、哪些自定义真正生效以及哪些冲突被拒绝。
+  - 采用的解决方式：新增稳定 `AppMainMenuCommand::OpenShortcutStatus` 和 `AppCommandKind::OpenShortcutStatus`，命令面板、工具菜单和 JUCE handler 复用同一分发器；JUCE 启动时同时保留原始 `customShortcutBindings_` 和合并后的 `shortcutCustomization_`，弹窗文本只消费 `AppShortcutStatus`。
+  - 后续规则：快捷键状态、帮助或诊断入口必须同时传入主菜单快照、原始用户覆盖项和活动绑定结果；只读状态入口不得直接保存设置或绕过未来可编辑设置界面的验证流程。

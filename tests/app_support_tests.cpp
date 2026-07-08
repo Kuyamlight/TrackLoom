@@ -956,8 +956,8 @@ void mainMenuDescribesFileAndPlaybackCommands()
         "stop command should be disabled while playback is stopped");
     require(!menu.groups[4].items[2].enabled,
         "rewind command should be disabled before the playback head moves");
-    require(menu.groups[5].items.size() == 1,
-        "tools menu should expose the first utility command");
+    require(menu.groups[5].items.size() == 2,
+        "tools menu should expose the current utility commands");
     require(menu.groups[5].items[0].commandId
             == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenCommandPalette),
         "tools menu should expose a stable command id for opening the command palette");
@@ -965,6 +965,13 @@ void mainMenuDescribesFileAndPlaybackCommands()
         "tools menu should expose the command palette label");
     require(menu.groups[5].items[0].enabled,
         "command palette command should be enabled because it only opens local UI state");
+    require(menu.groups[5].items[1].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenShortcutStatus),
+        "tools menu should expose a stable command id for opening shortcut status");
+    require(menu.groups[5].items[1].label == "快捷键状态...",
+        "tools menu should expose the shortcut status label");
+    require(menu.groups[5].items[1].enabled,
+        "shortcut status command should be enabled because it only reads local settings state");
 }
 
 void mainMenuReflectsUndoRedoHistory()
@@ -1253,7 +1260,7 @@ void commandPaletteFlattensMenuCommandsWithoutSeparatorsOrInfoRows()
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
     const auto palette = trackloom::describeAppCommandPalette(menu);
 
-    require(palette.items.size() == 35,
+    require(palette.items.size() == 36,
         "command palette should include menu commands but skip separators and disabled info rows");
     require(palette.items[0].groupName == "文件" && palette.items[0].label == "新建工程",
         "command palette should preserve the file menu group and command label");
@@ -1288,6 +1295,11 @@ void commandPaletteFlattensMenuCommandsWithoutSeparatorsOrInfoRows()
         "command palette should preserve playback commands after clip commands");
     require(palette.items[34].groupName == "工具" && palette.items[34].label == "命令面板...",
         "command palette should include the tools command for reopening itself by search");
+    require(palette.items[35].groupName == "工具" && palette.items[35].label == "快捷键状态...",
+        "command palette should include the shortcut status tool command for discoverability");
+    require(palette.items[35].commandId
+            == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenShortcutStatus),
+        "command palette should preserve the shortcut status stable command id");
 }
 
 void commandPaletteIncludesRecentProjectsAndFiltersByQuery()
@@ -2761,6 +2773,39 @@ void commandDispatcherRunsCommandPaletteMenuCommand()
         "command palette menu id should resolve to the open-command-palette command kind");
     require(openCommandPaletteCalls == 1,
         "command palette command should call the open-command-palette handler exactly once");
+}
+
+void commandDispatcherRunsShortcutStatusMenuCommand()
+{
+    int openShortcutStatusCalls = 0;
+
+    trackloom::AppCommandHandlers handlers;
+    handlers.openShortcutStatus = [&] { ++openShortcutStatusCalls; };
+
+    const auto result = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenShortcutStatus),
+        handlers);
+
+    require(result.executed,
+        "command dispatcher should execute the shortcut status command when its handler exists");
+    require(result.command == trackloom::AppCommandKind::OpenShortcutStatus,
+        "shortcut status menu id should resolve to the open-shortcut-status command kind");
+    require(openShortcutStatusCalls == 1,
+        "shortcut status command should call the open-shortcut-status handler exactly once");
+}
+
+void commandDispatcherRejectsShortcutStatusWithoutHandler()
+{
+    const auto result = trackloom::dispatchAppCommand(
+        trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenShortcutStatus),
+        {});
+
+    require(!result.executed,
+        "shortcut status command should not be reported as executed without a handler");
+    require(result.kind == trackloom::AppCommandDispatchResultKind::MissingHandler,
+        "shortcut status command without a handler should report the stable missing-handler kind");
+    require(result.command == trackloom::AppCommandKind::OpenShortcutStatus,
+        "shortcut status missing-handler result should still identify the requested command");
 }
 
 void commandDispatcherPassesRecentProjectNumber()
@@ -9748,6 +9793,8 @@ int main()
     commandDispatcherRunsSelectedTrackMenuCommands();
     commandDispatcherRunsSelectedClipMenuCommands();
     commandDispatcherRunsCommandPaletteMenuCommand();
+    commandDispatcherRunsShortcutStatusMenuCommand();
+    commandDispatcherRejectsShortcutStatusWithoutHandler();
     commandDispatcherPassesRecentProjectNumber();
     commandDispatcherRejectsUnknownOrUnboundCommands();
     commandShortcutsMapCommonFileKeysToMenuCommands();

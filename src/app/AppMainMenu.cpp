@@ -313,10 +313,14 @@ AppMainMenuStatus describeAppMainMenu(
 
     AppMainMenuGroup toolsMenu;
     toolsMenu.name = "工具";
-    // 命令面板是本地临时 UI 状态，不依赖工程是否可保存或播放。
+    // 工具菜单命令都只打开本地 UI 状态，不依赖工程是否可保存或播放。
     toolsMenu.items.push_back(commandItem(
         AppMainMenuCommand::OpenCommandPalette,
         "命令面板...",
+        true));
+    toolsMenu.items.push_back(commandItem(
+        AppMainMenuCommand::OpenShortcutStatus,
+        "快捷键状态...",
         true));
 
     status.groups.push_back(std::move(fileMenu));

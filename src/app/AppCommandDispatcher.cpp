@@ -130,6 +130,8 @@ AppCommandKind appCommandKindFromMainMenuCommand(AppMainMenuCommand command)
         return AppCommandKind::RewindProject;
     case AppMainMenuCommand::OpenCommandPalette:
         return AppCommandKind::OpenCommandPalette;
+    case AppMainMenuCommand::OpenShortcutStatus:
+        return AppCommandKind::OpenShortcutStatus;
     }
 
     return AppCommandKind::Unknown;
@@ -267,6 +269,8 @@ AppCommandDispatchResult dispatchAppCommand(
         return runSimpleCommand(command, handlers.rewindProject);
     case AppCommandKind::OpenCommandPalette:
         return runSimpleCommand(command, handlers.openCommandPalette);
+    case AppCommandKind::OpenShortcutStatus:
+        return runSimpleCommand(command, handlers.openShortcutStatus);
     case AppCommandKind::OpenRecentProject:
     case AppCommandKind::Unknown:
         break;
