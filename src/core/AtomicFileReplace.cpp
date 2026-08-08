@@ -12,8 +12,6 @@
 namespace trackloom {
 namespace {
 
-constexpr int maximumBackupCandidates = 16;
-
 bool isMissingPathError(std::uint32_t error)
 {
     return error == detail::windowsErrorFileNotFound || error == detail::windowsErrorPathNotFound;
@@ -57,56 +55,38 @@ std::optional<std::filesystem::path> recoveryPathFromQueries(
     return std::nullopt;
 }
 
-struct BackupPathResult {
-    bool success = false;
-    std::filesystem::path path;
-    std::string error;
-};
-
-BackupPathResult findAvailableBackupPath(
-    const std::filesystem::path& replacementPath,
-    const std::filesystem::path& targetPath,
-    detail::WindowsAtomicFileOperations& operations)
+std::filesystem::path recoveryDirectoryFor(const std::filesystem::path& targetPath)
 {
-    auto basePath = targetPath;
-    basePath += ".trackloom-backup";
+    auto directory = targetPath;
+    directory += ".trackloom-recovery";
+    return directory;
+}
 
-    for (int index = 0; index < maximumBackupCandidates; ++index) {
-        auto candidate = basePath;
-        if (index > 0) {
-            candidate += "." + std::to_string(index);
-        }
-        if (candidate == replacementPath) {
-            continue;
-        }
-
-        const auto query = operations.queryPath(candidate);
-        if (!query.success) {
-            return {
-                false,
-                {},
-                windowsErrorMessage("Backup path query", query.error)
-            };
-        }
-        if (!query.exists) {
-            return { true, std::move(candidate), "" };
-        }
+std::string appendCleanupDiagnostic(
+    std::string message,
+    const char* operation,
+    const detail::WindowsFileOperationResult& cleanup)
+{
+    if (!cleanup.success) {
+        message += " ";
+        message += windowsErrorMessage(operation, cleanup.error);
     }
-
-    return {
-        false,
-        {},
-        "Could not find an unused atomic replacement backup path."
-    };
+    return message;
 }
 
 AtomicFileReplaceResult successfulReplacementAfterBackupCleanup(
     const std::filesystem::path& backupPath,
+    const std::filesystem::path& recoveryDirectory,
     detail::WindowsAtomicFileOperations& operations)
 {
-    const auto cleanup = operations.removeFile(backupPath);
-    if (!cleanup.success) {
+    const auto backupCleanup = operations.removeFile(backupPath);
+    if (!backupCleanup.success) {
         return AtomicFileReplaceResult::ok(backupPath);
+    }
+
+    const auto directoryCleanup = operations.removeDirectory(recoveryDirectory);
+    if (!directoryCleanup.success) {
+        return AtomicFileReplaceResult::ok(recoveryDirectory);
     }
     return AtomicFileReplaceResult::ok();
 }
@@ -164,6 +144,22 @@ public:
         }
         return { false, static_cast<std::uint32_t>(GetLastError()) };
     }
+
+    detail::WindowsFileOperationResult createDirectory(const std::filesystem::path& path) override
+    {
+        if (CreateDirectoryW(path.c_str(), nullptr)) {
+            return { true, detail::windowsErrorSuccess };
+        }
+        return { false, static_cast<std::uint32_t>(GetLastError()) };
+    }
+
+    detail::WindowsFileOperationResult removeDirectory(const std::filesystem::path& path) override
+    {
+        if (RemoveDirectoryW(path.c_str())) {
+            return { true, detail::windowsErrorSuccess };
+        }
+        return { false, static_cast<std::uint32_t>(GetLastError()) };
+    }
 };
 
 static_assert(detail::windowsErrorFileNotFound == ERROR_FILE_NOT_FOUND);
@@ -190,13 +186,13 @@ AtomicFileTargetAvailability queryFilesystemTargetAvailability(const std::filesy
 
 }
 
-AtomicFileReplaceResult AtomicFileReplaceResult::ok(std::optional<std::filesystem::path> preservedBackup)
+AtomicFileReplaceResult AtomicFileReplaceResult::ok(std::optional<std::filesystem::path> recoveryPath)
 {
     return {
         true,
         "",
         AtomicFileTargetAvailability::Available,
-        std::move(preservedBackup)
+        std::move(recoveryPath)
     };
 }
 
@@ -235,10 +231,24 @@ AtomicFileReplaceResult replaceFileAtomicallyWithWindowsOperations(
             availabilityFromQuery(targetQuery));
     }
 
+    const auto recoveryDirectory = recoveryDirectoryFor(targetPath);
+    const auto createRecoveryDirectory = operations.createDirectory(recoveryDirectory);
+    if (!createRecoveryDirectory.success) {
+        return AtomicFileReplaceResult::fail(
+            windowsErrorMessage("CreateDirectoryW recovery directory", createRecoveryDirectory.error),
+            AtomicFileTargetAvailability::Unknown,
+            recoveryDirectory);
+    }
+
+    const auto backupPath = recoveryDirectory / "original-target";
     const auto targetQuery = operations.queryPath(targetPath);
     if (!targetQuery.success) {
+        const auto cleanup = operations.removeDirectory(recoveryDirectory);
         return AtomicFileReplaceResult::fail(
-            windowsErrorMessage("Target path query", targetQuery.error),
+            appendCleanupDiagnostic(
+                windowsErrorMessage("Target path query", targetQuery.error),
+                "RemoveDirectoryW recovery directory",
+                cleanup),
             AtomicFileTargetAvailability::Unknown,
             replacementPath);
     }
@@ -246,41 +256,44 @@ AtomicFileReplaceResult replaceFileAtomicallyWithWindowsOperations(
     if (!targetQuery.exists) {
         const auto move = operations.moveFile(replacementPath, targetPath, windowsMoveFileWriteThrough);
         if (move.success) {
+            const auto cleanup = operations.removeDirectory(recoveryDirectory);
+            if (!cleanup.success) {
+                return AtomicFileReplaceResult::ok(recoveryDirectory);
+            }
             return AtomicFileReplaceResult::ok();
         }
 
         const auto targetAfterMove = operations.queryPath(targetPath);
         const auto replacementAfterMove = operations.queryPath(replacementPath);
-        const WindowsPathQueryResult noBackup { true, false, windowsErrorSuccess };
+        const auto cleanup = operations.removeDirectory(recoveryDirectory);
+        std::optional<std::filesystem::path> recoveryPath;
+        if (!replacementAfterMove.success || replacementAfterMove.exists) {
+            recoveryPath = replacementPath;
+        } else if (targetAfterMove.success && targetAfterMove.exists) {
+            recoveryPath = targetPath;
+        }
         return AtomicFileReplaceResult::fail(
-            windowsErrorMessage("MoveFileExW installing replacement", move.error),
+            appendCleanupDiagnostic(
+                windowsErrorMessage("MoveFileExW installing replacement", move.error),
+                "RemoveDirectoryW recovery directory",
+                cleanup),
             availabilityFromQuery(targetAfterMove),
-            recoveryPathFromQueries(
-                replacementPath,
-                replacementAfterMove,
-                {},
-                noBackup,
-                targetPath,
-                targetAfterMove));
+            std::move(recoveryPath));
     }
 
-    const auto backup = findAvailableBackupPath(replacementPath, targetPath, operations);
-    if (!backup.success) {
-        return AtomicFileReplaceResult::fail(
-            backup.error,
-            AtomicFileTargetAvailability::Available,
-            replacementPath);
-    }
-
-    const auto replace = operations.replaceFile(targetPath, replacementPath, backup.path, 0);
+    const auto replace = operations.replaceFile(targetPath, replacementPath, backupPath, 0);
     if (replace.success) {
-        return successfulReplacementAfterBackupCleanup(backup.path, operations);
+        return successfulReplacementAfterBackupCleanup(backupPath, recoveryDirectory, operations);
     }
 
     if (replace.error == windowsErrorUnableToRemoveReplaced
         || replace.error == windowsErrorUnableToMoveReplacement) {
+        const auto cleanup = operations.removeDirectory(recoveryDirectory);
         return AtomicFileReplaceResult::fail(
-            windowsErrorMessage("ReplaceFileW", replace.error),
+            appendCleanupDiagnostic(
+                windowsErrorMessage("ReplaceFileW", replace.error),
+                "RemoveDirectoryW recovery directory",
+                cleanup),
             AtomicFileTargetAvailability::Available,
             replacementPath);
     }
@@ -288,14 +301,21 @@ AtomicFileReplaceResult replaceFileAtomicallyWithWindowsOperations(
     if (replace.error != windowsErrorUnableToMoveReplacement2) {
         const auto targetAfterReplace = operations.queryPath(targetPath);
         const auto replacementAfterReplace = operations.queryPath(replacementPath);
-        const auto backupAfterReplace = operations.queryPath(backup.path);
+        const auto backupAfterReplace = operations.queryPath(backupPath);
+        auto message = windowsErrorMessage("ReplaceFileW", replace.error);
+        if (backupAfterReplace.success && !backupAfterReplace.exists) {
+            message = appendCleanupDiagnostic(
+                std::move(message),
+                "RemoveDirectoryW recovery directory",
+                operations.removeDirectory(recoveryDirectory));
+        }
         return AtomicFileReplaceResult::fail(
-            windowsErrorMessage("ReplaceFileW", replace.error),
+            std::move(message),
             availabilityFromQuery(targetAfterReplace),
             recoveryPathFromQueries(
                 replacementPath,
                 replacementAfterReplace,
-                backup.path,
+                backupPath,
                 backupAfterReplace,
                 targetPath,
                 targetAfterReplace));
@@ -303,15 +323,19 @@ AtomicFileReplaceResult replaceFileAtomicallyWithWindowsOperations(
 
     const auto install = operations.moveFile(replacementPath, targetPath, windowsMoveFileWriteThrough);
     if (install.success) {
-        return successfulReplacementAfterBackupCleanup(backup.path, operations);
+        return successfulReplacementAfterBackupCleanup(backupPath, recoveryDirectory, operations);
     }
 
-    const auto restore = operations.moveFile(backup.path, targetPath, windowsMoveFileWriteThrough);
+    const auto restore = operations.moveFile(backupPath, targetPath, windowsMoveFileWriteThrough);
     if (restore.success) {
         const auto replacementAfterRestore = operations.queryPath(replacementPath);
+        const auto cleanup = operations.removeDirectory(recoveryDirectory);
         return AtomicFileReplaceResult::fail(
-            windowsErrorMessage("MoveFileExW installing replacement after ReplaceFileW error 1177", install.error)
-                + " The original target was restored.",
+            appendCleanupDiagnostic(
+                windowsErrorMessage("MoveFileExW installing replacement after ReplaceFileW error 1177", install.error)
+                    + " The original target was restored.",
+                "RemoveDirectoryW recovery directory",
+                cleanup),
             AtomicFileTargetAvailability::Available,
             (!replacementAfterRestore.success || replacementAfterRestore.exists)
                 ? std::optional<std::filesystem::path>(replacementPath)
@@ -320,14 +344,14 @@ AtomicFileReplaceResult replaceFileAtomicallyWithWindowsOperations(
 
     const auto targetAfterRecovery = operations.queryPath(targetPath);
     const auto replacementAfterRecovery = operations.queryPath(replacementPath);
-    const auto backupAfterRecovery = operations.queryPath(backup.path);
+    const auto backupAfterRecovery = operations.queryPath(backupPath);
     return AtomicFileReplaceResult::fail(
         windowsErrorMessage("MoveFileExW installing replacement after ReplaceFileW error 1177", install.error)
             + " "
             + windowsErrorMessage("MoveFileExW restoring backup", restore.error),
         availabilityFromQuery(targetAfterRecovery),
         recoveryPathFromQueries(
-            backup.path,
+            backupPath,
             backupAfterRecovery,
             replacementPath,
             replacementAfterRecovery,

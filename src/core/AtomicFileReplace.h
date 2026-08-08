@@ -18,10 +18,11 @@ struct AtomicFileReplaceResult {
     std::string error;
     // 失败时明确 target 当前是否可用；Unknown 表示状态查询本身失败。
     AtomicFileTargetAvailability targetAvailability = AtomicFileTargetAvailability::Unknown;
-    // 失败时指向应保留的恢复副本；成功但 backup 清理失败时也会返回遗留 backup。
+    // 指向调用方必须检查的可能恢复位置。路径可能来自查询失败或清理失败，
+    // 因此调用方不能仅凭此字段断言副本一定存在。
     std::optional<std::filesystem::path> recoveryPath;
 
-    static AtomicFileReplaceResult ok(std::optional<std::filesystem::path> preservedBackup = std::nullopt);
+    static AtomicFileReplaceResult ok(std::optional<std::filesystem::path> recoveryPath = std::nullopt);
     static AtomicFileReplaceResult fail(
         std::string message,
         AtomicFileTargetAvailability targetAvailability,
@@ -73,6 +74,8 @@ public:
         const std::filesystem::path& targetPath,
         std::uint32_t flags) = 0;
     virtual WindowsFileOperationResult removeFile(const std::filesystem::path& path) = 0;
+    virtual WindowsFileOperationResult createDirectory(const std::filesystem::path& path) = 0;
+    virtual WindowsFileOperationResult removeDirectory(const std::filesystem::path& path) = 0;
 };
 
 AtomicFileReplaceResult replaceFileAtomicallyWithWindowsOperations(
