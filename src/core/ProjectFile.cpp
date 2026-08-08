@@ -31,6 +31,17 @@ FileOperationResult failAfterCleanup(const std::filesystem::path& temporaryPath,
     return FileOperationResult::fail(std::move(message));
 }
 
+std::string utf8PathForMessage(const std::filesystem::path& path)
+{
+    const auto utf8 = path.u8string();
+    return { reinterpret_cast<const char*>(utf8.data()), utf8.size() };
+}
+
+std::string withRecoveryPath(std::string message, const std::filesystem::path& recoveryPath)
+{
+    return std::move(message) + " Recovery file preserved at: " + utf8PathForMessage(recoveryPath);
+}
+
 }
 
 FileOperationResult FileOperationResult::ok()
@@ -71,6 +82,19 @@ FileOperationResult saveProjectToFileAtomically(const Project& project, const st
 
     const auto temporaryPath = temporaryPathFor(path);
 
+    std::error_code temporaryStatusError;
+    const auto temporaryAlreadyExists = std::filesystem::exists(temporaryPath, temporaryStatusError);
+    if (temporaryStatusError) {
+        return FileOperationResult::fail(withRecoveryPath(
+            "Could not inspect the temporary project file path.",
+            temporaryPath));
+    }
+    if (temporaryAlreadyExists) {
+        return FileOperationResult::fail(withRecoveryPath(
+            "Temporary project file already exists; refusing to overwrite a possible recovery copy.",
+            temporaryPath));
+    }
+
     try {
         const auto parentPath = path.parent_path();
         if (!parentPath.empty()) {
@@ -98,16 +122,27 @@ FileOperationResult saveProjectToFileAtomically(const Project& project, const st
         if (!validation.project.has_value()) {
             return failAfterCleanup(temporaryPath, "Temporary project file did not validate: " + validation.error);
         }
+    } catch (const std::exception& error) {
+        // 这里捕获异常是为了让 UI 或 AI 调用层得到普通错误结果，而不是让保存流程崩出核心库。
+        return failAfterCleanup(temporaryPath, error.what());
+    }
 
+    try {
         const auto replacement = replaceFileAtomically(temporaryPath, path);
         if (!replacement.success) {
-            return failAfterCleanup(temporaryPath, "Could not replace project file: " + replacement.error);
+            auto message = "Could not replace project file: " + replacement.error;
+            if (replacement.recoveryPath.has_value()) {
+                message = withRecoveryPath(std::move(message), *replacement.recoveryPath);
+            }
+            return FileOperationResult::fail(std::move(message));
         }
 
         return FileOperationResult::ok();
     } catch (const std::exception& error) {
-        // 这里捕获异常是为了让 UI 或 AI 调用层得到普通错误结果，而不是让保存流程崩出核心库。
-        return failAfterCleanup(temporaryPath, error.what());
+        // 一旦进入原子替换阶段，不再猜测临时文件是否可删除；它可能是唯一可控恢复副本。
+        return FileOperationResult::fail(withRecoveryPath(
+            std::string("Could not replace project file: ") + error.what(),
+            temporaryPath));
     }
 }
 

@@ -26,15 +26,24 @@
 
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <cmath>
+#include <deque>
 #include <limits>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
+#endif
 
 namespace {
 
@@ -343,6 +352,129 @@ std::string readFileBytes(const std::filesystem::path& path)
     require(static_cast<bool>(input), "test file should be readable");
     return { std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
 }
+
+#ifdef _WIN32
+
+class ScriptedWindowsAtomicFileOperations final : public trackloom::detail::WindowsAtomicFileOperations {
+public:
+    using QueryResult = trackloom::detail::WindowsPathQueryResult;
+    using OperationResult = trackloom::detail::WindowsFileOperationResult;
+    using ReplaceScript = std::function<OperationResult(
+        ScriptedWindowsAtomicFileOperations&,
+        const std::filesystem::path&,
+        const std::filesystem::path&,
+        const std::filesystem::path&,
+        std::uint32_t)>;
+    using MoveScript = std::function<OperationResult(
+        ScriptedWindowsAtomicFileOperations&,
+        const std::filesystem::path&,
+        const std::filesystem::path&,
+        std::uint32_t)>;
+    using RemoveScript = std::function<OperationResult(
+        ScriptedWindowsAtomicFileOperations&,
+        const std::filesystem::path&)>;
+
+    struct ReplaceCall {
+        std::filesystem::path targetPath;
+        std::filesystem::path replacementPath;
+        std::filesystem::path backupPath;
+        std::uint32_t flags = 0;
+    };
+
+    struct MoveCall {
+        std::filesystem::path sourcePath;
+        std::filesystem::path targetPath;
+        std::uint32_t flags = 0;
+    };
+
+    QueryResult queryPath(const std::filesystem::path& path) override
+    {
+        auto scripted = queryResults.find(path);
+        if (scripted != queryResults.end() && !scripted->second.empty()) {
+            const auto result = scripted->second.front();
+            scripted->second.pop_front();
+            return result;
+        }
+
+        return { true, files.contains(path), trackloom::detail::windowsErrorSuccess };
+    }
+
+    OperationResult replaceFile(
+        const std::filesystem::path& targetPath,
+        const std::filesystem::path& replacementPath,
+        const std::filesystem::path& backupPath,
+        std::uint32_t flags) override
+    {
+        replaceCalls.push_back({ targetPath, replacementPath, backupPath, flags });
+        if (!replaceScripts.empty()) {
+            auto script = std::move(replaceScripts.front());
+            replaceScripts.pop_front();
+            return script(*this, targetPath, replacementPath, backupPath, flags);
+        }
+
+        if (!files.contains(targetPath) || !files.contains(replacementPath)) {
+            return { false, trackloom::detail::windowsErrorFileNotFound };
+        }
+        if (files.contains(backupPath)) {
+            return { false, trackloom::detail::windowsErrorAlreadyExists };
+        }
+
+        files.emplace(backupPath, files.at(targetPath));
+        files.at(targetPath) = files.at(replacementPath);
+        files.erase(replacementPath);
+        return { true, trackloom::detail::windowsErrorSuccess };
+    }
+
+    OperationResult moveFile(
+        const std::filesystem::path& sourcePath,
+        const std::filesystem::path& targetPath,
+        std::uint32_t flags) override
+    {
+        moveCalls.push_back({ sourcePath, targetPath, flags });
+        if (!moveScripts.empty()) {
+            auto script = std::move(moveScripts.front());
+            moveScripts.pop_front();
+            return script(*this, sourcePath, targetPath, flags);
+        }
+
+        if (!files.contains(sourcePath)) {
+            return { false, trackloom::detail::windowsErrorFileNotFound };
+        }
+        if (files.contains(targetPath)) {
+            return { false, trackloom::detail::windowsErrorAlreadyExists };
+        }
+
+        files.emplace(targetPath, files.at(sourcePath));
+        files.erase(sourcePath);
+        return { true, trackloom::detail::windowsErrorSuccess };
+    }
+
+    OperationResult removeFile(const std::filesystem::path& path) override
+    {
+        removeCalls.push_back(path);
+        if (!removeScripts.empty()) {
+            auto script = std::move(removeScripts.front());
+            removeScripts.pop_front();
+            return script(*this, path);
+        }
+
+        if (files.erase(path) == 0) {
+            return { false, trackloom::detail::windowsErrorFileNotFound };
+        }
+        return { true, trackloom::detail::windowsErrorSuccess };
+    }
+
+    std::map<std::filesystem::path, std::string> files;
+    std::map<std::filesystem::path, std::deque<QueryResult>> queryResults;
+    std::deque<ReplaceScript> replaceScripts;
+    std::deque<MoveScript> moveScripts;
+    std::deque<RemoveScript> removeScripts;
+    std::vector<ReplaceCall> replaceCalls;
+    std::vector<MoveCall> moveCalls;
+    std::vector<std::filesystem::path> removeCalls;
+};
+
+#endif
 
 void projectStartsEmpty()
 {
@@ -5601,6 +5733,463 @@ void atomicFileReplaceMissingReplacementPreservesExistingTarget()
     require(readFileBytes(targetPath) == originalBytes, "failed replacement should preserve target bytes exactly");
 }
 
+#ifdef _WIN32
+
+void atomicFileReplaceReportsReplacementQueryFailureWithoutTouchingTarget()
+{
+    const std::filesystem::path replacementPath = "C:/fake/song.trackloom.tmp";
+    const std::filesystem::path targetPath = "C:/fake/song.trackloom";
+    ScriptedWindowsAtomicFileOperations operations;
+    operations.files[targetPath] = "old project bytes";
+    operations.files[replacementPath] = "new project bytes";
+    operations.queryResults[replacementPath].push_back({
+        false,
+        false,
+        trackloom::detail::windowsErrorAccessDenied
+    });
+
+    const auto result = trackloom::detail::replaceFileAtomicallyWithWindowsOperations(
+        replacementPath,
+        targetPath,
+        operations);
+
+    require(!result.success, "replacement query failure should fail");
+    require(result.targetAvailability == trackloom::AtomicFileTargetAvailability::Unknown,
+        "target availability should remain unknown when replacement cannot be queried");
+    require(result.recoveryPath == replacementPath, "query failure should retain the potential replacement path");
+    require(operations.files.at(targetPath) == "old project bytes", "replacement query failure should preserve target");
+    require(operations.files.at(replacementPath) == "new project bytes", "replacement query failure should preserve replacement");
+    require(operations.replaceCalls.empty() && operations.moveCalls.empty(), "query failure should not mutate files");
+}
+
+void atomicFileReplaceReportsTargetQueryFailureWithoutTouchingFiles()
+{
+    const std::filesystem::path replacementPath = "C:/fake/song.trackloom.tmp";
+    const std::filesystem::path targetPath = "C:/fake/song.trackloom";
+    ScriptedWindowsAtomicFileOperations operations;
+    operations.files[targetPath] = "old project bytes";
+    operations.files[replacementPath] = "new project bytes";
+    operations.queryResults[targetPath].push_back({
+        false,
+        false,
+        trackloom::detail::windowsErrorAccessDenied
+    });
+
+    const auto result = trackloom::detail::replaceFileAtomicallyWithWindowsOperations(
+        replacementPath,
+        targetPath,
+        operations);
+
+    require(!result.success, "target query failure should fail");
+    require(result.targetAvailability == trackloom::AtomicFileTargetAvailability::Unknown,
+        "failed target query should report unknown availability");
+    require(result.recoveryPath == replacementPath, "target query failure should identify replacement recovery");
+    require(operations.files.at(targetPath) == "old project bytes", "target query failure should preserve target");
+    require(operations.files.at(replacementPath) == "new project bytes", "target query failure should preserve replacement");
+    require(operations.replaceCalls.empty() && operations.moveCalls.empty(), "target query failure should not mutate files");
+}
+
+void atomicFileReplaceDoesNotOverwriteTargetThatAppearsBeforeMove()
+{
+    const std::filesystem::path replacementPath = "C:/fake/song.trackloom.tmp";
+    const std::filesystem::path targetPath = "C:/fake/song.trackloom";
+    ScriptedWindowsAtomicFileOperations operations;
+    operations.files[replacementPath] = "new project bytes";
+    operations.moveScripts.push_back([](auto& backend, const auto&, const auto& target, std::uint32_t) {
+        backend.files[target] = "external project bytes";
+        return ScriptedWindowsAtomicFileOperations::OperationResult {
+            false,
+            trackloom::detail::windowsErrorAlreadyExists
+        };
+    });
+
+    const auto result = trackloom::detail::replaceFileAtomicallyWithWindowsOperations(
+        replacementPath,
+        targetPath,
+        operations);
+
+    require(!result.success, "target appearance should fail instead of overwriting it");
+    require(result.targetAvailability == trackloom::AtomicFileTargetAvailability::Available,
+        "appeared target should be reported available");
+    require(result.recoveryPath == replacementPath, "appeared target should leave replacement as recovery");
+    require(operations.files.at(targetPath) == "external project bytes", "appeared target should not be overwritten");
+    require(operations.files.at(replacementPath) == "new project bytes", "failed move should preserve replacement");
+    require(operations.replaceCalls.empty(), "missing-target branch must not replace a newly appeared target");
+}
+
+void atomicFileReplacePreservesReplacementWhenTargetDisappearsBeforeReplace()
+{
+    const std::filesystem::path replacementPath = "C:/fake/song.trackloom.tmp";
+    const std::filesystem::path targetPath = "C:/fake/song.trackloom";
+    ScriptedWindowsAtomicFileOperations operations;
+    operations.files[targetPath] = "old project bytes";
+    operations.files[replacementPath] = "new project bytes";
+    operations.replaceScripts.push_back([](auto& backend, const auto& target, const auto&, const auto&, std::uint32_t) {
+        backend.files.erase(target);
+        return ScriptedWindowsAtomicFileOperations::OperationResult {
+            false,
+            trackloom::detail::windowsErrorFileNotFound
+        };
+    });
+
+    const auto result = trackloom::detail::replaceFileAtomicallyWithWindowsOperations(
+        replacementPath,
+        targetPath,
+        operations);
+
+    require(!result.success, "disappeared target should fail without changing operation type");
+    require(result.targetAvailability == trackloom::AtomicFileTargetAvailability::Missing,
+        "disappeared target should be reported missing");
+    require(result.recoveryPath == replacementPath, "disappeared target should preserve replacement recovery");
+    require(operations.files.at(replacementPath) == "new project bytes", "replacement should survive target race");
+    require(operations.moveCalls.empty(), "target disappearance must not silently install replacement");
+}
+
+void atomicFileReplaceError1175PreservesBothOriginalFiles()
+{
+    const std::filesystem::path replacementPath = "C:/fake/song.trackloom.tmp";
+    const std::filesystem::path targetPath = "C:/fake/song.trackloom";
+    ScriptedWindowsAtomicFileOperations operations;
+    operations.files[targetPath] = "old project bytes";
+    operations.files[replacementPath] = "new project bytes";
+    operations.replaceScripts.push_back([](auto&, const auto&, const auto&, const auto&, std::uint32_t) {
+        return ScriptedWindowsAtomicFileOperations::OperationResult {
+            false,
+            trackloom::detail::windowsErrorUnableToRemoveReplaced
+        };
+    });
+
+    const auto result = trackloom::detail::replaceFileAtomicallyWithWindowsOperations(
+        replacementPath,
+        targetPath,
+        operations);
+
+    require(!result.success, "1175 should remain a reported failure");
+    require(result.targetAvailability == trackloom::AtomicFileTargetAvailability::Available,
+        "1175 should report target available");
+    require(result.recoveryPath == replacementPath, "1175 should identify replacement recovery");
+    require(operations.files.at(targetPath) == "old project bytes", "1175 should preserve old target");
+    require(operations.files.at(replacementPath) == "new project bytes", "1175 should preserve replacement");
+    require(operations.moveCalls.empty(), "1175 should not enter recovery moves");
+}
+
+void atomicFileReplaceError1176PreservesOriginalNamesWithBackup()
+{
+    const std::filesystem::path replacementPath = "C:/fake/song.trackloom.tmp";
+    const std::filesystem::path targetPath = "C:/fake/song.trackloom";
+    ScriptedWindowsAtomicFileOperations operations;
+    operations.files[targetPath] = "old project bytes";
+    operations.files[replacementPath] = "new project bytes";
+    operations.replaceScripts.push_back([](
+                                            auto&,
+                                            const auto&,
+                                            const auto&,
+                                            const auto&,
+                                            std::uint32_t) {
+        return ScriptedWindowsAtomicFileOperations::OperationResult {
+            false,
+            trackloom::detail::windowsErrorUnableToMoveReplacement
+        };
+    });
+
+    const auto result = trackloom::detail::replaceFileAtomicallyWithWindowsOperations(
+        replacementPath,
+        targetPath,
+        operations);
+
+    require(!result.success, "1176 should remain a reported failure");
+    require(result.targetAvailability == trackloom::AtomicFileTargetAvailability::Available,
+        "1176 with backup should report the original target as available");
+    require(result.recoveryPath == replacementPath, "1176 should identify the preserved replacement");
+    require(operations.files.at(targetPath) == "old project bytes", "1176 should preserve the old target bytes");
+    require(operations.files.at(replacementPath) == "new project bytes", "1176 should preserve replacement bytes");
+    require(operations.replaceCalls.size() == 1, "1176 should make one ReplaceFileW attempt");
+    require(operations.replaceCalls.front().flags == 0, "ReplaceFileW should use supported flags only");
+    require(!operations.files.contains(operations.replaceCalls.front().backupPath),
+        "1176 should not invent a backup that the API did not create");
+}
+
+void atomicFileReplaceError1177InstallsReplacementAndRemovesBackup()
+{
+    const std::filesystem::path replacementPath = "C:/fake/song.trackloom.tmp";
+    const std::filesystem::path targetPath = "C:/fake/song.trackloom";
+    ScriptedWindowsAtomicFileOperations operations;
+    operations.files[targetPath] = "old project bytes";
+    operations.files[replacementPath] = "new project bytes";
+    operations.replaceScripts.push_back([](auto& backend, const auto& target, const auto&, const auto& backup, std::uint32_t) {
+        backend.files.emplace(backup, backend.files.at(target));
+        backend.files.erase(target);
+        return ScriptedWindowsAtomicFileOperations::OperationResult {
+            false,
+            trackloom::detail::windowsErrorUnableToMoveReplacement2
+        };
+    });
+
+    const auto result = trackloom::detail::replaceFileAtomicallyWithWindowsOperations(
+        replacementPath,
+        targetPath,
+        operations);
+
+    const auto backupPath = operations.replaceCalls.front().backupPath;
+    require(result.success, "1177 should recover by installing the replacement when target remains absent");
+    require(result.targetAvailability == trackloom::AtomicFileTargetAvailability::Available,
+        "recovered 1177 should report target available");
+    require(operations.files.at(targetPath) == "new project bytes", "1177 recovery should install new bytes");
+    require(!operations.files.contains(replacementPath), "installed replacement should be consumed");
+    require(!operations.files.contains(backupPath), "successful recovery should best-effort remove backup");
+    require(operations.moveCalls.size() == 1, "1177 install recovery should need one move");
+    require(operations.moveCalls.front().flags == trackloom::detail::windowsMoveFileWriteThrough,
+        "1177 install recovery should use write-through move");
+}
+
+void atomicFileReplaceError1177RestoresTargetWhenInstallFails()
+{
+    const std::filesystem::path replacementPath = "C:/fake/song.trackloom.tmp";
+    const std::filesystem::path targetPath = "C:/fake/song.trackloom";
+    ScriptedWindowsAtomicFileOperations operations;
+    operations.files[targetPath] = "old project bytes";
+    operations.files[replacementPath] = "new project bytes";
+    operations.replaceScripts.push_back([](auto& backend, const auto& target, const auto&, const auto& backup, std::uint32_t) {
+        backend.files.emplace(backup, backend.files.at(target));
+        backend.files.erase(target);
+        return ScriptedWindowsAtomicFileOperations::OperationResult {
+            false,
+            trackloom::detail::windowsErrorUnableToMoveReplacement2
+        };
+    });
+    operations.moveScripts.push_back([](auto&, const auto&, const auto&, std::uint32_t) {
+        return ScriptedWindowsAtomicFileOperations::OperationResult {
+            false,
+            trackloom::detail::windowsErrorAccessDenied
+        };
+    });
+
+    const auto result = trackloom::detail::replaceFileAtomicallyWithWindowsOperations(
+        replacementPath,
+        targetPath,
+        operations);
+
+    const auto backupPath = operations.replaceCalls.front().backupPath;
+    require(!result.success, "1177 restored old target should still report new save failure");
+    require(result.targetAvailability == trackloom::AtomicFileTargetAvailability::Available,
+        "restored 1177 target should be reported available");
+    require(result.recoveryPath == replacementPath, "restored 1177 should identify preserved new replacement");
+    require(operations.files.at(targetPath) == "old project bytes", "1177 should restore old target bytes");
+    require(operations.files.at(replacementPath) == "new project bytes", "failed install should preserve new replacement");
+    require(!operations.files.contains(backupPath), "restored backup should be consumed");
+    require(operations.moveCalls.size() == 2, "1177 should attempt install then restore");
+}
+
+void atomicFileReplaceError1177RestoresBackupIfReplacementDisappears()
+{
+    const std::filesystem::path replacementPath = "C:/fake/song.trackloom.tmp";
+    const std::filesystem::path targetPath = "C:/fake/song.trackloom";
+    ScriptedWindowsAtomicFileOperations operations;
+    operations.files[targetPath] = "old project bytes";
+    operations.files[replacementPath] = "new project bytes";
+    operations.replaceScripts.push_back([](auto& backend, const auto& target, const auto&, const auto& backup, std::uint32_t) {
+        backend.files.emplace(backup, backend.files.at(target));
+        backend.files.erase(target);
+        return ScriptedWindowsAtomicFileOperations::OperationResult {
+            false,
+            trackloom::detail::windowsErrorUnableToMoveReplacement2
+        };
+    });
+    operations.moveScripts.push_back([](auto& backend, const auto& source, const auto&, std::uint32_t) {
+        backend.files.erase(source);
+        return ScriptedWindowsAtomicFileOperations::OperationResult {
+            false,
+            trackloom::detail::windowsErrorFileNotFound
+        };
+    });
+
+    const auto result = trackloom::detail::replaceFileAtomicallyWithWindowsOperations(
+        replacementPath,
+        targetPath,
+        operations);
+
+    require(!result.success, "externally disappeared replacement should fail the save");
+    require(result.targetAvailability == trackloom::AtomicFileTargetAvailability::Available,
+        "backup restoration should leave target available");
+    require(result.recoveryPath == targetPath, "restored target should be the remaining recovery copy");
+    require(operations.files.at(targetPath) == "old project bytes", "old target should be restored");
+    require(!operations.files.contains(replacementPath), "result should not report a replacement that disappeared");
+}
+
+void atomicFileReplaceError1177PreservesBothCopiesWhenRecoveryFails()
+{
+    const std::filesystem::path replacementPath = "C:/fake/song.trackloom.tmp";
+    const std::filesystem::path targetPath = "C:/fake/song.trackloom";
+    ScriptedWindowsAtomicFileOperations operations;
+    operations.files[targetPath] = "old project bytes";
+    operations.files[replacementPath] = "new project bytes";
+    operations.replaceScripts.push_back([](
+                                            auto& backend,
+                                            const auto& target,
+                                            const auto&,
+                                            const auto& backup,
+                                            std::uint32_t) {
+        backend.files.emplace(backup, backend.files.at(target));
+        backend.files.erase(target);
+        return ScriptedWindowsAtomicFileOperations::OperationResult {
+            false,
+            trackloom::detail::windowsErrorUnableToMoveReplacement2
+        };
+    });
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        operations.moveScripts.push_back([](auto&, const auto&, const auto&, std::uint32_t) {
+            return ScriptedWindowsAtomicFileOperations::OperationResult {
+                false,
+                trackloom::detail::windowsErrorAccessDenied
+            };
+        });
+    }
+
+    const auto result = trackloom::detail::replaceFileAtomicallyWithWindowsOperations(
+        replacementPath,
+        targetPath,
+        operations);
+
+    const auto backupPath = operations.replaceCalls.front().backupPath;
+    require(!result.success, "1177 should fail when install and restore both fail");
+    require(result.targetAvailability == trackloom::AtomicFileTargetAvailability::Missing,
+        "1177 should report the target missing after both recovery moves fail");
+    require(result.recoveryPath == backupPath,
+        "1177 should report the unpredictable backup path when target restoration fails");
+    require(operations.files.at(replacementPath) == "new project bytes", "1177 should preserve new bytes");
+    require(operations.files.at(backupPath) == "old project bytes", "1177 should preserve old bytes in backup");
+    require(!operations.files.contains(targetPath), "failed recovery should not fabricate a target");
+    require(operations.moveCalls.size() == 2, "1177 should try install then restore exactly once each");
+}
+
+void atomicFileReplaceSkipsOccupiedBackupSidecar()
+{
+    const std::filesystem::path replacementPath = "C:/fake/song.trackloom.tmp";
+    const std::filesystem::path targetPath = "C:/fake/song.trackloom";
+    auto occupiedBackupPath = targetPath;
+    occupiedBackupPath += ".trackloom-backup";
+    ScriptedWindowsAtomicFileOperations operations;
+    operations.files[targetPath] = "old project bytes";
+    operations.files[replacementPath] = "new project bytes";
+    operations.files[occupiedBackupPath] = "unrelated sidecar bytes";
+
+    const auto result = trackloom::detail::replaceFileAtomicallyWithWindowsOperations(
+        replacementPath,
+        targetPath,
+        operations);
+
+    require(result.success, "replacement should find a free bounded backup sidecar");
+    require(operations.files.at(targetPath) == "new project bytes", "replacement should install new bytes");
+    require(operations.files.at(occupiedBackupPath) == "unrelated sidecar bytes", "occupied sidecar must not be overwritten");
+    require(operations.replaceCalls.front().backupPath != occupiedBackupPath, "ReplaceFileW should receive a free backup path");
+}
+
+void atomicFileReplaceBackupCleanupFailureKeepsSuccessfulTarget()
+{
+    const std::filesystem::path replacementPath = "C:/fake/song.trackloom.tmp";
+    const std::filesystem::path targetPath = "C:/fake/song.trackloom";
+    ScriptedWindowsAtomicFileOperations operations;
+    operations.files[targetPath] = "old project bytes";
+    operations.files[replacementPath] = "new project bytes";
+    operations.removeScripts.push_back([](auto&, const auto&) {
+        return ScriptedWindowsAtomicFileOperations::OperationResult {
+            false,
+            trackloom::detail::windowsErrorAccessDenied
+        };
+    });
+
+    const auto result = trackloom::detail::replaceFileAtomicallyWithWindowsOperations(
+        replacementPath,
+        targetPath,
+        operations);
+
+    const auto backupPath = operations.replaceCalls.front().backupPath;
+    require(result.success, "backup cleanup failure must not reverse a successful replacement");
+    require(result.targetAvailability == trackloom::AtomicFileTargetAvailability::Available,
+        "successful replacement should report target available");
+    require(result.recoveryPath == backupPath, "leftover backup should be exposed to the caller");
+    require(operations.files.at(targetPath) == "new project bytes", "cleanup failure should keep new target");
+    require(operations.files.at(backupPath) == "old project bytes", "failed cleanup should leave old backup intact");
+}
+
+void atomicFileReplaceSupportsChineseWindowsPaths()
+{
+    const auto directory = makeTestDirectory("atomic_chinese_paths") / L"中文目录";
+    std::filesystem::create_directories(directory);
+
+    const auto existingTarget = directory / L"已有工程.trackloom";
+    const auto existingReplacement = directory / L"替换内容.tmp";
+    writeFileBytes(existingTarget, "old project bytes");
+    writeFileBytes(existingReplacement, "new project bytes");
+    const auto replaced = trackloom::replaceFileAtomically(existingReplacement, existingTarget);
+
+    require(replaced.success, "existing Chinese target path should be replaceable");
+    require(readFileBytes(existingTarget) == "new project bytes", "Chinese target should contain replacement bytes");
+    require(!std::filesystem::exists(existingReplacement), "Chinese replacement path should be consumed");
+
+    const auto missingTarget = directory / L"新建工程.trackloom";
+    const auto missingReplacement = directory / L"安装内容.tmp";
+    writeFileBytes(missingReplacement, "installed project bytes");
+    const auto installed = trackloom::replaceFileAtomically(missingReplacement, missingTarget);
+
+    require(installed.success, "missing Chinese target path should be installable");
+    require(readFileBytes(missingTarget) == "installed project bytes", "installed Chinese target should keep bytes");
+    require(!std::filesystem::exists(missingReplacement), "installed Chinese replacement should be consumed");
+}
+
+void savePreservesTemporaryRecoveryAfterRealWindowsReplaceFailure()
+{
+    const auto directory = makeTestDirectory("preserve_temporary_after_replace_failure");
+    const auto targetPath = directory / "song.trackloom";
+    auto temporaryPath = targetPath;
+    temporaryPath += ".tmp";
+
+    require(trackloom::saveProjectToFileAtomically(trackloom::Project("Old Song"), targetPath).success,
+        "test setup should create the old target");
+
+    const auto targetHandle = CreateFileW(
+        targetPath.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    require(targetHandle != INVALID_HANDLE_VALUE, "test should lock target without delete sharing");
+
+    const auto result = trackloom::saveProjectToFileAtomically(trackloom::Project("New Song"), targetPath);
+    CloseHandle(targetHandle);
+
+    const auto oldTarget = trackloom::loadProjectFromFile(targetPath);
+    const auto newRecovery = trackloom::loadProjectFromFile(temporaryPath);
+    require(!result.success, "locked target should make atomic replacement fail");
+    require(oldTarget.project.has_value() && oldTarget.project->name() == "Old Song",
+        "failed replacement should preserve the old target project");
+    require(newRecovery.project.has_value() && newRecovery.project->name() == "New Song",
+        "ProjectFile should preserve the validated temporary replacement");
+    require(result.error.find(".tmp") != std::string::npos,
+        "ProjectFile should report the preserved temporary recovery path");
+}
+
+#endif
+
+void saveRefusesToOverwriteExistingTemporaryRecoveryFile()
+{
+    const auto directory = makeTestDirectory("preserve_existing_temporary_file");
+    const auto targetPath = directory / "song.trackloom";
+    auto temporaryPath = targetPath;
+    temporaryPath += ".tmp";
+    const std::string recoveryBytes { "recovery\0bytes\r\n", 16 };
+    writeFileBytes(temporaryPath, recoveryBytes);
+
+    const auto result = trackloom::saveProjectToFileAtomically(trackloom::Project("New Song"), targetPath);
+
+    require(!result.success, "save should fail when its fixed temporary path already exists");
+    require(readFileBytes(temporaryPath) == recoveryBytes, "save should preserve an existing temporary file byte for byte");
+    require(!std::filesystem::exists(targetPath), "refusing the save should not create the target");
+    require(result.error.find(".tmp") != std::string::npos, "save failure should report the recovery path");
+}
+
 void loadingMissingFileReportsError()
 {
     const auto directory = makeTestDirectory("missing_file");
@@ -7230,6 +7819,23 @@ int main()
         atomicFileReplaceReplacesExistingTarget();
         atomicFileReplaceInstallsWhenTargetIsMissing();
         atomicFileReplaceMissingReplacementPreservesExistingTarget();
+#ifdef _WIN32
+        atomicFileReplaceReportsReplacementQueryFailureWithoutTouchingTarget();
+        atomicFileReplaceReportsTargetQueryFailureWithoutTouchingFiles();
+        atomicFileReplaceDoesNotOverwriteTargetThatAppearsBeforeMove();
+        atomicFileReplacePreservesReplacementWhenTargetDisappearsBeforeReplace();
+        atomicFileReplaceError1175PreservesBothOriginalFiles();
+        atomicFileReplaceError1176PreservesOriginalNamesWithBackup();
+        atomicFileReplaceError1177InstallsReplacementAndRemovesBackup();
+        atomicFileReplaceError1177RestoresTargetWhenInstallFails();
+        atomicFileReplaceError1177RestoresBackupIfReplacementDisappears();
+        atomicFileReplaceError1177PreservesBothCopiesWhenRecoveryFails();
+        atomicFileReplaceSkipsOccupiedBackupSidecar();
+        atomicFileReplaceBackupCleanupFailureKeepsSuccessfulTarget();
+        atomicFileReplaceSupportsChineseWindowsPaths();
+        savePreservesTemporaryRecoveryAfterRealWindowsReplaceFailure();
+#endif
+        saveRefusesToOverwriteExistingTemporaryRecoveryFile();
         loadingMissingFileReportsError();
         savingEmptyPathReportsError();
         transportStartsStoppedAtSampleZero();
