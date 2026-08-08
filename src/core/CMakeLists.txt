@@ -1,4 +1,5 @@
 add_library(trackloom_core STATIC
+    AtomicFileReplace.cpp
     AudioDisable.cpp
     AudioGain.cpp
     AudioPan.cpp

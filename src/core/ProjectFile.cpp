@@ -1,5 +1,7 @@
 #include "ProjectFile.h"
 
+#include "AtomicFileReplace.h"
+
 #include <exception>
 #include <fstream>
 #include <sstream>
@@ -97,17 +99,9 @@ FileOperationResult saveProjectToFileAtomically(const Project& project, const st
             return failAfterCleanup(temporaryPath, "Temporary project file did not validate: " + validation.error);
         }
 
-        std::error_code replaceError;
-        if (std::filesystem::exists(path, replaceError)) {
-            std::filesystem::remove(path, replaceError);
-            if (replaceError) {
-                return failAfterCleanup(temporaryPath, "Could not remove existing project file.");
-            }
-        }
-
-        std::filesystem::rename(temporaryPath, path, replaceError);
-        if (replaceError) {
-            return failAfterCleanup(temporaryPath, "Could not replace project file.");
+        const auto replacement = replaceFileAtomically(temporaryPath, path);
+        if (!replacement.success) {
+            return failAfterCleanup(temporaryPath, "Could not replace project file: " + replacement.error);
         }
 
         return FileOperationResult::ok();

@@ -1,3 +1,4 @@
+#include "AtomicFileReplace.h"
 #include "AudioDisable.h"
 #include "AudioPan.h"
 #include "AudioProjectGraph.h"
@@ -24,7 +25,9 @@
 #include "Transport.h"
 
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -325,6 +328,20 @@ std::filesystem::path makeTestDirectory(const std::string& name)
     std::filesystem::remove_all(path);
     std::filesystem::create_directories(path);
     return path;
+}
+
+void writeFileBytes(const std::filesystem::path& path, const std::string& contents)
+{
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    require(static_cast<bool>(output), "test file should be written");
+}
+
+std::string readFileBytes(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    require(static_cast<bool>(input), "test file should be readable");
+    return { std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
 }
 
 void projectStartsEmpty()
@@ -5540,6 +5557,50 @@ void saveReplacesExistingFile()
     require(loaded.project->name() == "New Song", "replacement should store new content");
 }
 
+void atomicFileReplaceReplacesExistingTarget()
+{
+    const auto directory = makeTestDirectory("atomic_replace_existing");
+    const auto replacementPath = directory / "song.tlproj.tmp";
+    const auto targetPath = directory / "song.tlproj";
+    writeFileBytes(targetPath, "old project bytes\n");
+    writeFileBytes(replacementPath, "new project bytes\n");
+
+    const auto result = trackloom::replaceFileAtomically(replacementPath, targetPath);
+
+    require(result.success, "atomic replacement should replace an existing target");
+    require(readFileBytes(targetPath) == "new project bytes\n", "target should contain replacement bytes");
+    require(!std::filesystem::exists(replacementPath), "replacement path should be consumed");
+}
+
+void atomicFileReplaceInstallsWhenTargetIsMissing()
+{
+    const auto directory = makeTestDirectory("atomic_install_missing_target");
+    const auto replacementPath = directory / "song.tlproj.tmp";
+    const auto targetPath = directory / "song.tlproj";
+    writeFileBytes(replacementPath, "new project bytes\n");
+
+    const auto result = trackloom::replaceFileAtomically(replacementPath, targetPath);
+
+    require(result.success, "atomic replacement should install a missing target");
+    require(readFileBytes(targetPath) == "new project bytes\n", "installed target should contain replacement bytes");
+    require(!std::filesystem::exists(replacementPath), "installed replacement path should be consumed");
+}
+
+void atomicFileReplaceMissingReplacementPreservesExistingTarget()
+{
+    const auto directory = makeTestDirectory("atomic_missing_replacement");
+    const auto replacementPath = directory / "missing.tlproj.tmp";
+    const auto targetPath = directory / "song.tlproj";
+    const std::string originalBytes { "existing\0project\r\nbytes", 23 };
+    writeFileBytes(targetPath, originalBytes);
+
+    const auto result = trackloom::replaceFileAtomically(replacementPath, targetPath);
+
+    require(!result.success, "missing replacement should fail");
+    require(!result.error.empty(), "missing replacement should report an error");
+    require(readFileBytes(targetPath) == originalBytes, "failed replacement should preserve target bytes exactly");
+}
+
 void loadingMissingFileReportsError()
 {
     const auto directory = makeTestDirectory("missing_file");
@@ -7166,6 +7227,9 @@ int main()
         projectCanSaveAndLoadFromFile();
         saveCreatesParentDirectories();
         saveReplacesExistingFile();
+        atomicFileReplaceReplacesExistingTarget();
+        atomicFileReplaceInstallsWhenTargetIsMissing();
+        atomicFileReplaceMissingReplacementPreservesExistingTarget();
         loadingMissingFileReportsError();
         savingEmptyPathReportsError();
         transportStartsStoppedAtSampleZero();
