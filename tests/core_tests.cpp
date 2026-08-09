@@ -2721,6 +2721,21 @@ void runtimeValidatorRejectsUnrepresentableEnvelopeSampleRateBeforeInstall()
     require(runtime.start(), "failed huge-rate install must preserve the stopped baseline plan");
 }
 
+void runtimeValidatorRejectsPhaseIncrementAboveOneCycleBeforeInstall()
+{
+    auto valid = runtimePlan();
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&valid), "baseline plan should install before phase-rate rejection");
+
+    auto invalid = valid;
+    invalid.sampleRate = 1.0e-303;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidFormat,
+        "sample rate producing a phase increment above one cycle must be rejected");
+    require(!runtime.installPlan(&invalid), "unsafe phase rate must not replace stopped plan");
+    require(runtime.start(), "failed phase-rate install must preserve the stopped baseline plan");
+}
+
 void runtimeValidatorAcceptsNormalSampleRates()
 {
     constexpr double sampleRates[] {44'100.0, 48'000.0, 96'000.0};
@@ -10109,6 +10124,7 @@ int main()
         runtimeHandlesMultipleLoopWrapsAndSameBaseKeyReleases();
         runtimeOrdersLoopHeadChaseAndNormalEventsByOrdinal();
         runtimeValidatorRejectsInvalidFormatsAndPreservesInstalledPlan();
+        runtimeValidatorRejectsPhaseIncrementAboveOneCycleBeforeInstall();
         runtimeValidatorRejectsUnrepresentableEnvelopeSampleRateBeforeInstall();
         runtimeValidatorRejectsDenormalSampleRateBeforeInstall();
         runtimeValidatorAcceptsNormalSampleRates();

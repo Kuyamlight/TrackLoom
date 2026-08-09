@@ -36,9 +36,13 @@ bool validBuiltInSynthSampleRate(double sampleRate) noexcept
 
     constexpr int highestMidiNote = 127;
     const double highestFrequency = 440.0 * std::exp2((highestMidiNote - 69) / 12.0);
-    const double phaseIncrement = 2.0 * std::acos(-1.0) * highestFrequency / sampleRate;
+    const double maximumPhaseIncrement = 2.0 * std::acos(-1.0);
+    const double phaseIncrement = maximumPhaseIncrement * highestFrequency / sampleRate;
     const double phaseAfterFirstAdvance = 0.0 + phaseIncrement;
-    return std::isfinite(phaseIncrement) && std::isfinite(phaseAfterFirstAdvance);
+    // At most one cycle per sample also bounds unwrapped accumulation across
+    // the runtime's complete uint64_t rendered-sample counter domain.
+    return std::isfinite(phaseIncrement) && std::isfinite(phaseAfterFirstAdvance)
+        && phaseIncrement <= maximumPhaseIncrement;
 }
 
 bool validOutputFormat(int channelCount, std::uint64_t channelMask) noexcept
