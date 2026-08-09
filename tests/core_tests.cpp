@@ -15,6 +15,8 @@
 #include "MidiOutputDevice.h"
 #include "MidiPlayback.h"
 #include "PreparedMidiPlaybackPlan.h"
+#include "PreparedMidiPlaybackRuntime.h"
+#include "RealtimePlaybackHost.h"
 #include "MidiOutputSession.h"
 #include "MidiTrackRouter.h"
 #include "PlaybackControl.h"
@@ -28,6 +30,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -38,6 +42,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <new>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -49,6 +54,112 @@
 #define NOMINMAX
 #include <Windows.h>
 #endif
+
+namespace {
+std::atomic<std::uint64_t> testAllocationCount {0};
+std::atomic<bool> failNextTestAllocation {false};
+}
+
+void* operator new(std::size_t size)
+{
+    if (failNextTestAllocation.exchange(false, std::memory_order_relaxed)) {
+        throw std::bad_alloc();
+    }
+    testAllocationCount.fetch_add(1, std::memory_order_relaxed);
+    if (void* memory = std::malloc(size == 0 ? 1 : size)) {
+        return memory;
+    }
+    throw std::bad_alloc();
+}
+
+void* operator new[](std::size_t size)
+{
+    return ::operator new(size);
+}
+
+void operator delete(void* memory) noexcept
+{
+    std::free(memory);
+}
+
+void operator delete[](void* memory) noexcept
+{
+    ::operator delete(memory);
+}
+
+void operator delete(void* memory, std::size_t) noexcept
+{
+    ::operator delete(memory);
+}
+
+void operator delete[](void* memory, std::size_t) noexcept
+{
+    ::operator delete(memory);
+}
+
+namespace trackloom::detail {
+
+struct PreparedMidiPlaybackRuntimeTestAccess {
+    static void forceInstallUnchecked(
+        PreparedMidiPlaybackRuntime& runtime,
+        const PreparedMidiPlaybackPlan& plan)
+    {
+        runtime.plan_ = &plan;
+        runtime.synth_.prepare(plan.sampleRate);
+        runtime.eventIndex_ = 0;
+        runtime.initialChaseApplied_ = false;
+        runtime.boundaryTransitionPending_ = false;
+        runtime.loopHeadChasePending_ = plan.loop
+            && plan.playbackStartSample == plan.loop->loopStartSample;
+        runtime.stopReleaseStarted_ = false;
+        runtime.projectSamplePositionCursor_ = plan.playbackStartSample;
+        runtime.loopIterationCursor_ = 0;
+        runtime.state_.store(
+            static_cast<std::uint32_t>(RealtimePlaybackState::Playing),
+            std::memory_order_release);
+        runtime.lastError_.store(
+            static_cast<std::uint32_t>(RealtimeAudioError::None),
+            std::memory_order_release);
+        runtime.renderedSampleCount_.store(0, std::memory_order_relaxed);
+        runtime.loopIteration_.store(0, std::memory_order_relaxed);
+        runtime.projectSamplePosition_.store(
+            plan.playbackStartSample, std::memory_order_release);
+    }
+
+    static std::size_t eventIndex(const PreparedMidiPlaybackRuntime& runtime)
+    {
+        return runtime.eventIndex_;
+    }
+
+    static std::size_t activeVoiceCount(const PreparedMidiPlaybackRuntime& runtime)
+    {
+        std::size_t count = 0;
+        for (std::size_t index = 0; index < BuiltInPolySynth::voiceCount; ++index) {
+            if (runtime.synth_.voiceSnapshot(index).active) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    static bool hasVoiceKey(
+        const PreparedMidiPlaybackRuntime& runtime,
+        std::uint32_t noteInstanceId,
+        std::uint64_t loopIteration)
+    {
+        for (std::size_t index = 0; index < BuiltInPolySynth::voiceCount; ++index) {
+            const auto voice = runtime.synth_.voiceSnapshot(index);
+            if (voice.active
+                && voice.key
+                    == BuiltInPolySynthVoiceKey {noteInstanceId, loopIteration}) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
+
+}
 
 namespace {
 
@@ -2217,6 +2328,683 @@ void builtInSynthSelectsOldestReleasingVoice()
 
     require(trackloom::detail::selectBuiltInPolySynthVoiceToSteal(voices) == 2,
         "oldest releasing voice should be stolen before active voices");
+}
+
+void runtimeRejectsInvalidInstrumentSlotBeforeInstall()
+{
+    trackloom::PreparedMidiPlaybackPlan plan;
+    plan.sampleRate = 48000.0;
+    plan.maximumBlockFrames = 256;
+    plan.outputChannelCount = 2;
+    plan.outputChannelMask = 3;
+    plan.instrumentSlots.push_back(trackloom::PreparedMidiInstrumentSlot {});
+    plan.events.push_back(trackloom::PreparedMidiEvent {});
+    plan.events.front().instrumentSlotIndex = 1;
+    plan.events.front().velocity = 100;
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+
+    const auto validation = trackloom::validatePreparedMidiPlaybackPlan(plan);
+    require(!validation.valid, "out-of-range instrument slot must be rejected");
+    require(validation.failureReason
+            == trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidInstrumentSlot,
+        "invalid slot should keep a stable failure reason");
+    require(!runtime.installPlan(&plan), "invalid plan must not be installed");
+    require(runtime.snapshot().state == trackloom::RealtimePlaybackState::Stopped,
+        "failed install must preserve stopped runtime");
+}
+
+trackloom::PreparedMidiPlaybackPlan runtimePlan(
+    int channels = 1,
+    int maximumBlockFrames = 2048)
+{
+    trackloom::PreparedMidiPlaybackPlan plan;
+    plan.sampleRate = 48000.0;
+    plan.maximumBlockFrames = maximumBlockFrames;
+    plan.outputChannelCount = channels;
+    plan.outputChannelMask = channels == 1 ? 1 : 3;
+    plan.instrumentSlots.push_back(trackloom::PreparedMidiInstrumentSlot {});
+    return plan;
+}
+
+trackloom::PreparedMidiEvent runtimeEvent(
+    std::int64_t samplePosition,
+    std::uint32_t noteInstanceId,
+    std::uint32_t eventOrdinal,
+    trackloom::PreparedMidiEventType type)
+{
+    trackloom::PreparedMidiEvent event;
+    event.samplePosition = samplePosition;
+    event.noteInstanceId = noteInstanceId;
+    event.eventOrdinal = eventOrdinal;
+    event.noteNumber = 69;
+    event.velocity = type == trackloom::PreparedMidiEventType::NoteOn ? 127 : 0;
+    event.type = type;
+    return event;
+}
+
+void runtimeClearsOutputsWhileStopped()
+{
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    std::array<float, 8> left;
+    std::array<float, 8> right;
+    left.fill(1.0f);
+    right.fill(-1.0f);
+    float* outputs[] {left.data(), right.data()};
+
+    runtime.processBlock(outputs, 2, 8);
+
+    require(std::all_of(left.begin(), left.end(), [](float sample) { return sample == 0.0f; })
+            && std::all_of(right.begin(), right.end(), [](float sample) { return sample == 0.0f; }),
+        "stopped runtime must clear every non-null output channel");
+    require(runtime.snapshot().state == trackloom::RealtimePlaybackState::Stopped,
+        "silent stopped callback must preserve stopped state");
+}
+
+void runtimeAppliesInitialChaseOnceBeforeNormalEvents()
+{
+    auto plan = runtimePlan();
+    plan.playbackStartSample = 100;
+    plan.initialChaseNoteOnEvents.push_back(runtimeEvent(
+        100, 7, 0, trackloom::PreparedMidiEventType::NoteOn));
+    plan.events.push_back(runtimeEvent(
+        100, 7, 1, trackloom::PreparedMidiEventType::NoteOff));
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&plan) && runtime.start(),
+        "valid chase fixture should install and start");
+    std::array<float, 64> first {};
+    std::array<float, 64> second {};
+    float* firstOutput[] {first.data()};
+    float* secondOutput[] {second.data()};
+
+    runtime.processBlock(firstOutput, 1, static_cast<int>(first.size()));
+    runtime.processBlock(secondOutput, 1, static_cast<int>(second.size()));
+
+    require(runtime.snapshot().staleNoteOffCount == 0,
+        "initial chase must run before a normal note off at the same first sample");
+    require(std::all_of(first.begin(), first.end(), [](float sample) { return sample == 0.0f; })
+            && std::all_of(second.begin(), second.end(), [](float sample) { return sample == 0.0f; }),
+        "a released initial chase must not be applied again on the second callback");
+}
+
+void runtimeRendersSegmentsAndAdvancesActualFrames()
+{
+    auto plan = runtimePlan();
+    plan.playbackStartSample = 100;
+    plan.events.push_back(runtimeEvent(
+        108, 8, 0, trackloom::PreparedMidiEventType::NoteOn));
+    plan.events.push_back(runtimeEvent(
+        124, 8, 1, trackloom::PreparedMidiEventType::NoteOff));
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&plan) && runtime.start(),
+        "segmented render fixture should install and start");
+    std::array<float, 32> samples {};
+    float* outputs[] {samples.data()};
+
+    runtime.processBlock(outputs, 1, static_cast<int>(samples.size()));
+
+    require(std::all_of(samples.begin(), samples.begin() + 8,
+                [](float sample) { return sample == 0.0f; }),
+        "runtime must render silence before the first event sample");
+    require(std::any_of(samples.begin() + 8, samples.begin() + 24,
+                [](float sample) { return sample != 0.0f; }),
+        "runtime must render the synth between note-on and note-off events");
+    const auto snapshot = runtime.snapshot();
+    require(snapshot.renderedSampleCount == 32,
+        "runtime must count actual callback frames instead of maximum block size");
+    require(snapshot.projectSamplePosition == 132,
+        "non-loop project position must advance by actual callback frames");
+}
+
+void runtimeSupportsMonoStereoAndNullOutputPointers()
+{
+    auto monoPlan = runtimePlan(1, 128);
+    monoPlan.events.push_back(runtimeEvent(
+        0, 9, 0, trackloom::PreparedMidiEventType::NoteOn));
+    trackloom::PreparedMidiPlaybackRuntime mono;
+    require(mono.installPlan(&monoPlan) && mono.start(), "mono fixture should start");
+    std::array<float, 64> monoSamples {};
+    float* monoOutput[] {monoSamples.data()};
+    mono.processBlock(monoOutput, 1, 64);
+    require(containsNonZeroSample(std::vector<float>(monoSamples.begin(), monoSamples.end())),
+        "mono runtime output should contain rendered audio");
+
+    auto stereoPlan = runtimePlan(2, 128);
+    stereoPlan.events.push_back(runtimeEvent(
+        0, 10, 0, trackloom::PreparedMidiEventType::NoteOn));
+    trackloom::PreparedMidiPlaybackRuntime stereo;
+    require(stereo.installPlan(&stereoPlan) && stereo.start(), "stereo fixture should start");
+    std::array<float, 64> right {};
+    float* partialOutput[] {nullptr, right.data()};
+    stereo.processBlock(partialOutput, 2, 64);
+    require(std::any_of(right.begin(), right.end(), [](float sample) { return sample != 0.0f; }),
+        "a null stereo channel must not prevent the valid channel or synth time from advancing");
+    stereo.processBlock(nullptr, 2, 17);
+    require(stereo.snapshot().renderedSampleCount == 81,
+        "a null output array must remain safe while playback timing advances");
+}
+
+void runtimeStopsAfterNonLoopPlanAndEmptyPlan()
+{
+    auto emptyPlan = runtimePlan(1, 64);
+    trackloom::PreparedMidiPlaybackRuntime empty;
+    require(empty.installPlan(&emptyPlan) && empty.start(), "empty plan should start");
+    std::array<float, 17> emptyOutput {};
+    float* emptyChannels[] {emptyOutput.data()};
+    empty.processBlock(emptyChannels, 1, 17);
+    require(empty.snapshot().state == trackloom::RealtimePlaybackState::Stopped,
+        "empty non-loop plan must stop on its first callback");
+    require(empty.snapshot().renderedSampleCount == 17,
+        "empty plan callback must still account for its actual frames");
+
+    auto plan = runtimePlan(1, 2048);
+    plan.events.push_back(runtimeEvent(0, 11, 0, trackloom::PreparedMidiEventType::NoteOn));
+    plan.events.push_back(runtimeEvent(1, 11, 1, trackloom::PreparedMidiEventType::NoteOff));
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&plan) && runtime.start(), "finite plan should start");
+    std::array<float, 2048> output {};
+    float* outputs[] {output.data()};
+    runtime.processBlock(outputs, 1, 2048);
+    require(runtime.snapshot().state == trackloom::RealtimePlaybackState::Stopped,
+        "non-loop plan must stop after all events and release tails are exhausted");
+}
+
+void runtimeLoopsAcrossTailAndHeadWithBoundaryReleaseBeforeChase()
+{
+    auto plan = runtimePlan(1, 64);
+    plan.playbackStartSample = 112;
+    plan.loop = trackloom::PreparedMidiLoop {100, 16, {}, {}};
+    plan.events.push_back(runtimeEvent(
+        14, 20, 0, trackloom::PreparedMidiEventType::NoteOn));
+    plan.loop->boundaryNoteOffEvents.push_back(runtimeEvent(
+        16, 20, 1, trackloom::PreparedMidiEventType::NoteOff));
+    plan.loop->startChaseNoteOnEvents.push_back(runtimeEvent(
+        0, 20, 2, trackloom::PreparedMidiEventType::NoteOn));
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&plan) && runtime.start(), "loop tail fixture should start");
+    std::array<float, 4> tail {};
+    float* tailOutput[] {tail.data()};
+
+    runtime.processBlock(tailOutput, 1, 4);
+
+    require(runtime.snapshot().projectSamplePosition == 100,
+        "a callback ending exactly at the loop boundary must publish the wrapped position");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::hasVoiceKey(
+                runtime, 20, 0),
+        "the tail note must remain addressable until the next valid loop-head sample");
+
+    std::array<float, 4> head {};
+    float* headOutput[] {head.data()};
+    runtime.processBlock(headOutput, 1, 4);
+    const auto snapshot = runtime.snapshot();
+    require(snapshot.projectSamplePosition == 104 && snapshot.loopIteration == 1,
+        "next callback must continue from the loop head in the next iteration");
+    require(snapshot.staleNoteOffCount == 0,
+        "boundary note off must target the old iteration before chase increments it");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::hasVoiceKey(
+                runtime, 20, 1),
+        "loop-head chase must create the same base key in the new iteration");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(runtime) == 2,
+        "releasing old iteration and chased new iteration must coexist");
+}
+
+void runtimeDoesNotRepeatInitialOrLoopHeadChaseOnContinuousBlocks()
+{
+    auto initialPlan = runtimePlan(1, 64);
+    initialPlan.playbackStartSample = 108;
+    initialPlan.loop = trackloom::PreparedMidiLoop {100, 16, {}, {}};
+    initialPlan.initialChaseNoteOnEvents.push_back(runtimeEvent(
+        8, 21, 0, trackloom::PreparedMidiEventType::NoteOn));
+    trackloom::PreparedMidiPlaybackRuntime initial;
+    require(initial.installPlan(&initialPlan) && initial.start(),
+        "initial chase loop fixture should start");
+    std::array<float, 2> initialSamples {};
+    float* initialOutput[] {initialSamples.data()};
+    initial.processBlock(initialOutput, 1, 1);
+    initial.processBlock(initialOutput, 1, 1);
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(initial) == 1,
+        "continuous callbacks must not repeat initial chase");
+
+    auto headPlan = runtimePlan(1, 64);
+    headPlan.playbackStartSample = 100;
+    headPlan.loop = trackloom::PreparedMidiLoop {100, 16, {}, {}};
+    headPlan.loop->startChaseNoteOnEvents.push_back(runtimeEvent(
+        0, 22, 0, trackloom::PreparedMidiEventType::NoteOn));
+    trackloom::PreparedMidiPlaybackRuntime head;
+    require(head.installPlan(&headPlan) && head.start(), "head chase fixture should start");
+    std::array<float, 4> headSamples {};
+    float* headOutput[] {headSamples.data()};
+    head.processBlock(headOutput, 1, 2);
+    head.processBlock(headOutput, 1, 2);
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(head) == 1,
+        "continuous callbacks inside one iteration must not repeat loop-head chase");
+}
+
+void runtimeHandlesMultipleLoopWrapsAndSameBaseKeyReleases()
+{
+    auto plan = runtimePlan(1, 16);
+    plan.loop = trackloom::PreparedMidiLoop {0, 4, {}, {}};
+    plan.loop->startChaseNoteOnEvents.push_back(runtimeEvent(
+        0, 23, 0, trackloom::PreparedMidiEventType::NoteOn));
+    plan.loop->boundaryNoteOffEvents.push_back(runtimeEvent(
+        4, 23, 1, trackloom::PreparedMidiEventType::NoteOff));
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&plan) && runtime.start(), "multi-wrap fixture should start");
+    std::array<float, 9> samples {};
+    float* outputs[] {samples.data()};
+
+    runtime.processBlock(outputs, 1, 9);
+
+    const auto snapshot = runtime.snapshot();
+    require(snapshot.projectSamplePosition == 1 && snapshot.loopIteration == 2,
+        "one callback must support more than one complete loop wrap");
+    require(snapshot.renderedSampleCount == 9,
+        "rendered sample count must remain monotonic across loop wraps");
+    require(snapshot.staleNoteOffCount == 0,
+        "every wrap must release the matching old iteration before chase");
+    for (std::uint64_t iteration = 0; iteration <= 2; ++iteration) {
+        require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::hasVoiceKey(
+                    runtime, 23, iteration),
+            "same base key occurrences from different loop iterations must coexist");
+    }
+}
+
+void runtimeOrdersLoopHeadChaseAndNormalEventsByOrdinal()
+{
+    auto plan = runtimePlan(1, 16);
+    plan.loop = trackloom::PreparedMidiLoop {0, 8, {}, {}};
+    plan.loop->startChaseNoteOnEvents.push_back(runtimeEvent(
+        0, 24, 0, trackloom::PreparedMidiEventType::NoteOn));
+    plan.events.push_back(runtimeEvent(
+        0, 24, 1, trackloom::PreparedMidiEventType::NoteOff));
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&plan) && runtime.start(), "head-order fixture should start");
+    std::array<float, 4> samples {};
+    float* outputs[] {samples.data()};
+
+    runtime.processBlock(outputs, 1, 4);
+
+    require(runtime.snapshot().staleNoteOffCount == 0,
+        "same-sample loop-head events must follow global event ordinal");
+    require(std::all_of(samples.begin(), samples.end(), [](float sample) { return sample == 0.0f; }),
+        "ordinal-ordered chase followed by note off should render silence");
+}
+
+void requirePlanValidationFailure(
+    const trackloom::PreparedMidiPlaybackPlan& plan,
+    trackloom::PreparedMidiPlaybackPlanValidationFailureReason expected,
+    const std::string& message)
+{
+    const auto result = trackloom::validatePreparedMidiPlaybackPlan(plan);
+    require(!result.valid && result.failureReason == expected, message);
+}
+
+void runtimeValidatorRejectsInvalidFormatsAndPreservesInstalledPlan()
+{
+    auto valid = runtimePlan();
+    valid.events.push_back(runtimeEvent(0, 30, 0, trackloom::PreparedMidiEventType::NoteOn));
+    auto invalid = valid;
+    invalid.sampleRate = 0.0;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidFormat,
+        "zero sample rate must be an invalid format");
+    invalid = valid;
+    invalid.sampleRate = std::numeric_limits<double>::infinity();
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidFormat,
+        "non-finite sample rate must be an invalid format");
+    invalid = valid;
+    invalid.maximumBlockFrames = 0;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidFormat,
+        "non-positive maximum block size must be rejected");
+    invalid = valid;
+    invalid.outputChannelCount = 2;
+    invalid.outputChannelMask = 1;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidFormat,
+        "channel count and output mask must be consistent");
+    invalid = valid;
+    invalid.playbackStartSample = -1;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidFormat,
+        "negative playback start must be rejected");
+    invalid = valid;
+    invalid.instrumentSlots.front().gain = std::numeric_limits<float>::infinity();
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidFormat,
+        "non-finite instrument gain must be rejected");
+    invalid = valid;
+    invalid.instrumentSlots.front().pan = 1.1f;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidFormat,
+        "out-of-range instrument pan must be rejected");
+    invalid = valid;
+    invalid.instrumentSlots.front().outputBusIndex = 1;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidFormat,
+        "unsupported output bus must be rejected");
+
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&valid), "valid plan should install before preservation test");
+    require(!runtime.installPlan(&invalid), "invalid replacement plan must be rejected");
+    require(runtime.start(), "failed replacement must preserve the previously installed plan");
+    require(!runtime.installPlan(&valid), "install must reject every non-stopped runtime state");
+}
+
+void runtimeValidatorRejectsInvalidEventValuesAndCoordinates()
+{
+    auto valid = runtimePlan();
+    valid.playbackStartSample = 10;
+    valid.events.push_back(runtimeEvent(10, 31, 0, trackloom::PreparedMidiEventType::NoteOn));
+    auto invalid = valid;
+    invalid.events.front().channel = 0;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidEventValue,
+        "MIDI channel zero must be rejected");
+    invalid = valid;
+    invalid.events.front().channel = 17;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidEventValue,
+        "MIDI channels above sixteen must be rejected");
+    invalid = valid;
+    invalid.events.front().noteNumber = 128;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidEventValue,
+        "MIDI note numbers above 127 must be rejected");
+    invalid = valid;
+    invalid.events.front().velocity = 0;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidEventValue,
+        "note on velocity zero must be rejected");
+    invalid = valid;
+    invalid.events.front().type = trackloom::PreparedMidiEventType::NoteOff;
+    invalid.events.front().velocity = 1;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidEventValue,
+        "note off must carry zero velocity");
+    invalid = valid;
+    invalid.events.front().type = static_cast<trackloom::PreparedMidiEventType>(99);
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidEventValue,
+        "unknown event type must be rejected");
+    invalid = valid;
+    invalid.events.front().samplePosition = 9;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidEventValue,
+        "non-loop events before playback start must be rejected");
+
+    auto loopPlan = runtimePlan();
+    loopPlan.loop = trackloom::PreparedMidiLoop {0, 8, {}, {}};
+    loopPlan.events.push_back(runtimeEvent(0, 32, 0, trackloom::PreparedMidiEventType::NoteOn));
+    invalid = loopPlan;
+    invalid.events.front().samplePosition = 8;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidEventValue,
+        "loop events at the exclusive right boundary must be rejected");
+}
+
+void runtimeValidatorRejectsMalformedLoopTablesAndSlots()
+{
+    auto plan = runtimePlan();
+    plan.loop = trackloom::PreparedMidiLoop {100, 8, {}, {}};
+    plan.playbackStartSample = 100;
+    plan.events.push_back(runtimeEvent(0, 33, 0, trackloom::PreparedMidiEventType::NoteOn));
+    plan.loop->boundaryNoteOffEvents.push_back(runtimeEvent(
+        8, 33, 1, trackloom::PreparedMidiEventType::NoteOff));
+    plan.loop->startChaseNoteOnEvents.push_back(runtimeEvent(
+        0, 33, 2, trackloom::PreparedMidiEventType::NoteOn));
+    auto invalid = plan;
+    invalid.loop->boundaryNoteOffEvents.front().type = trackloom::PreparedMidiEventType::NoteOn;
+    invalid.loop->boundaryNoteOffEvents.front().velocity = 100;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidLoopTable,
+        "boundary table must contain only note off events");
+    invalid = plan;
+    invalid.loop->boundaryNoteOffEvents.front().samplePosition = 7;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidLoopTable,
+        "boundary table coordinates must equal loop length");
+    invalid = plan;
+    invalid.loop->startChaseNoteOnEvents.front().type = trackloom::PreparedMidiEventType::NoteOff;
+    invalid.loop->startChaseNoteOnEvents.front().velocity = 0;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidLoopTable,
+        "loop chase table must contain only note on events");
+    invalid = plan;
+    invalid.loop->startChaseNoteOnEvents.front().samplePosition = 1;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidLoopTable,
+        "loop chase coordinates must equal zero");
+    invalid = plan;
+    invalid.initialChaseNoteOnEvents.push_back(runtimeEvent(
+        0, 34, 3, trackloom::PreparedMidiEventType::NoteOff));
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidLoopTable,
+        "initial chase table must contain only note on events at playback start");
+    invalid = plan;
+    invalid.loop->loopLengthSamples = 0;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidLoopTable,
+        "zero loop length must be rejected");
+    invalid = plan;
+    invalid.playbackStartSample = 108;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidLoopTable,
+        "playback start at the exclusive loop end must be rejected");
+    invalid = plan;
+    invalid.loop->startChaseNoteOnEvents.front().instrumentSlotIndex = 1;
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidInstrumentSlot,
+        "every special table must validate instrument slot indexes");
+}
+
+void runtimeValidatorRejectsOrderingAndOrdinalCorruption()
+{
+    auto plan = runtimePlan();
+    plan.events.push_back(runtimeEvent(2, 35, 0, trackloom::PreparedMidiEventType::NoteOn));
+    plan.events.push_back(runtimeEvent(1, 36, 1, trackloom::PreparedMidiEventType::NoteOn));
+    requirePlanValidationFailure(plan,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::UnsortedEvents,
+        "decreasing event sample positions must be rejected");
+    plan.events[1].samplePosition = 2;
+    plan.events[0].eventOrdinal = 1;
+    plan.events[1].eventOrdinal = 0;
+    requirePlanValidationFailure(plan,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::UnsortedEvents,
+        "same-sample event ordinals must be strictly increasing");
+    plan.events[0].eventOrdinal = 0;
+    plan.events[1].eventOrdinal = 0;
+    requirePlanValidationFailure(plan,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidEventOrdinal,
+        "event ordinal must be globally unique");
+    plan.events[1].eventOrdinal = 2;
+    requirePlanValidationFailure(plan,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidEventOrdinal,
+        "event ordinal set must be dense and capacity-consistent");
+}
+
+void runtimeValidatorEnforcesTotalAndCallbackEventLimits()
+{
+    auto oversized = runtimePlan(1, 1);
+    oversized.events.resize(1'000'001);
+    requirePlanValidationFailure(oversized,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::EventLimitExceeded,
+        "validator must reject plans above the production total event limit");
+
+    auto dense = runtimePlan(1, 256);
+    dense.events.reserve(4'097);
+    for (std::uint32_t ordinal = 0; ordinal < 4'097; ++ordinal) {
+        dense.events.push_back(runtimeEvent(
+            0, ordinal, ordinal, trackloom::PreparedMidiEventType::NoteOn));
+    }
+    requirePlanValidationFailure(dense,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::CallbackEventLimitExceeded,
+        "4,097 statically reachable callback events must be rejected before playback");
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(!runtime.installPlan(&dense), "formal install must reject callback-dense plans");
+    require(runtime.snapshot().state == trackloom::RealtimePlaybackState::Stopped,
+        "callback-density install failure must preserve stopped state");
+}
+
+void runtimeValidatorReportsUnavailableValidationResources()
+{
+    auto plan = runtimePlan();
+    plan.events.push_back(runtimeEvent(0, 37, 0, trackloom::PreparedMidiEventType::NoteOn));
+    failNextTestAllocation.store(true, std::memory_order_relaxed);
+    const auto result = trackloom::validatePreparedMidiPlaybackPlan(plan);
+    failNextTestAllocation.store(false, std::memory_order_relaxed);
+    require(!result.valid
+            && result.failureReason
+                == trackloom::PreparedMidiPlaybackPlanValidationFailureReason::ValidationResourceUnavailable,
+        "ordinal bitmap allocation failure must return a stable validation result");
+}
+
+void runtimeCallbackRejectsCorruptedEventDensityBeforeTouchingSynth()
+{
+    auto plan = runtimePlan(1, 64);
+    plan.events.reserve(4'097);
+    for (std::uint32_t ordinal = 0; ordinal < 4'097; ++ordinal) {
+        plan.events.push_back(runtimeEvent(
+            0, ordinal, ordinal, trackloom::PreparedMidiEventType::NoteOn));
+    }
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::forceInstallUnchecked(
+        runtime, plan);
+    std::array<float, 1> output {1.0f};
+    float* outputs[] {output.data()};
+
+    runtime.processBlock(outputs, 1, 1);
+
+    const auto snapshot = runtime.snapshot();
+    require(output[0] == 0.0f, "density fault must silence the complete callback block");
+    require(snapshot.state == trackloom::RealtimePlaybackState::Faulted
+            && snapshot.lastError == trackloom::RealtimeAudioError::EventDensityExceeded,
+        "corrupted callback density must publish a stable fault");
+    require(snapshot.renderedSampleCount == 0 && snapshot.projectSamplePosition == 0,
+        "density fault must not advance either sample counter");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::eventIndex(runtime) == 0,
+        "density fault must not advance the event cursor");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(runtime) == 0,
+        "density preflight must fault before changing any synth voice");
+}
+
+void runtimeOversizedBlockFaultsWithoutAdvancingPlayback()
+{
+    auto plan = runtimePlan(1, 8);
+    plan.events.push_back(runtimeEvent(0, 40, 0, trackloom::PreparedMidiEventType::NoteOn));
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&plan) && runtime.start(), "oversized fixture should start");
+    std::array<float, 16> output;
+    output.fill(1.0f);
+    float* outputs[] {output.data()};
+
+    runtime.processBlock(outputs, 1, 16);
+
+    const auto snapshot = runtime.snapshot();
+    require(std::all_of(output.begin(), output.end(), [](float sample) { return sample == 0.0f; }),
+        "oversized callback must silence the complete block");
+    require(snapshot.state == trackloom::RealtimePlaybackState::Faulted
+            && snapshot.lastError == trackloom::RealtimeAudioError::OversizedBlock,
+        "oversized callback must enter the stable oversized-block fault");
+    require(snapshot.oversizedBlockCount == 1 && snapshot.largestObservedBlockFrames == 16,
+        "oversized diagnostics must retain count and largest observed frame size");
+    require(snapshot.renderedSampleCount == 0 && snapshot.projectSamplePosition == 0,
+        "oversized callback must not advance either sample counter");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::eventIndex(runtime) == 0,
+        "oversized callback must not advance event cursor");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(runtime) == 0,
+        "oversized callback must fault before applying its first event");
+}
+
+void runtimeStoppingReleasesWithinThirtyMilliseconds()
+{
+    auto plan = runtimePlan(1, 512);
+    plan.events.push_back(runtimeEvent(0, 41, 0, trackloom::PreparedMidiEventType::NoteOn));
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&plan) && runtime.start(), "stopping fixture should start");
+    std::array<float, 512> output {};
+    float* outputs[] {output.data()};
+    runtime.processBlock(outputs, 1, 512);
+    const auto beforeStop = runtime.snapshot().renderedSampleCount;
+
+    require(runtime.requestStop(), "playing runtime must accept one stop request");
+    require(runtime.snapshot().state == trackloom::RealtimePlaybackState::Stopping,
+        "stop request must publish stopping before callback release");
+    for (int block = 0;
+         block < 8 && runtime.snapshot().state != trackloom::RealtimePlaybackState::Stopped;
+         ++block) {
+        runtime.processBlock(outputs, 1, 256);
+    }
+
+    const auto stopped = runtime.snapshot();
+    const auto releasedFrames = stopped.renderedSampleCount - beforeStop;
+    require(stopped.state == trackloom::RealtimePlaybackState::Stopped,
+        "stopping runtime must reach stopped without non-realtime service");
+    require(releasedFrames > 0 && releasedFrames <= 1440,
+        "48 kHz stopping release must finish within ceil(sampleRate * 0.030) frames");
+    require(!runtime.requestStop(), "already stopped runtime must reject duplicate stop requests");
+}
+
+void runtimeHardResetAndCallbackDiagnosticsPublishStableFaults()
+{
+    auto plan = runtimePlan(1, 64);
+    plan.events.push_back(runtimeEvent(0, 42, 0, trackloom::PreparedMidiEventType::NoteOn));
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&plan) && runtime.start(), "hard-reset fixture should start");
+    std::array<float, 16> output {};
+    float* outputs[] {output.data()};
+    runtime.processBlock(outputs, 1, 16);
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(runtime) == 1,
+        "hard-reset fixture should own an active voice");
+
+    runtime.recordCallbackTimeout();
+    require(runtime.snapshot().callbackTimeoutCount == 1,
+        "callback timeout count must be published independently");
+    runtime.hardReset(trackloom::RealtimeAudioError::DeviceError);
+    require(runtime.snapshot().state == trackloom::RealtimePlaybackState::Faulted
+            && runtime.snapshot().lastError == trackloom::RealtimeAudioError::DeviceError,
+        "device hard reset must immediately publish a device fault");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(runtime) == 0,
+        "device hard reset must immediately clear all voices");
+
+    runtime.hardReset();
+    require(runtime.snapshot().state == trackloom::RealtimePlaybackState::Stopped
+            && runtime.snapshot().lastError == trackloom::RealtimeAudioError::None,
+        "clean hard reset must restore stopped/no-error state");
+    require(!runtime.start(), "hard reset must detach the old stable plan");
+
+    require(runtime.installPlan(&plan) && runtime.start(),
+        "callback-exception fixture should restart with a fresh install");
+    runtime.recordCallbackException();
+    require(runtime.snapshot().state == trackloom::RealtimePlaybackState::Faulted
+            && runtime.snapshot().lastError == trackloom::RealtimeAudioError::CallbackException
+            && runtime.snapshot().callbackExceptionCount == 1,
+        "callback exception must publish count and stable fault reason");
+}
+
+void runtimeAllocatesNothingAcrossTenThousandWarmedCallbacks()
+{
+    auto plan = runtimePlan(1, 64);
+    plan.loop = trackloom::PreparedMidiLoop {0, 32, {}, {}};
+    plan.events.push_back(runtimeEvent(0, 50, 0, trackloom::PreparedMidiEventType::NoteOn));
+    plan.events.push_back(runtimeEvent(16, 50, 1, trackloom::PreparedMidiEventType::NoteOff));
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&plan) && runtime.start(),
+        "allocation fixture should validate and start before callback measurement");
+    std::array<float, 64> output {};
+    float* outputs[] {output.data()};
+    runtime.processBlock(outputs, 1, 64);
+    const auto allocationsBefore = testAllocationCount.load(std::memory_order_relaxed);
+
+    for (int block = 0; block < 10'000; ++block) {
+        runtime.processBlock(outputs, 1, 64);
+    }
+
+    const auto allocationsAfter = testAllocationCount.load(std::memory_order_relaxed);
+    require(allocationsAfter == allocationsBefore,
+        "10,000 warmed realtime callbacks must have zero global operator new increments");
+    require(runtime.snapshot().state == trackloom::RealtimePlaybackState::Playing,
+        "allocation stress fixture must continue looping for the full measurement");
 }
 
 void builtInSynthRendersA4()
@@ -9266,6 +10054,27 @@ int main()
         preparedMidiPlanRejectsSamplePositionThatRoundsPastInt64Maximum();
         preparedMidiPlanAcceptsMaximumSafelyRoundableSamplePosition();
         preparedMidiPlanUsesExistingTrackPlaybackRules();
+        runtimeRejectsInvalidInstrumentSlotBeforeInstall();
+        runtimeClearsOutputsWhileStopped();
+        runtimeAppliesInitialChaseOnceBeforeNormalEvents();
+        runtimeRendersSegmentsAndAdvancesActualFrames();
+        runtimeSupportsMonoStereoAndNullOutputPointers();
+        runtimeStopsAfterNonLoopPlanAndEmptyPlan();
+        runtimeLoopsAcrossTailAndHeadWithBoundaryReleaseBeforeChase();
+        runtimeDoesNotRepeatInitialOrLoopHeadChaseOnContinuousBlocks();
+        runtimeHandlesMultipleLoopWrapsAndSameBaseKeyReleases();
+        runtimeOrdersLoopHeadChaseAndNormalEventsByOrdinal();
+        runtimeValidatorRejectsInvalidFormatsAndPreservesInstalledPlan();
+        runtimeValidatorRejectsInvalidEventValuesAndCoordinates();
+        runtimeValidatorRejectsMalformedLoopTablesAndSlots();
+        runtimeValidatorRejectsOrderingAndOrdinalCorruption();
+        runtimeValidatorEnforcesTotalAndCallbackEventLimits();
+        runtimeValidatorReportsUnavailableValidationResources();
+        runtimeCallbackRejectsCorruptedEventDensityBeforeTouchingSynth();
+        runtimeOversizedBlockFaultsWithoutAdvancingPlayback();
+        runtimeStoppingReleasesWithinThirtyMilliseconds();
+        runtimeHardResetAndCallbackDiagnosticsPublishStableFaults();
+        runtimeAllocatesNothingAcrossTenThousandWarmedCallbacks();
         builtInSynthSelectsOldestReleasingVoice();
         builtInSynthRendersA4();
         builtInSynthUsesFixedAdsrAtSupportedRates();

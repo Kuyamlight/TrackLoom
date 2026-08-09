@@ -15,6 +15,7 @@ add_library(trackloom_core STATIC
     MidiOutputDevice.cpp
     MidiPlayback.cpp
     PreparedMidiPlaybackPlan.cpp
+    PreparedMidiPlaybackRuntime.cpp
     MidiOutputSession.cpp
     MidiTrackRouter.cpp
     PlaybackControl.cpp
