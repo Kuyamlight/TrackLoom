@@ -53,31 +53,35 @@ std::string utf8PathForMessage(const std::filesystem::path& path)
     return { reinterpret_cast<const char*>(utf8.data()), utf8.size() };
 }
 
-std::string warningWithRecoveryPaths(
-    std::string warning,
+std::vector<std::filesystem::path> uniqueRecoveryPaths(
     const std::vector<std::filesystem::path>& recoveryPaths)
 {
-    if (warning.empty()) {
-        warning = "Recovery data requires inspection.";
-    }
+    std::vector<std::filesystem::path> uniquePaths;
 
     for (const auto& recoveryPath : recoveryPaths) {
-        const auto recoveryPathText = utf8PathForMessage(recoveryPath);
-        if (warning.find(recoveryPathText) == std::string::npos) {
-            warning += " Recovery data may be available at: " + recoveryPathText
-                + ". This path must be inspected before retrying.";
+        auto alreadyPresent = false;
+        for (const auto& existingPath : uniquePaths) {
+            if (existingPath == recoveryPath) {
+                alreadyPresent = true;
+                break;
+            }
+        }
+
+        if (!alreadyPresent) {
+            uniquePaths.push_back(recoveryPath);
         }
     }
 
-    return warning;
+    return uniquePaths;
 }
 
 AppProjectFileActionFeedback feedback(
     bool success,
     AppProjectFileActionFeedbackKind kind,
-    std::string message)
+    std::string message,
+    std::vector<std::filesystem::path> recoveryPaths = {})
 {
-    return { success, kind, std::move(message) };
+    return { success, kind, std::move(message), std::move(recoveryPaths) };
 }
 
 }
@@ -97,10 +101,14 @@ AppProjectFileActionFeedback describeAppProjectFileActionResult(
 {
     if (result.success) {
         if (!result.warning.empty() || !result.recoveryPaths.empty()) {
+            const auto warning = result.warning.empty()
+                ? std::string("Recovery data requires inspection.")
+                : result.warning;
             return feedback(
                 true,
                 AppProjectFileActionFeedbackKind::Warning,
-                actionSuccessMessage(action) + " " + warningWithRecoveryPaths(result.warning, result.recoveryPaths));
+                actionSuccessMessage(action) + " " + warning,
+                uniqueRecoveryPaths(result.recoveryPaths));
         }
 
         return feedback(true, AppProjectFileActionFeedbackKind::Success, actionSuccessMessage(action));
@@ -122,6 +130,28 @@ AppProjectFileActionFeedback describeAppProjectFileActionResult(
 AppProjectFileActionFeedback describeCanceledAppProjectFileAction(AppProjectFileAction action)
 {
     return feedback(false, AppProjectFileActionFeedbackKind::Canceled, actionCanceledMessage(action));
+}
+
+AppProjectFileActionPresentation describeAppProjectFileActionPresentation(
+    const AppProjectFileActionFeedback& feedback)
+{
+    if (feedback.kind != AppProjectFileActionFeedbackKind::Warning) {
+        return { feedback.message, {}, false };
+    }
+
+    auto details = feedback.message;
+    if (!feedback.recoveryPaths.empty()) {
+        details += "\n\n需要检查的恢复路径：";
+        for (const auto& recoveryPath : feedback.recoveryPaths) {
+            details += "\n- " + utf8PathForMessage(recoveryPath);
+        }
+    }
+
+    return {
+        "工程文件操作已完成，但有恢复数据需要检查。",
+        std::move(details),
+        true
+    };
 }
 
 }

@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace trackloom {
 
@@ -30,6 +31,16 @@ struct AppProjectFileActionFeedback {
     bool success = false;
     AppProjectFileActionFeedbackKind kind = AppProjectFileActionFeedbackKind::Failure;
     std::string message;
+    // 恢复位置保持结构化，避免 UI 从 message 文本反向解析路径。
+    std::vector<std::filesystem::path> recoveryPaths;
+};
+
+// AppProjectFileActionPresentation 是 JUCE 无关的文件动作展示指令。
+// summary 适合单行状态栏；details 在需要时承载完整、可复制或可滚动查看的内容。
+struct AppProjectFileActionPresentation {
+    std::string summary;
+    std::string details;
+    bool showWarningDetails = false;
 };
 
 // withTrackLoomProjectExtension 在用户保存时补默认扩展名。
@@ -45,5 +56,10 @@ AppProjectFileActionFeedback describeAppProjectFileActionResult(
 // describeCanceledAppProjectFileAction 专门描述用户取消文件选择。
 // 取消不是保存或打开失败，UI 不应把它显示成错误。
 AppProjectFileActionFeedback describeCanceledAppProjectFileAction(AppProjectFileAction action);
+
+// describeAppProjectFileActionPresentation 决定单行摘要和详情展示方式。
+// 只有 Warning 会要求 UI 主动弹出详情，其他分类不会误触发警告窗口。
+AppProjectFileActionPresentation describeAppProjectFileActionPresentation(
+    const AppProjectFileActionFeedback& feedback);
 
 }

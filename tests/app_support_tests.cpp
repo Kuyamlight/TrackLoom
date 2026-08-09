@@ -90,22 +90,6 @@ trackloom::FileOperationResult saveProjectWithInjectedRecoveryWarning(
         { injectedSessionRecoveryPathOne, injectedSessionRecoveryPathTwo });
 }
 
-std::size_t occurrenceCount(const std::string& text, const std::string& value)
-{
-    if (value.empty()) {
-        return 0;
-    }
-
-    auto count = std::size_t { 0 };
-    auto position = text.find(value);
-    while (position != std::string::npos) {
-        ++count;
-        position = text.find(value, position + value.size());
-    }
-
-    return count;
-}
-
 const trackloom::AppCommandPaletteItem* findPaletteItem(
     const trackloom::AppCommandPaletteStatus& palette,
     int commandId)
@@ -617,6 +601,60 @@ void projectFileActionFeedbackWarnsAfterSuccessfulSave()
         "warning feedback should visibly explain the retained recovery data");
 }
 
+void projectFileActionWarningPresentationKeepsCompleteUnicodeDetails()
+{
+    const auto warning = std::string(
+        "工程已经安全保存，但清理阶段留下了恢复数据；请在再次保存前逐项检查以下位置。"
+        "这段说明刻意较长，用来证明状态栏只保留摘要，而详情不会被截断。");
+    const auto firstPathText = std::string(
+        "C:/恢复数据/很长的毕业设计工程名称/第一次清理遗留/trackloom-save-workspace");
+    const auto secondPathText = std::string(
+        "D:/音乐项目/织音-TrackLoom/第二个恢复位置/trackloom-recovery/backup.trackloom");
+    const auto firstPath = std::filesystem::path(std::u8string(
+        u8"C:/恢复数据/很长的毕业设计工程名称/第一次清理遗留/trackloom-save-workspace"));
+    const auto secondPath = std::filesystem::path(std::u8string(
+        u8"D:/音乐项目/织音-TrackLoom/第二个恢复位置/trackloom-recovery/backup.trackloom"));
+    const auto feedback = trackloom::describeAppProjectFileActionResult(
+        trackloom::AppProjectFileAction::Save,
+        trackloom::AppProjectSessionResult::ok(warning, { firstPath, secondPath }));
+
+    const auto presentation = trackloom::describeAppProjectFileActionPresentation(feedback);
+
+    require(presentation.showWarningDetails,
+        "warning feedback should explicitly instruct the JUCE UI to show warning details");
+    require(!presentation.summary.empty() && presentation.summary.size() < presentation.details.size(),
+        "warning presentation should keep a concise status summary separate from long details");
+    require(presentation.details.find(warning) != std::string::npos,
+        "warning presentation details should retain the complete warning text");
+    require(presentation.details.find(firstPathText) != std::string::npos
+            && presentation.details.find(secondPathText) != std::string::npos,
+        "warning presentation details should retain every Unicode recovery path");
+}
+
+void projectFileActionOrdinaryPresentationsDoNotRequestWarningDetails()
+{
+    const auto success = trackloom::describeAppProjectFileActionResult(
+        trackloom::AppProjectFileAction::Save,
+        trackloom::AppProjectSessionResult::ok());
+    const auto failure = trackloom::describeAppProjectFileActionResult(
+        trackloom::AppProjectFileAction::Open,
+        trackloom::AppProjectSessionResult::fail(
+            trackloom::AppProjectSessionFailureReason::OpenFailed,
+            "missing project"));
+    const auto canceled = trackloom::describeCanceledAppProjectFileAction(
+        trackloom::AppProjectFileAction::Open);
+
+    for (const auto* feedback : { &success, &failure, &canceled }) {
+        const auto presentation = trackloom::describeAppProjectFileActionPresentation(*feedback);
+        require(!presentation.showWarningDetails,
+            "success, failure and informational cancellation feedback must not open a warning dialog");
+        require(presentation.details.empty(),
+            "ordinary file action feedback should not retain stale warning details");
+        require(presentation.summary == feedback->message,
+            "ordinary file action presentation should preserve the existing status message");
+    }
+}
+
 void projectSessionSaveAsPropagatesRecoveryWarningToFileActionFeedback()
 {
     removeTestWorkspace();
@@ -648,26 +686,33 @@ void projectSessionSaveAsPropagatesRecoveryWarningToFileActionFeedback()
         "successful warning save should produce warning feedback");
     require(feedback.message.find("Recovery data requires inspection.") != std::string::npos,
         "warning feedback should include the core warning text");
-    require(feedback.message.find(injectedSessionRecoveryPathOne.string()) != std::string::npos
-            && feedback.message.find(injectedSessionRecoveryPathTwo.string()) != std::string::npos,
-        "warning feedback should visibly include every structured recovery path");
+    require(feedback.recoveryPaths.size() == 2
+            && feedback.recoveryPaths.at(0) == injectedSessionRecoveryPathOne
+            && feedback.recoveryPaths.at(1) == injectedSessionRecoveryPathTwo,
+        "warning feedback should preserve every structured recovery path");
+    const auto presentation = trackloom::describeAppProjectFileActionPresentation(feedback);
+    require(presentation.details.find(injectedSessionRecoveryPathOne.string()) != std::string::npos
+            && presentation.details.find(injectedSessionRecoveryPathTwo.string()) != std::string::npos,
+        "warning presentation should visibly include every structured recovery path");
 }
 
-void projectFileActionFeedbackDoesNotRepeatPathsAlreadyInWarning()
+void projectFileActionFeedbackDeduplicatesExactStructuredRecoveryPaths()
 {
-    const auto firstPath = std::filesystem::path("C:/recovery/already-mentioned");
-    const auto secondPath = std::filesystem::path("C:/recovery/only-structured");
-    const auto warning = std::string("Recovery data may be available at: ") + firstPath.string();
+    const auto prefixPath = std::filesystem::path("C:/recovery/project");
+    const auto longerPath = std::filesystem::path("C:/recovery/project-copy");
     const auto feedback = trackloom::describeAppProjectFileActionResult(
         trackloom::AppProjectFileAction::Save,
-        trackloom::AppProjectSessionResult::ok(warning, { firstPath, secondPath }));
+        trackloom::AppProjectSessionResult::ok(
+            "Recovery data requires inspection.",
+            { prefixPath, longerPath, prefixPath }));
 
     require(feedback.success && feedback.kind == trackloom::AppProjectFileActionFeedbackKind::Warning,
         "structured recovery paths should retain successful warning feedback");
-    require(occurrenceCount(feedback.message, firstPath.string()) == 1,
-        "feedback should not repeat a recovery path already visible in its warning");
-    require(occurrenceCount(feedback.message, secondPath.string()) == 1,
-        "feedback should append a recovery path missing from its warning");
+    require(feedback.recoveryPaths.size() == 2,
+        "feedback should remove only exactly duplicated structured recovery paths");
+    require(feedback.recoveryPaths.at(0) == prefixPath
+            && feedback.recoveryPaths.at(1) == longerPath,
+        "structured recovery path deduplication should preserve order and distinct prefix paths");
 }
 
 void projectSessionNullSaveOperationFallsBackToCoreSave()
@@ -9854,8 +9899,10 @@ int main()
     projectFileActionFeedbackDescribesCanceledOpen();
     projectFileActionFeedbackDescribesSuccessfulSaveAs();
     projectFileActionFeedbackWarnsAfterSuccessfulSave();
+    projectFileActionWarningPresentationKeepsCompleteUnicodeDetails();
+    projectFileActionOrdinaryPresentationsDoNotRequestWarningDetails();
     projectSessionSaveAsPropagatesRecoveryWarningToFileActionFeedback();
-    projectFileActionFeedbackDoesNotRepeatPathsAlreadyInWarning();
+    projectFileActionFeedbackDeduplicatesExactStructuredRecoveryPaths();
     projectSessionNullSaveOperationFallsBackToCoreSave();
     recentProjectsKeepNewestUniquePathsWithinLimit();
     recentProjectsSaveAndLoadUtf8TextFile();

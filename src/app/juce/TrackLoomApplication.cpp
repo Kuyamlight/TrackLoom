@@ -1385,11 +1385,22 @@ private:
 
     void setFileActionFeedback(const trackloom::AppProjectFileActionFeedback& feedback)
     {
-        lastActionMessage_ = feedback.message;
+        const auto presentation = trackloom::describeAppProjectFileActionPresentation(feedback);
+        lastActionMessage_ = presentation.summary;
+        actionLabel_.setTooltip(toJuceString(presentation.details));
         if (feedback.success) {
             recordCurrentProjectAsRecent();
         }
         refreshFromSession();
+
+        if (presentation.showWarningDetails) {
+            juce::AlertWindow::showMessageBoxAsync(
+                juce::AlertWindow::WarningIcon,
+                toJuceString("工程保存警告"),
+                toJuceString(presentation.details),
+                toJuceString("我知道了"),
+                this);
+        }
     }
 
     void recordCurrentProjectAsRecent()
