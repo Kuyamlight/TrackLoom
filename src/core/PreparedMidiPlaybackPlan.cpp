@@ -61,12 +61,10 @@ bool tryConvertTickToSample(
 {
     const auto seconds = project.tickToSeconds(tick);
     const auto scaled = static_cast<double>(seconds * sampleRate);
-    const auto safeMinimum = std::nextafter(
-        static_cast<double>(std::numeric_limits<std::int64_t>::min()), std::numeric_limits<double>::infinity());
-    const auto safeMaximum = std::nextafter(
-        static_cast<double>(std::numeric_limits<std::int64_t>::max()), -std::numeric_limits<double>::infinity());
+    const auto safeMinimum = static_cast<double>(std::numeric_limits<std::int64_t>::min());
+    const auto exclusiveMaximum = -safeMinimum;
     if (!std::isfinite(seconds) || !std::isfinite(scaled)
-        || scaled <= safeMinimum || scaled >= safeMaximum) {
+        || scaled < safeMinimum || scaled >= exclusiveMaximum) {
         return false;
     }
 

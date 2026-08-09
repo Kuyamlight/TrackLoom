@@ -1659,9 +1659,10 @@ void preparedMidiPlanBuildsDeterministicNonLoopSnapshot()
     require(plan.initialChaseNoteOnEvents.size() == 1, "held note should receive one initial chase event");
     require(plan.initialChaseNoteOnEvents[0].samplePosition == 24000,
         "initial chase should use the absolute playback start sample");
-    require(plan.initialChaseNoteOnEvents[0].noteInstanceId == 0
-            && plan.initialChaseNoteOnEvents[0].eventOrdinal == 1,
-        "first source note should keep instance zero and its deterministic chase ordinal");
+    require(plan.initialChaseNoteOnEvents[0].noteInstanceId == 0,
+        "first source note should keep instance zero");
+    require(plan.initialChaseNoteOnEvents[0].eventOrdinal == 1,
+        "initial chase should keep its deterministic ordinal");
     require(plan.events.size() == 5, "events before playback start should be omitted except later note offs");
     require(plan.events[0].samplePosition == 24000 && plan.events[0].type == trackloom::PreparedMidiEventType::NoteOn,
         "event at playback start should remain consumable");
@@ -1673,16 +1674,16 @@ void preparedMidiPlanBuildsDeterministicNonLoopSnapshot()
         "hidden track should still emit its simultaneous note on");
     require(plan.events[4].samplePosition == 120000 && plan.events[4].type == trackloom::PreparedMidiEventType::NoteOff,
         "hidden track note off should use the tempo map");
-    require(plan.events[0].noteInstanceId == 1 && plan.events[0].eventOrdinal == 3,
-        "second overlapping note should receive the next dense instance id and stable ordinal");
-    require(plan.events[1].noteInstanceId == 0 && plan.events[1].eventOrdinal == 0,
-        "first note off should share the first note instance id and stable ordinal");
-    require(plan.events[2].noteInstanceId == 1 && plan.events[2].eventOrdinal == 2,
-        "second note off should share the overlapping note instance id and stable ordinal");
-    require(plan.events[3].noteInstanceId == 2 && plan.events[3].eventOrdinal == 5,
-        "hidden-track note should receive the next dense instance id and stable ordinal");
-    require(plan.events[4].noteInstanceId == 2 && plan.events[4].eventOrdinal == 4,
-        "hidden-track note off should reuse its note instance id and stable ordinal");
+    require(plan.events[0].noteInstanceId == 1, "second overlapping note should receive the next dense instance id");
+    require(plan.events[0].eventOrdinal == 3, "second overlapping note should keep its stable ordinal");
+    require(plan.events[1].noteInstanceId == 0, "first note off should share the first note instance id");
+    require(plan.events[1].eventOrdinal == 0, "first note off should keep its stable ordinal");
+    require(plan.events[2].noteInstanceId == 1, "second note off should share the overlapping note instance id");
+    require(plan.events[2].eventOrdinal == 2, "second note off should keep its stable ordinal");
+    require(plan.events[3].noteInstanceId == 2, "hidden-track note should receive the next dense instance id");
+    require(plan.events[3].eventOrdinal == 5, "hidden-track note should keep its stable ordinal");
+    require(plan.events[4].noteInstanceId == 2, "hidden-track note off should reuse its note instance id");
+    require(plan.events[4].eventOrdinal == 4, "hidden-track note off should keep its stable ordinal");
 }
 
 void preparedMidiPlanRejectsInvalidRequests()
@@ -1770,6 +1771,30 @@ void preparedMidiPlanRejectsSamplePositionThatRoundsPastInt64Maximum()
     require(trackloom::buildPreparedMidiPlaybackPlan(std::move(request)).failureReason
             == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::SamplePositionOverflow,
         "sample values that round past int64 maximum must be rejected before llround");
+}
+
+void preparedMidiPlanAcceptsMaximumSafelyRoundableSamplePosition()
+{
+    trackloom::Project project("Safe endpoint");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "One beat", trackloom::ClipType::Midi, 0, 960);
+    require(clip.has_value(), "endpoint clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "endpoint note should exist");
+
+    const auto maximumSafeDouble = std::nextafter(
+        static_cast<double>(std::numeric_limits<std::int64_t>::max()), 0.0);
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = maximumSafeDouble * 2.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(result.plan != nullptr, "maximum safely roundable sample endpoint should build");
+    require(result.plan->events.size() == 2, "one note should retain both events at the safe endpoint");
+    require(result.plan->events[1].samplePosition == static_cast<std::int64_t>(maximumSafeDouble),
+        "note off should preserve the largest safely roundable sample position");
 }
 
 void preparedMidiPlanUsesExistingTrackPlaybackRules()
@@ -8391,6 +8416,7 @@ int main()
         preparedMidiPlanBuildsDeterministicNonLoopSnapshot();
         preparedMidiPlanRejectsInvalidRequests();
         preparedMidiPlanRejectsSamplePositionThatRoundsPastInt64Maximum();
+        preparedMidiPlanAcceptsMaximumSafelyRoundableSamplePosition();
         preparedMidiPlanUsesExistingTrackPlaybackRules();
         midiPlaybackRespectsTrackPlaybackState();
         midiPlaybackHiddenTrackStillPlays();
