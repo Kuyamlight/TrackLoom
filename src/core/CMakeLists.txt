@@ -13,6 +13,7 @@ add_library(trackloom_core STATIC
     MidiDispatch.cpp
     MidiOutputDevice.cpp
     MidiPlayback.cpp
+    PreparedMidiPlaybackPlan.cpp
     MidiOutputSession.cpp
     MidiTrackRouter.cpp
     PlaybackControl.cpp

@@ -13,6 +13,7 @@
 #include "MidiDispatch.h"
 #include "MidiOutputDevice.h"
 #include "MidiPlayback.h"
+#include "PreparedMidiPlaybackPlan.h"
 #include "MidiOutputSession.h"
 #include "MidiTrackRouter.h"
 #include "PlaybackControl.h"
@@ -1596,6 +1597,217 @@ void midiPlaybackSortsEventsDeterministically()
     require(events[0].noteId == endingNote->id, "ending note should produce first event");
     require(events[1].type == trackloom::MidiPlaybackEventType::NoteOn, "note on should sort after note off at same tick");
     require(events[1].noteId == startingNote->id, "starting note should produce second event");
+}
+
+void preparedMidiPlanOrdersNoteOffBeforeNoteOn()
+{
+    trackloom::Project project("Prepared");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Phrase", trackloom::ClipType::Midi, 0, 1920);
+    require(clip.has_value(), "fixture clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "first note should exist");
+    require(project.createMidiNote(clip->id, 960, 960, 64, 100, 1).has_value(), "second note should exist");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(result.plan != nullptr, "valid project should build a plan");
+    require(result.plan->events.size() == 4, "two notes should create four events");
+    require(result.plan->events[1].samplePosition == 24000, "note off should land at tick 960");
+    require(result.plan->events[1].type == trackloom::PreparedMidiEventType::NoteOff, "off must sort first");
+    require(result.plan->events[2].type == trackloom::PreparedMidiEventType::NoteOn, "on must sort second");
+}
+
+void preparedMidiPlanBuildsDeterministicNonLoopSnapshot()
+{
+    trackloom::Project project("Prepared snapshot");
+    const auto lead = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto hidden = project.createTrack("Hidden", trackloom::TrackType::Instrument);
+    require(project.setTrackMixState(lead.id, {0.5f, 0.25f}), "lead mix should be set");
+    require(project.setTrackMixState(hidden.id, {0.75f, -0.25f}), "hidden mix should be set");
+    require(project.setTrackViewState(hidden.id, {true, false}), "hidden state should be set");
+    require(project.createTempoEvent(960, 60.0).has_value(), "tempo change should exist");
+
+    const auto leadClip = project.createClip(lead.id, "Lead phrase", trackloom::ClipType::Midi, 0, 2880);
+    const auto hiddenClip = project.createClip(hidden.id, "Hidden phrase", trackloom::ClipType::Midi, 1920, 960);
+    require(leadClip.has_value() && hiddenClip.has_value(), "fixture clips should exist");
+    require(project.createMidiNote(leadClip->id, 0, 1920, 60, 100, 1).has_value(), "held lead note should exist");
+    require(project.createMidiNote(leadClip->id, 960, 960, 60, 90, 1).has_value(), "overlapping lead note should exist");
+    require(project.createMidiNote(hiddenClip->id, 0, 960, 67, 80, 2).has_value(), "hidden note should exist");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.playbackStartSample = 24000;
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(result.plan != nullptr, "valid project should build a plan");
+    const auto& plan = *result.plan;
+    require(plan.instrumentSlots.size() == 2, "instrument tracks should become ordered slots");
+    require(plan.instrumentSlots[0].gain == 0.5f && plan.instrumentSlots[0].pan == 0.25f,
+        "first slot should freeze lead mix");
+    require(plan.instrumentSlots[1].gain == 0.75f && plan.instrumentSlots[1].pan == -0.25f,
+        "second slot should freeze hidden mix");
+    require(plan.initialChaseNoteOnEvents.size() == 1, "held note should receive one initial chase event");
+    require(plan.initialChaseNoteOnEvents[0].samplePosition == 24000,
+        "initial chase should use the absolute playback start sample");
+    require(plan.events.size() == 5, "events before playback start should be omitted except later note offs");
+    require(plan.events[0].samplePosition == 24000 && plan.events[0].type == trackloom::PreparedMidiEventType::NoteOn,
+        "event at playback start should remain consumable");
+    require(plan.events[1].samplePosition == 72000 && plan.events[1].type == trackloom::PreparedMidiEventType::NoteOff,
+        "tempo-mapped note off should sort before simultaneous note on");
+    require(plan.events[2].samplePosition == 72000 && plan.events[2].type == trackloom::PreparedMidiEventType::NoteOff,
+        "overlapping same-pitch note off should remain separate");
+    require(plan.events[3].samplePosition == 72000 && plan.events[3].type == trackloom::PreparedMidiEventType::NoteOn,
+        "hidden track should still emit its simultaneous note on");
+    require(plan.events[4].samplePosition == 120000 && plan.events[4].type == trackloom::PreparedMidiEventType::NoteOff,
+        "hidden track note off should use the tempo map");
+
+    std::set<std::uint32_t> ordinals;
+    for (const auto& event : plan.events) {
+        ordinals.insert(event.eventOrdinal);
+    }
+    ordinals.insert(plan.initialChaseNoteOnEvents[0].eventOrdinal);
+    require(ordinals.size() == 6, "normal and chase events should receive globally unique ordinals");
+}
+
+void preparedMidiPlanBuildsLoopBoundaryAndChaseEvents()
+{
+    trackloom::Project project("Loop plan");
+    const auto track = project.createTrack("Pad", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Held", trackloom::ClipType::Midi, 0, 2880);
+    require(clip.has_value(), "fixture clip should exist");
+    require(project.createMidiNote(clip->id, 0, 2880, 60, 100, 1).has_value(), "held note should exist");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.loopRange = trackloom::PlaybackLoopRange{960, 1920};
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(result.plan != nullptr, "valid loop request should build a plan");
+    require(result.plan->loop.has_value(), "valid loop request should produce loop metadata");
+    const auto& loop = *result.plan->loop;
+    require(loop.loopStartSample == 24000 && loop.loopLengthSamples == 24000,
+        "loop samples should be derived from the tempo map");
+    require(loop.boundaryNoteOffEvents.size() == 1, "held note should receive a loop boundary note off");
+    require(loop.boundaryNoteOffEvents[0].samplePosition == 48000
+            && loop.boundaryNoteOffEvents[0].type == trackloom::PreparedMidiEventType::NoteOff,
+        "boundary note off should land at the loop end");
+    require(loop.startChaseNoteOnEvents.size() == 1, "held note should chase at the loop start");
+    require(loop.startChaseNoteOnEvents[0].samplePosition == 24000
+            && loop.startChaseNoteOnEvents[0].type == trackloom::PreparedMidiEventType::NoteOn,
+        "loop chase should land at the loop start");
+}
+
+void preparedMidiPlanRejectsInvalidRequestsAndExcessiveEventDensity()
+{
+    trackloom::Project project("Limits");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Chord", trackloom::ClipType::Midi, 0, 960);
+    require(clip.has_value(), "fixture clip should exist");
+    require(project.createMidiNote(clip->id, 0, 900, 60, 100, 1).has_value(), "first fixture note should exist");
+    require(project.createMidiNote(clip->id, 10, 900, 64, 100, 1).has_value(), "second fixture note should exist");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+
+    auto invalidSampleRate = request;
+    invalidSampleRate.sampleRate = 0.0;
+    require(trackloom::buildPreparedMidiPlaybackPlan(std::move(invalidSampleRate)).failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::InvalidSampleRate,
+        "zero sample rate should be rejected");
+    auto invalidBlockSize = request;
+    invalidBlockSize.maximumBlockFrames = 0;
+    require(trackloom::buildPreparedMidiPlaybackPlan(std::move(invalidBlockSize)).failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::InvalidMaximumBlockFrames,
+        "zero maximum block size should be rejected");
+    auto invalidOutput = request;
+    invalidOutput.outputChannelMask = 1;
+    require(trackloom::buildPreparedMidiPlaybackPlan(std::move(invalidOutput)).failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::InvalidOutputFormat,
+        "inconsistent output channel mask should be rejected");
+    auto invalidStart = request;
+    invalidStart.playbackStartSample = -1;
+    require(trackloom::buildPreparedMidiPlaybackPlan(std::move(invalidStart)).failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::InvalidPlaybackStart,
+        "negative playback start should be rejected");
+    auto invalidLoop = request;
+    invalidLoop.loopRange = trackloom::PlaybackLoopRange{960, 960};
+    require(trackloom::buildPreparedMidiPlaybackPlan(std::move(invalidLoop)).failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::InvalidLoopRange,
+        "empty loop range should be rejected");
+
+    trackloom::detail::PreparedMidiPlaybackPlanLimits totalLimit;
+    totalLimit.maximumTotalEvents = 3;
+    totalLimit.maximumCallbackEvents = 4;
+    require(trackloom::detail::buildPreparedMidiPlaybackPlanWithLimits(request, {}, totalLimit).failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::EventLimitExceeded,
+        "total event limit should reject a four-event plan");
+    trackloom::detail::PreparedMidiPlaybackPlanLimits callbackLimit;
+    callbackLimit.maximumTotalEvents = 4;
+    callbackLimit.maximumCallbackEvents = 1;
+    require(trackloom::detail::buildPreparedMidiPlaybackPlanWithLimits(request, {}, callbackLimit).failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::CallbackEventLimitExceeded,
+        "events inside one maximum callback block should respect the callback limit");
+
+    std::stop_source cancellation;
+    cancellation.request_stop();
+    require(trackloom::buildPreparedMidiPlaybackPlan(request, cancellation.get_token()).failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::Cancelled,
+        "already cancelled builds should not create a plan");
+}
+
+void preparedMidiPlanUsesExistingTrackPlaybackRules()
+{
+    trackloom::Project project("Playback rules");
+    const auto muted = project.createTrack("Muted", trackloom::TrackType::Instrument);
+    const auto disabled = project.createTrack("Disabled", trackloom::TrackType::Instrument);
+    const auto hidden = project.createTrack("Hidden", trackloom::TrackType::Instrument);
+    const auto soloed = project.createTrack("Soloed", trackloom::TrackType::Instrument);
+    require(project.setTrackPlaybackState(muted.id, {true, false, false}), "muted state should be set");
+    require(project.setTrackPlaybackState(disabled.id, {false, false, true}), "disabled state should be set");
+    require(project.setTrackViewState(hidden.id, {true, false}), "hidden state should be set");
+    for (const auto& track : {muted, disabled, hidden, soloed}) {
+        const auto clip = project.createClip(track.id, "Note", trackloom::ClipType::Midi, 0, 960);
+        require(clip.has_value(), "fixture clip should exist");
+        require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "fixture note should exist");
+    }
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    auto result = trackloom::buildPreparedMidiPlaybackPlan(request);
+    require(result.plan != nullptr && result.plan->instrumentSlots.size() == 4,
+        "all instrument tracks should retain ordered slots");
+    require(result.plan->events.size() == 4,
+        "hidden and non-soloed active tracks should both emit without solo mode");
+
+    require(project.setTrackPlaybackState(soloed.id, {false, true, false}), "solo state should be set");
+    request.projectSnapshot = project;
+    result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+    require(result.plan != nullptr && result.plan->events.size() == 2,
+        "solo mode should emit only the soloed track while hidden remains display-only");
+    require(result.plan->events[0].instrumentSlotIndex == 3 && result.plan->events[1].instrumentSlotIndex == 3,
+        "soloed track should retain its original project-order slot");
 }
 
 void midiPlaybackRespectsTrackPlaybackState()
@@ -8176,6 +8388,11 @@ int main()
         midiPlaybackCollectsNoteOnAndOffInsideWindow();
         midiPlaybackUsesHalfOpenWindow();
         midiPlaybackSortsEventsDeterministically();
+        preparedMidiPlanOrdersNoteOffBeforeNoteOn();
+        preparedMidiPlanBuildsDeterministicNonLoopSnapshot();
+        preparedMidiPlanBuildsLoopBoundaryAndChaseEvents();
+        preparedMidiPlanRejectsInvalidRequestsAndExcessiveEventDensity();
+        preparedMidiPlanUsesExistingTrackPlaybackRules();
         midiPlaybackRespectsTrackPlaybackState();
         midiPlaybackHiddenTrackStillPlays();
         midiPlaybackRejectsInvalidWindows();
