@@ -60,14 +60,17 @@ bool tryConvertTickToSample(
     std::int64_t& samplePosition)
 {
     const auto seconds = project.tickToSeconds(tick);
-    const auto scaled = static_cast<long double>(seconds) * static_cast<long double>(sampleRate);
+    const auto scaled = static_cast<double>(seconds * sampleRate);
+    const auto safeMinimum = std::nextafter(
+        static_cast<double>(std::numeric_limits<std::int64_t>::min()), std::numeric_limits<double>::infinity());
+    const auto safeMaximum = std::nextafter(
+        static_cast<double>(std::numeric_limits<std::int64_t>::max()), -std::numeric_limits<double>::infinity());
     if (!std::isfinite(seconds) || !std::isfinite(scaled)
-        || scaled < static_cast<long double>(std::numeric_limits<std::int64_t>::min())
-        || scaled > static_cast<long double>(std::numeric_limits<std::int64_t>::max())) {
+        || scaled <= safeMinimum || scaled >= safeMaximum) {
         return false;
     }
 
-    samplePosition = static_cast<std::int64_t>(std::llround(static_cast<double>(scaled)));
+    samplePosition = static_cast<std::int64_t>(std::llround(scaled));
     return true;
 }
 
@@ -101,12 +104,9 @@ namespace detail {
 
 PreparedMidiPlaybackPlanBuildResult buildPreparedMidiPlaybackPlanWithLimits(
     PreparedMidiPlaybackPlanBuildRequest request,
-    std::stop_token stopToken,
-    PreparedMidiPlaybackPlanLimits limits)
+    std::stop_token,
+    PreparedMidiPlaybackPlanLimits)
 {
-    if (stopToken.stop_requested()) {
-        return failure(PreparedMidiPlaybackPlanBuildFailureReason::Cancelled);
-    }
     if (!std::isfinite(request.sampleRate) || request.sampleRate <= 0.0) {
         return failure(PreparedMidiPlaybackPlanBuildFailureReason::InvalidSampleRate);
     }
@@ -119,8 +119,7 @@ PreparedMidiPlaybackPlanBuildResult buildPreparedMidiPlaybackPlanWithLimits(
     if (request.playbackStartSample < 0) {
         return failure(PreparedMidiPlaybackPlanBuildFailureReason::InvalidPlaybackStart);
     }
-    if (request.loopRange && (request.loopRange->startTick < 0
-            || request.loopRange->endTick <= request.loopRange->startTick)) {
+    if (request.loopRange) {
         return failure(PreparedMidiPlaybackPlanBuildFailureReason::InvalidLoopRange);
     }
 
@@ -131,33 +130,12 @@ PreparedMidiPlaybackPlanBuildResult buildPreparedMidiPlaybackPlanWithLimits(
     plan->outputChannelMask = request.outputChannelMask;
     plan->playbackStartSample = request.playbackStartSample;
 
-    std::optional<PreparedMidiLoop> preparedLoop;
-    std::int64_t loopEndSample = 0;
-    if (request.loopRange) {
-        std::int64_t loopStartSample = 0;
-        if (!tryConvertTickToSample(request.projectSnapshot, request.loopRange->startTick,
-                request.sampleRate, loopStartSample)
-            || !tryConvertTickToSample(request.projectSnapshot, request.loopRange->endTick,
-                request.sampleRate, loopEndSample)) {
-            return failure(PreparedMidiPlaybackPlanBuildFailureReason::SamplePositionOverflow);
-        }
-        if (loopEndSample <= loopStartSample) {
-            return failure(PreparedMidiPlaybackPlanBuildFailureReason::InvalidLoopRange);
-        }
-        preparedLoop = {loopStartSample, loopEndSample - loopStartSample, {}, {}};
-    }
-
     const bool soloModeActive = projectHasSoloedTrack(request.projectSnapshot);
     std::uint32_t slotIndex = 0;
     std::uint32_t noteInstanceId = 0;
     std::vector<EventWithSource> normalEvents;
     std::vector<EventWithSource> initialChaseEvents;
-    std::vector<EventWithSource> loopBoundaryEvents;
-    std::vector<EventWithSource> loopStartChaseEvents;
     for (std::size_t trackOrder = 0; trackOrder < request.projectSnapshot.tracks().size(); ++trackOrder) {
-        if (stopToken.stop_requested()) {
-            return failure(PreparedMidiPlaybackPlanBuildFailureReason::Cancelled);
-        }
         const auto& track = request.projectSnapshot.tracks()[trackOrder];
         if (!std::isfinite(track.mix.gain) || track.mix.gain < 0.0f
             || !std::isfinite(track.mix.pan) || track.mix.pan < -1.0f || track.mix.pan > 1.0f) {
@@ -173,9 +151,6 @@ PreparedMidiPlaybackPlanBuildResult buildPreparedMidiPlaybackPlanWithLimits(
 
         const auto trackSlotIndex = slotIndex - 1;
         for (std::size_t clipOrder = 0; clipOrder < request.projectSnapshot.clips().size(); ++clipOrder) {
-            if (stopToken.stop_requested()) {
-                return failure(PreparedMidiPlaybackPlanBuildFailureReason::Cancelled);
-            }
             const auto& clip = request.projectSnapshot.clips()[clipOrder];
             if (clip.trackId != track.id || clip.type != ClipType::Midi) {
                 continue;
@@ -194,10 +169,7 @@ PreparedMidiPlaybackPlanBuildResult buildPreparedMidiPlaybackPlanWithLimits(
                     || !tryConvertTickToSample(request.projectSnapshot, noteEndTick, request.sampleRate, offSample)) {
                     return failure(PreparedMidiPlaybackPlanBuildFailureReason::SamplePositionOverflow);
                 }
-                const bool crossesLoopStart = preparedLoop && onSample < preparedLoop->loopStartSample
-                    && offSample > preparedLoop->loopStartSample;
-                const bool crossesLoopEnd = preparedLoop && onSample < loopEndSample && offSample > loopEndSample;
-                if (offSample < request.playbackStartSample && !crossesLoopStart && !crossesLoopEnd) {
+                if (offSample < request.playbackStartSample) {
                     continue;
                 }
 
@@ -219,33 +191,15 @@ PreparedMidiPlaybackPlanBuildResult buildPreparedMidiPlaybackPlanWithLimits(
                 if (offSample >= request.playbackStartSample) {
                     normalEvents.push_back({noteOff, source});
                 }
-                if (crossesLoopEnd) {
-                    auto boundaryNoteOff = noteOff;
-                    boundaryNoteOff.samplePosition = loopEndSample;
-                    loopBoundaryEvents.push_back({boundaryNoteOff, source});
-                }
-                if (crossesLoopStart) {
-                    auto loopChase = noteOn;
-                    loopChase.samplePosition = preparedLoop->loopStartSample;
-                    loopStartChaseEvents.push_back({loopChase, source});
-                }
                 ++noteInstanceId;
             }
         }
     }
 
-    if (normalEvents.size() + initialChaseEvents.size() + loopBoundaryEvents.size()
-        + loopStartChaseEvents.size() > limits.maximumTotalEvents) {
-        return failure(PreparedMidiPlaybackPlanBuildFailureReason::EventLimitExceeded);
-    }
-
     std::stable_sort(normalEvents.begin(), normalEvents.end(), eventSortsBefore);
     std::stable_sort(initialChaseEvents.begin(), initialChaseEvents.end(), sourceSortsBefore);
-    std::stable_sort(loopBoundaryEvents.begin(), loopBoundaryEvents.end(), eventSortsBefore);
-    std::stable_sort(loopStartChaseEvents.begin(), loopStartChaseEvents.end(), sourceSortsBefore);
     std::vector<EventWithSource*> allEvents;
-    allEvents.reserve(normalEvents.size() + initialChaseEvents.size() + loopBoundaryEvents.size()
-        + loopStartChaseEvents.size());
+    allEvents.reserve(normalEvents.size() + initialChaseEvents.size());
     const auto appendPointers = [&allEvents](auto& events) {
         for (auto& event : events) {
             allEvents.push_back(&event);
@@ -253,16 +207,11 @@ PreparedMidiPlaybackPlanBuildResult buildPreparedMidiPlaybackPlanWithLimits(
     };
     appendPointers(normalEvents);
     appendPointers(initialChaseEvents);
-    appendPointers(loopBoundaryEvents);
-    appendPointers(loopStartChaseEvents);
     std::stable_sort(allEvents.begin(), allEvents.end(), [](const auto* left, const auto* right) {
         return sourceSortsBefore(*left, *right);
     });
-    if (allEvents.size() > std::numeric_limits<std::uint32_t>::max()) {
-        return failure(PreparedMidiPlaybackPlanBuildFailureReason::EventLimitExceeded);
-    }
-    for (std::uint32_t ordinal = 0; ordinal < allEvents.size(); ++ordinal) {
-        allEvents[ordinal]->event.eventOrdinal = ordinal;
+    for (std::size_t ordinal = 0; ordinal < allEvents.size(); ++ordinal) {
+        allEvents[ordinal]->event.eventOrdinal = static_cast<std::uint32_t>(ordinal);
     }
 
     for (const auto& event : normalEvents) {
@@ -270,47 +219,6 @@ PreparedMidiPlaybackPlanBuildResult buildPreparedMidiPlaybackPlanWithLimits(
     }
     for (const auto& event : initialChaseEvents) {
         plan->initialChaseNoteOnEvents.push_back(event.event);
-    }
-    if (preparedLoop) {
-        for (const auto& event : loopBoundaryEvents) {
-            preparedLoop->boundaryNoteOffEvents.push_back(event.event);
-        }
-        for (const auto& event : loopStartChaseEvents) {
-            preparedLoop->startChaseNoteOnEvents.push_back(event.event);
-        }
-        plan->loop = std::move(preparedLoop);
-    }
-
-    std::vector<std::int64_t> callbackPositions;
-    callbackPositions.reserve(plan->events.size() + plan->initialChaseNoteOnEvents.size()
-        + loopBoundaryEvents.size() + loopStartChaseEvents.size());
-    for (const auto& event : plan->events) {
-        callbackPositions.push_back(event.samplePosition);
-    }
-    for (const auto& event : plan->initialChaseNoteOnEvents) {
-        callbackPositions.push_back(event.samplePosition);
-    }
-    if (plan->loop) {
-        for (const auto& event : plan->loop->boundaryNoteOffEvents) {
-            callbackPositions.push_back(event.samplePosition);
-        }
-        for (const auto& event : plan->loop->startChaseNoteOnEvents) {
-            callbackPositions.push_back(event.samplePosition);
-        }
-    }
-    std::sort(callbackPositions.begin(), callbackPositions.end());
-    std::size_t callbackEndIndex = 0;
-    for (std::size_t index = 0; index < callbackPositions.size(); ++index) {
-        callbackEndIndex = std::max(callbackEndIndex, index);
-        const auto callbackEnd = static_cast<long double>(callbackPositions[index])
-            + static_cast<long double>(request.maximumBlockFrames);
-        while (callbackEndIndex < callbackPositions.size()
-            && static_cast<long double>(callbackPositions[callbackEndIndex]) < callbackEnd) {
-            ++callbackEndIndex;
-        }
-        if (callbackEndIndex - index > limits.maximumCallbackEvents) {
-            return failure(PreparedMidiPlaybackPlanBuildFailureReason::CallbackEventLimitExceeded);
-        }
     }
     return {PreparedMidiPlaybackPlanBuildFailureReason::None, std::move(plan)};
 }
