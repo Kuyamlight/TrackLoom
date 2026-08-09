@@ -1686,6 +1686,363 @@ void preparedMidiPlanBuildsDeterministicNonLoopSnapshot()
     require(plan.events[4].eventOrdinal == 4, "hidden-track note off should keep its stable ordinal");
 }
 
+void preparedMidiPlanSeparatesLoopBoundaryReleaseFromStartChase()
+{
+    trackloom::Project project("Loop boundary");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Phrase", trackloom::ClipType::Midi, 0, 4800);
+    require(clip.has_value(), "fixture clip should exist");
+    require(project.createMidiNote(clip->id, 3360, 960, 60, 100, 1).has_value(),
+        "boundary-crossing note should exist");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.loopRange = trackloom::PlaybackLoopRange{0, 3840};
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(result.plan != nullptr, "valid loop should build");
+    require(result.plan->loop.has_value(), "plan should retain one normalized loop");
+    require(result.plan->loop->loopStartSample == 0, "loop should start at sample zero");
+    require(result.plan->loop->loopLengthSamples == 96000,
+        "one 120 BPM bar should be 96000 samples");
+    require(result.plan->loop->boundaryNoteOffEvents.size() == 1,
+        "loop boundary note off should be explicit");
+    require(result.plan->loop->startChaseNoteOnEvents.empty(),
+        "note that begins near loop end must not be chased at tick zero");
+}
+
+void preparedMidiPlanChasesNoteHeldAtNonZeroLoopStart()
+{
+    trackloom::Project project("Loop start chase");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Phrase", trackloom::ClipType::Midi, 0, 4800);
+    require(clip.has_value(), "fixture clip should exist");
+    require(project.createMidiNote(clip->id, 480, 960, 62, 90, 2).has_value(),
+        "note held at loop start should exist");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.playbackStartSample = 24000;
+    request.loopRange = trackloom::PlaybackLoopRange{960, 3840};
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(result.plan != nullptr && result.plan->loop.has_value(), "valid nonzero loop should build");
+    const auto& loop = *result.plan->loop;
+    require(loop.loopStartSample == 24000 && loop.loopLengthSamples == 72000,
+        "nonzero loop should retain its sample start and length");
+    require(loop.startChaseNoteOnEvents.size() == 1,
+        "note already held at loop start should be chased on every wrap");
+    require(loop.startChaseNoteOnEvents[0].samplePosition == 0,
+        "loop-start chase should use relative sample zero");
+    require(result.plan->events.size() == 1,
+        "only the in-loop note off should remain in the normal event table");
+    require(result.plan->events[0].samplePosition == 12000,
+        "normal loop event should be relative to loopStartSample");
+    require(result.plan->events[0].noteInstanceId == loop.startChaseNoteOnEvents[0].noteInstanceId,
+        "start chase and normal note off should share the base note instance id");
+    require(result.plan->events[0].eventOrdinal == 0
+            && loop.startChaseNoteOnEvents[0].eventOrdinal == 1,
+        "loop tables should share one stable source ordinal sequence after sorting");
+}
+
+void preparedMidiPlanNormalizesLoopStartAndKeepsInitialChaseSeparate()
+{
+    trackloom::Project project("Loop initial chase");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Phrase", trackloom::ClipType::Midi, 0, 4800);
+    require(clip.has_value(), "fixture clip should exist");
+    require(project.createMidiNote(clip->id, 480, 1920, 64, 100, 1).has_value(),
+        "note held at normalized start should exist");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.playbackStartSample = 216000;
+    request.loopRange = trackloom::PlaybackLoopRange{0, 3840};
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(result.plan != nullptr && result.plan->loop.has_value(), "valid wrapped start should build");
+    require(result.plan->playbackStartSample == 24000,
+        "playback start should floor-mod into the loop sample range");
+    require(result.plan->events.size() == 2,
+        "one-round loop plan should retain both normal note events");
+    require(result.plan->events[0].samplePosition == 12000
+            && result.plan->events[1].samplePosition == 60000,
+        "normal loop events should use one-round relative coordinates");
+    require(result.plan->initialChaseNoteOnEvents.size() == 1,
+        "note held at the normalized first-play position should receive initial chase");
+    require(result.plan->initialChaseNoteOnEvents[0].samplePosition == 24000,
+        "initial chase should use the normalized relative playback coordinate");
+    require(result.plan->loop->startChaseNoteOnEvents.empty(),
+        "mid-loop held note must not be copied into per-wrap start chase");
+    require(result.plan->initialChaseNoteOnEvents[0].noteInstanceId
+            == result.plan->events[0].noteInstanceId,
+        "initial chase and normal events should share the base note instance id");
+    require(result.plan->events[1].eventOrdinal == 0
+            && result.plan->events[0].eventOrdinal == 1
+            && result.plan->initialChaseNoteOnEvents[0].eventOrdinal == 2,
+        "initial chase and normal events should receive unique stable ordinals after sorting");
+}
+
+void preparedMidiPlanTreatsRightBoundaryNoteOffAsBoundaryRelease()
+{
+    trackloom::Project project("Exact loop boundary");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Phrase", trackloom::ClipType::Midi, 0, 4800);
+    require(clip.has_value(), "fixture clip should exist");
+    require(project.createMidiNote(clip->id, 3360, 480, 67, 100, 1).has_value(),
+        "note ending at loop boundary should exist");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.loopRange = trackloom::PlaybackLoopRange{0, 3840};
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(result.plan != nullptr && result.plan->loop.has_value(), "exact-boundary loop should build");
+    require(result.plan->events.size() == 1
+            && result.plan->events[0].type == trackloom::PreparedMidiEventType::NoteOn,
+        "right-boundary note off must stay out of the half-open normal event table");
+    require(result.plan->loop->boundaryNoteOffEvents.size() == 1,
+        "right-boundary note off should appear once in the boundary table");
+    require(result.plan->loop->boundaryNoteOffEvents[0].samplePosition == 96000,
+        "boundary release should use the one-round loop endpoint");
+    require(result.plan->events[0].noteInstanceId
+            == result.plan->loop->boundaryNoteOffEvents[0].noteInstanceId,
+        "boundary release and note on should share the base note instance id");
+    require(result.plan->loop->boundaryNoteOffEvents[0].eventOrdinal == 0
+            && result.plan->events[0].eventOrdinal == 1,
+        "boundary release should sort before its paired note on for stable ordinals");
+}
+
+void preparedMidiPlanSharesNoteInstanceAcrossAllLoopSpecialTables()
+{
+    trackloom::Project project("Loop special tables");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Phrase", trackloom::ClipType::Midi, 0, 6000);
+    require(clip.has_value(), "fixture clip should exist");
+    require(project.createMidiNote(clip->id, 480, 4320, 69, 100, 1).has_value(),
+        "note spanning loop start, playback start, and loop end should exist");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.playbackStartSample = 48000;
+    request.loopRange = trackloom::PlaybackLoopRange{960, 3840};
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(result.plan != nullptr && result.plan->loop.has_value(), "spanning loop note should build");
+    require(result.plan->initialChaseNoteOnEvents.size() == 1
+            && result.plan->loop->boundaryNoteOffEvents.size() == 1
+            && result.plan->loop->startChaseNoteOnEvents.size() == 1,
+        "spanning note should appear once in each special loop table");
+    const auto noteInstanceId = result.plan->initialChaseNoteOnEvents[0].noteInstanceId;
+    require(result.plan->loop->boundaryNoteOffEvents[0].noteInstanceId == noteInstanceId
+            && result.plan->loop->startChaseNoteOnEvents[0].noteInstanceId == noteInstanceId,
+        "all loop special tables should reuse one base note instance id");
+}
+
+void preparedMidiPlanHonorsPreRequestedCancellation()
+{
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = trackloom::Project("Cancelled plan");
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    std::stop_source stopSource;
+    stopSource.request_stop();
+
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(
+        std::move(request), stopSource.get_token());
+
+    require(result.failureReason == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::Cancelled,
+        "pre-requested stop should return the stable cancelled reason");
+    require(result.plan == nullptr, "cancelled build must not publish a partial plan");
+}
+
+void preparedMidiPlanRejectsNinthEventWithInjectedTotalLimit()
+{
+    trackloom::Project project("Injected event limit");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Notes", trackloom::ClipType::Midi, 0, 1920);
+    require(clip.has_value(), "fixture clip should exist");
+    for (int note = 0; note < 5; ++note) {
+        require(project.createMidiNote(clip->id, note * 120, 60, 60 + note, 100, 1).has_value(),
+            "fixture note should fit in clip");
+    }
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    const auto result = trackloom::detail::buildPreparedMidiPlaybackPlanWithLimits(
+        std::move(request), {}, {8, 4096});
+
+    require(result.failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::EventLimitExceeded,
+        "the ninth prepared event should exceed an injected total limit of eight");
+    require(result.plan == nullptr, "event-limit failure must not publish a partial plan");
+}
+
+void preparedMidiPlanEnforcesProductionCallbackEventLimit()
+{
+    trackloom::Project project("Production callback limit");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Dense chord", trackloom::ClipType::Midi, 0, 1920);
+    require(clip.has_value(), "fixture clip should exist");
+    for (int note = 0; note < 4097; ++note) {
+        require(project.createMidiNote(clip->id, 0, 960, 1 + (note % 127), 100, 1).has_value(),
+            "dense fixture note should fit in clip");
+    }
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(result.failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::CallbackEventLimitExceeded,
+        "public builder should reject 4097 events in one prepared callback window");
+    require(result.plan == nullptr, "callback-limit failure must not publish a partial plan");
+}
+
+void preparedMidiPlanCountsMultipleLoopWrapsInOneCallbackWindow()
+{
+    trackloom::Project project("Multi-wrap density");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Tiny loop", trackloom::ClipType::Midi, 0, 32);
+    require(clip.has_value(), "fixture clip should exist");
+    require(project.createMidiNote(clip->id, 0, 12, 60, 100, 1).has_value(),
+        "note held at loop start should exist");
+    require(project.createMidiNote(clip->id, 12, 8, 64, 100, 1).has_value(),
+        "note crossing loop end should exist");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 512;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.playbackStartSample = 200;
+    request.loopRange = trackloom::PlaybackLoopRange{8, 16};
+    const auto result = trackloom::detail::buildPreparedMidiPlaybackPlanWithLimits(
+        std::move(request), {}, {32, 8});
+
+    require(result.failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::CallbackEventLimitExceeded,
+        "512-frame callback should count full wraps, remainder, boundary off, and start chase together");
+    require(result.plan == nullptr, "multi-wrap density failure must not publish a partial plan");
+}
+
+void preparedMidiPlanCountsCollapsedInitialChaseInCallbackBudget()
+{
+    trackloom::Project project("Initial chase density");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Held notes", trackloom::ClipType::Midi, 0, 12000);
+    require(clip.has_value(), "fixture clip should exist");
+    for (int note = 0; note < 9; ++note) {
+        require(project.createMidiNote(clip->id, note * 480, 6000, 60 + note, 100, 1).has_value(),
+            "held fixture note should fit in clip");
+    }
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.playbackStartSample = 125000;
+    request.loopRange = trackloom::PlaybackLoopRange{0, 10000};
+    const auto result = trackloom::detail::buildPreparedMidiPlaybackPlanWithLimits(
+        std::move(request), {}, {64, 8});
+
+    require(result.failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::CallbackEventLimitExceeded,
+        "nine simultaneous initial chase events should exceed a callback limit of eight");
+    require(result.plan == nullptr, "initial-chase density failure must not publish a partial plan");
+}
+
+void preparedMidiPlanMergesInitialChaseWithFirstLoopWindowDensity()
+{
+    trackloom::Project project("Initial callback merge");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Held notes", trackloom::ClipType::Midi, 0, 12000);
+    require(clip.has_value(), "fixture clip should exist");
+    for (int note = 0; note < 8; ++note) {
+        require(project.createMidiNote(clip->id, note * 480, 6000, 60 + note, 100, 1).has_value(),
+            "held fixture note should fit in clip");
+    }
+    require(project.createMidiNote(clip->id, 5000, 100, 72, 100, 1).has_value(),
+        "note beginning at first callback should exist");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.playbackStartSample = 125000;
+    request.loopRange = trackloom::PlaybackLoopRange{0, 10000};
+    const auto result = trackloom::detail::buildPreparedMidiPlaybackPlanWithLimits(
+        std::move(request), {}, {64, 8});
+
+    require(result.failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::CallbackEventLimitExceeded,
+        "initial chase and normal events in the first loop callback should share one budget");
+    require(result.plan == nullptr, "merged first-callback density failure must not publish a partial plan");
+}
+
+void preparedMidiPlanKeepsLoopNoteInstanceIdsDense()
+{
+    trackloom::Project project("Dense loop note ids");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Phrase", trackloom::ClipType::Midi, 0, 4800);
+    require(clip.has_value(), "fixture clip should exist");
+    require(project.createMidiNote(clip->id, 0, 120, 60, 100, 1).has_value(),
+        "out-of-loop note should exist first in source order");
+    require(project.createMidiNote(clip->id, 1000, 120, 64, 100, 1).has_value(),
+        "in-loop note should exist second in source order");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.playbackStartSample = 24000;
+    request.loopRange = trackloom::PlaybackLoopRange{960, 3840};
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(result.plan != nullptr && result.plan->events.size() == 2,
+        "only the in-loop note should emit normal events");
+    require(result.plan->events[0].noteInstanceId == 0
+            && result.plan->events[1].noteInstanceId == 0,
+        "notes omitted from every loop table must not create note instance id gaps");
+}
+
 void preparedMidiPlanRejectsInvalidRequests()
 {
     trackloom::Project project("Limits");
@@ -1738,10 +2095,22 @@ void preparedMidiPlanRejectsInvalidRequests()
             == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::InvalidPlaybackStart,
         "negative playback start should be rejected");
     auto invalidLoop = request;
-    invalidLoop.loopRange = trackloom::PlaybackLoopRange{0, 960};
+    invalidLoop.loopRange = trackloom::PlaybackLoopRange{960, 960};
     require(trackloom::buildPreparedMidiPlaybackPlan(std::move(invalidLoop)).failureReason
             == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::InvalidLoopRange,
-        "loop plans are deferred to Task 2 and should be rejected stably");
+        "zero-length loop should be rejected stably");
+    auto negativeLoop = request;
+    negativeLoop.loopRange = trackloom::PlaybackLoopRange{-1, 960};
+    require(trackloom::buildPreparedMidiPlaybackPlan(std::move(negativeLoop)).failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::InvalidLoopRange,
+        "negative loop start should be rejected stably");
+    auto overflowingLoop = request;
+    overflowingLoop.sampleRate = std::numeric_limits<double>::max();
+    overflowingLoop.loopRange = trackloom::PlaybackLoopRange{
+        0, std::numeric_limits<std::int64_t>::max()};
+    require(trackloom::buildPreparedMidiPlaybackPlan(std::move(overflowingLoop)).failureReason
+            == trackloom::PreparedMidiPlaybackPlanBuildFailureReason::SamplePositionOverflow,
+        "loop sample conversion overflow should return the stable overflow reason");
 
     auto invalidMixProject = project;
     auto& mutableTracks = const_cast<std::vector<trackloom::Track>&>(invalidMixProject.tracks());
@@ -8414,6 +8783,18 @@ int main()
         midiPlaybackSortsEventsDeterministically();
         preparedMidiPlanOrdersNoteOffBeforeNoteOn();
         preparedMidiPlanBuildsDeterministicNonLoopSnapshot();
+        preparedMidiPlanSeparatesLoopBoundaryReleaseFromStartChase();
+        preparedMidiPlanChasesNoteHeldAtNonZeroLoopStart();
+        preparedMidiPlanNormalizesLoopStartAndKeepsInitialChaseSeparate();
+        preparedMidiPlanTreatsRightBoundaryNoteOffAsBoundaryRelease();
+        preparedMidiPlanSharesNoteInstanceAcrossAllLoopSpecialTables();
+        preparedMidiPlanHonorsPreRequestedCancellation();
+        preparedMidiPlanRejectsNinthEventWithInjectedTotalLimit();
+        preparedMidiPlanEnforcesProductionCallbackEventLimit();
+        preparedMidiPlanCountsMultipleLoopWrapsInOneCallbackWindow();
+        preparedMidiPlanCountsCollapsedInitialChaseInCallbackBudget();
+        preparedMidiPlanMergesInitialChaseWithFirstLoopWindowDensity();
+        preparedMidiPlanKeepsLoopNoteInstanceIdsDense();
         preparedMidiPlanRejectsInvalidRequests();
         preparedMidiPlanRejectsSamplePositionThatRoundsPastInt64Maximum();
         preparedMidiPlanAcceptsMaximumSafelyRoundableSamplePosition();
