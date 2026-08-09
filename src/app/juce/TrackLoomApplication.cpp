@@ -1394,6 +1394,7 @@ private:
         refreshFromSession();
 
         if (presentation.showWarningDetails) {
+            // 弹窗是完整详情的主入口；TooltipWindow 让状态栏悬停时也能再次查看同一内容。
             juce::AlertWindow::showMessageBoxAsync(
                 juce::AlertWindow::WarningIcon,
                 toJuceString("工程保存警告"),
@@ -2874,6 +2875,7 @@ private:
     std::string selectedAudioClipId_;
     std::string selectedMidiClipId_;
     std::size_t selectedRecentProjectNumber_ = 0;
+    juce::TooltipWindow tooltipWindow_;
     juce::MenuBarComponent menuBar_;
     juce::Label commandPaletteBackground_;
     juce::GroupComponent commandPalettePanel_;

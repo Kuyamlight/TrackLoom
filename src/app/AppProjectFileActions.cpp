@@ -141,6 +141,8 @@ AppProjectFileActionPresentation describeAppProjectFileActionPresentation(
 
     auto details = feedback.message;
     if (!feedback.recoveryPaths.empty()) {
+        // warning 是必须原样保留的自由文本；恢复路径以这份结构化清单为权威。
+        // 即使正文碰巧也提到某条路径，也不能再用子串匹配省略清单项，否则前缀路径会误判。
         details += "\n\n需要检查的恢复路径：";
         for (const auto& recoveryPath : feedback.recoveryPaths) {
             details += "\n- " + utf8PathForMessage(recoveryPath);

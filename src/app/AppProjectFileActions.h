@@ -36,7 +36,7 @@ struct AppProjectFileActionFeedback {
 };
 
 // AppProjectFileActionPresentation 是 JUCE 无关的文件动作展示指令。
-// summary 适合单行状态栏；details 在需要时承载完整、可复制或可滚动查看的内容。
+// summary 适合单行状态栏；details 保留完整 warning 正文，并把结构化恢复路径列为权威清单。
 struct AppProjectFileActionPresentation {
     std::string summary;
     std::string details;
