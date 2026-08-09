@@ -71,6 +71,13 @@ AppProjectFileActionFeedback describeAppProjectFileActionResult(
     const AppProjectSessionResult& result)
 {
     if (result.success) {
+        if (!result.warning.empty()) {
+            return feedback(
+                true,
+                AppProjectFileActionFeedbackKind::Warning,
+                actionSuccessMessage(action) + " " + result.warning);
+        }
+
         return feedback(true, AppProjectFileActionFeedbackKind::Success, actionSuccessMessage(action));
     }
 

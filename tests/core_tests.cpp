@@ -354,6 +354,54 @@ std::string readFileBytes(const std::filesystem::path& path)
     return { std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>() };
 }
 
+bool containsRecoveryPath(
+    const std::vector<std::filesystem::path>& recoveryPaths,
+    const std::filesystem::path& expectedPath)
+{
+    for (const auto& recoveryPath : recoveryPaths) {
+        if (recoveryPath == expectedPath) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::filesystem::path injectedRetainedRecoveryPath;
+
+trackloom::AtomicFileReplaceResult replaceProjectFileAndRetainRecoveryPath(
+    const std::filesystem::path& replacementPath,
+    const std::filesystem::path& targetPath)
+{
+    std::error_code renameError;
+    std::filesystem::rename(replacementPath, targetPath, renameError);
+    if (renameError) {
+        return trackloom::AtomicFileReplaceResult::fail(
+            "Test replacement could not install the target.",
+            trackloom::AtomicFileTargetAvailability::Unknown,
+            replacementPath);
+    }
+
+    return trackloom::AtomicFileReplaceResult::ok(injectedRetainedRecoveryPath);
+}
+
+trackloom::AtomicFileReplaceResult replaceProjectFileAndLeaveWorkspaceSentinel(
+    const std::filesystem::path& replacementPath,
+    const std::filesystem::path& targetPath)
+{
+    std::error_code renameError;
+    std::filesystem::rename(replacementPath, targetPath, renameError);
+    if (renameError) {
+        return trackloom::AtomicFileReplaceResult::fail(
+            "Test replacement could not install the target.",
+            trackloom::AtomicFileTargetAvailability::Unknown,
+            replacementPath);
+    }
+
+    writeFileBytes(replacementPath.parent_path() / "cleanup-sentinel", "retain this workspace");
+    return trackloom::AtomicFileReplaceResult::ok();
+}
+
 #ifdef _WIN32
 
 class ScriptedWindowsAtomicFileOperations final : public trackloom::detail::WindowsAtomicFileOperations {
@@ -5737,6 +5785,50 @@ void saveReplacesExistingFile()
     require(loaded.project->name() == "New Song", "replacement should store new content");
 }
 
+void saveReportsRetainedHelperRecoveryPathAfterSuccessfulReplacement()
+{
+    const auto directory = makeTestDirectory("save_retained_helper_recovery");
+    const auto targetPath = directory / "song.tlproj";
+    injectedRetainedRecoveryPath = directory / "helper-retained-recovery";
+
+    const auto saved = trackloom::detail::saveProjectToFileAtomicallyWithReplaceOperation(
+        trackloom::Project("Saved With Helper Recovery"),
+        targetPath,
+        replaceProjectFileAndRetainRecoveryPath);
+    const auto loaded = trackloom::loadProjectFromFile(targetPath);
+
+    require(saved.success, "a replacement that installs the target should report save success");
+    require(loaded.project.has_value() && loaded.project->name() == "Saved With Helper Recovery",
+        "successful replacement should still save the requested project");
+    require(!saved.warning.empty(), "retained helper recovery data should be reported as a warning");
+    require(containsRecoveryPath(saved.recoveryPaths, injectedRetainedRecoveryPath),
+        "save warning should expose the helper recovery path");
+}
+
+void saveReportsWorkspaceCleanupFailureAfterSuccessfulReplacement()
+{
+    const auto directory = makeTestDirectory("save_workspace_cleanup_warning");
+    const auto targetPath = directory / "song.tlproj";
+    auto workspacePath = targetPath;
+    workspacePath += ".trackloom-save-workspace";
+    const auto sentinelPath = workspacePath / "cleanup-sentinel";
+
+    const auto saved = trackloom::detail::saveProjectToFileAtomicallyWithReplaceOperation(
+        trackloom::Project("Saved With Workspace Recovery"),
+        targetPath,
+        replaceProjectFileAndLeaveWorkspaceSentinel);
+    const auto loaded = trackloom::loadProjectFromFile(targetPath);
+
+    require(saved.success, "a replacement followed by workspace cleanup failure should still report save success");
+    require(loaded.project.has_value() && loaded.project->name() == "Saved With Workspace Recovery",
+        "workspace cleanup failure should not roll back the saved target");
+    require(!saved.warning.empty(), "workspace cleanup failure should be reported as a warning");
+    require(containsRecoveryPath(saved.recoveryPaths, workspacePath),
+        "workspace cleanup warning should expose the retained workspace");
+    require(std::filesystem::exists(sentinelPath),
+        "workspace cleanup failure must preserve the sentinel left after replacement");
+}
+
 void atomicFileReplaceReplacesExistingTarget()
 {
     const auto directory = makeTestDirectory("atomic_replace_existing");
@@ -7951,6 +8043,8 @@ int main()
         projectCanSaveAndLoadFromFile();
         saveCreatesParentDirectories();
         saveReplacesExistingFile();
+        saveReportsRetainedHelperRecoveryPathAfterSuccessfulReplacement();
+        saveReportsWorkspaceCleanupFailureAfterSuccessfulReplacement();
         atomicFileReplaceReplacesExistingTarget();
         atomicFileReplaceInstallsWhenTargetIsMissing();
         atomicFileReplaceMissingReplacementPreservesExistingTarget();

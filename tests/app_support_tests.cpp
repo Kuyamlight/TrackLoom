@@ -568,6 +568,27 @@ void projectFileActionFeedbackDescribesSuccessfulSaveAs()
         "save-as feedback should describe the completed save-as action");
 }
 
+void projectFileActionFeedbackWarnsAfterSuccessfulSave()
+{
+    const auto ordinarySuccess = trackloom::describeAppProjectFileActionResult(
+        trackloom::AppProjectFileAction::Save,
+        trackloom::AppProjectSessionResult::ok());
+    const auto warning = std::string("Recovery workspace still needs inspection.");
+    const auto retainedPath = std::filesystem::path("C:/recovery/project.trackloom-save-workspace");
+    const auto feedback = trackloom::describeAppProjectFileActionResult(
+        trackloom::AppProjectFileAction::Save,
+        trackloom::AppProjectSessionResult::ok(warning, { retainedPath }));
+
+    require(feedback.success,
+        "a saved project with retained recovery data should remain a successful file action");
+    require(feedback.kind == trackloom::AppProjectFileActionFeedbackKind::Warning,
+        "a saved project with retained recovery data should expose a stable warning kind");
+    require(feedback.message.find(ordinarySuccess.message) != std::string::npos,
+        "warning feedback should retain the normal successful save message");
+    require(feedback.message.find(warning) != std::string::npos,
+        "warning feedback should visibly explain the retained recovery data");
+}
+
 void recentProjectsKeepNewestUniquePathsWithinLimit()
 {
     trackloom::AppRecentProjects recent(3);
@@ -9733,6 +9754,7 @@ int main()
     projectFileActionFeedbackExplainsSaveWithoutPath();
     projectFileActionFeedbackDescribesCanceledOpen();
     projectFileActionFeedbackDescribesSuccessfulSaveAs();
+    projectFileActionFeedbackWarnsAfterSuccessfulSave();
     recentProjectsKeepNewestUniquePathsWithinLimit();
     recentProjectsSaveAndLoadUtf8TextFile();
     recentProjectsLoadMissingFileAsEmptyList();

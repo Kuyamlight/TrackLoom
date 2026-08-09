@@ -19,6 +19,8 @@ enum class AppProjectFileAction {
 // message 可以显示给用户，但按钮启用、分支处理不应解析 message 文本。
 enum class AppProjectFileActionFeedbackKind {
     Success,
+    // 文件动作已经完成，但 UI 必须显示 warning。
+    Warning,
     Failure,
     Canceled,
     NeedsSaveAs

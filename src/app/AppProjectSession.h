@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace trackloom {
 
@@ -26,8 +27,14 @@ struct AppProjectSessionResult {
     bool success = false;
     AppProjectSessionFailureReason failureReason = AppProjectSessionFailureReason::None;
     std::string error;
+    // 保存成功后的非致命清理提示；会话仍应保持 clean。
+    std::string warning;
+    // 与 warning 对应、需要用户检查的恢复位置。
+    std::vector<std::filesystem::path> recoveryPaths;
 
-    static AppProjectSessionResult ok();
+    static AppProjectSessionResult ok(
+        std::string warning = {},
+        std::vector<std::filesystem::path> recoveryPaths = {});
     static AppProjectSessionResult fail(AppProjectSessionFailureReason reason, std::string message);
 };
 

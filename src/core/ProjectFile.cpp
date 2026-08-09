@@ -7,6 +7,7 @@
 #include <sstream>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace trackloom {
 namespace {
@@ -55,6 +56,28 @@ std::string withRecoveryInspectionPath(std::string message, const std::filesyste
         + ". This path must be inspected before retrying.";
 }
 
+void addRecoveryPath(
+    std::vector<std::filesystem::path>& recoveryPaths,
+    const std::filesystem::path& recoveryPath)
+{
+    for (const auto& existingPath : recoveryPaths) {
+        if (existingPath == recoveryPath) {
+            return;
+        }
+    }
+
+    recoveryPaths.push_back(recoveryPath);
+}
+
+std::string cleanupWarningFor(const std::vector<std::filesystem::path>& recoveryPaths)
+{
+    auto warning = std::string("Project was saved, but cleanup left recovery data that must be inspected before the next save.");
+    for (const auto& recoveryPath : recoveryPaths) {
+        warning = withRecoveryInspectionPath(std::move(warning), recoveryPath);
+    }
+    return warning;
+}
+
 FileOperationResult failBeforeReplacement(
     const std::filesystem::path& temporaryPath,
     const std::filesystem::path& workspacePath,
@@ -69,14 +92,16 @@ FileOperationResult failBeforeReplacement(
 
 }
 
-FileOperationResult FileOperationResult::ok()
+FileOperationResult FileOperationResult::ok(
+    std::string warning,
+    std::vector<std::filesystem::path> recoveryPaths)
 {
-    return { true, "" };
+    return { true, "", std::move(warning), std::move(recoveryPaths) };
 }
 
 FileOperationResult FileOperationResult::fail(std::string message)
 {
-    return { false, std::move(message) };
+    return { false, std::move(message), "", {} };
 }
 
 LoadProjectResult loadProjectFromFile(const std::filesystem::path& path)
@@ -99,7 +124,10 @@ LoadProjectResult loadProjectFromFile(const std::filesystem::path& path)
     return loadProjectFromText(contents.str());
 }
 
-FileOperationResult saveProjectToFileAtomically(const Project& project, const std::filesystem::path& path)
+FileOperationResult detail::saveProjectToFileAtomicallyWithReplaceOperation(
+    const Project& project,
+    const std::filesystem::path& path,
+    AtomicFileReplaceOperation replaceOperation)
 {
     if (path.empty()) {
         return FileOperationResult::fail("Project file path must not be empty.");
@@ -179,7 +207,7 @@ FileOperationResult saveProjectToFileAtomically(const Project& project, const st
     }
 
     try {
-        const auto replacement = replaceFileAtomically(temporaryPath, path);
+        const auto replacement = replaceOperation(temporaryPath, path);
         if (!replacement.success) {
             auto message = "Could not replace project file: " + replacement.error;
             if (replacement.recoveryPath.has_value()) {
@@ -191,8 +219,21 @@ FileOperationResult saveProjectToFileAtomically(const Project& project, const st
             return FileOperationResult::fail(std::move(message));
         }
 
-        std::error_code ignoredWorkspaceCleanupError;
-        std::filesystem::remove(workspacePath, ignoredWorkspaceCleanupError);
+        std::vector<std::filesystem::path> recoveryPaths;
+        if (replacement.recoveryPath.has_value()) {
+            addRecoveryPath(recoveryPaths, *replacement.recoveryPath);
+        }
+
+        std::error_code workspaceCleanupError;
+        const auto workspaceRemoved = std::filesystem::remove(workspacePath, workspaceCleanupError);
+        if (!workspaceRemoved || workspaceCleanupError) {
+            addRecoveryPath(recoveryPaths, workspacePath);
+        }
+
+        if (!recoveryPaths.empty()) {
+            return FileOperationResult::ok(cleanupWarningFor(recoveryPaths), std::move(recoveryPaths));
+        }
+
         return FileOperationResult::ok();
     } catch (const std::exception& error) {
         // 一旦进入原子替换阶段，不再清理 workspace；它可能包含唯一可控恢复副本。
@@ -200,6 +241,11 @@ FileOperationResult saveProjectToFileAtomically(const Project& project, const st
             std::string("Could not replace project file: ") + error.what(),
             workspacePath));
     }
+}
+
+FileOperationResult saveProjectToFileAtomically(const Project& project, const std::filesystem::path& path)
+{
+    return detail::saveProjectToFileAtomicallyWithReplaceOperation(project, path, replaceFileAtomically);
 }
 
 }

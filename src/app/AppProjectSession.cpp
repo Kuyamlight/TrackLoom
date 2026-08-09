@@ -4,16 +4,18 @@
 
 namespace trackloom {
 
-AppProjectSessionResult AppProjectSessionResult::ok()
+AppProjectSessionResult AppProjectSessionResult::ok(
+    std::string warning,
+    std::vector<std::filesystem::path> recoveryPaths)
 {
-    return { true, AppProjectSessionFailureReason::None, "" };
+    return { true, AppProjectSessionFailureReason::None, "", std::move(warning), std::move(recoveryPaths) };
 }
 
 AppProjectSessionResult AppProjectSessionResult::fail(
     AppProjectSessionFailureReason reason,
     std::string message)
 {
-    return { false, reason, std::move(message) };
+    return { false, reason, std::move(message), "", {} };
 }
 
 AppProjectSession::AppProjectSession()
@@ -119,7 +121,7 @@ AppProjectSessionResult AppProjectSession::saveAs(const std::filesystem::path& p
 
     currentProjectPath_ = path;
     dirty_ = false;
-    return AppProjectSessionResult::ok();
+    return AppProjectSessionResult::ok(saved.warning, saved.recoveryPaths);
 }
 
 AppProjectSessionResult AppProjectSession::openFrom(const std::filesystem::path& path)
