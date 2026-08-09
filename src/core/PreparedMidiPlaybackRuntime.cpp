@@ -17,6 +17,30 @@ static_assert(std::atomic<std::int64_t>::is_always_lock_free);
 constexpr std::size_t maximumTotalEvents = 1'000'000;
 constexpr std::size_t maximumCallbackEvents = 4'096;
 
+bool validBuiltInSynthSampleRate(double sampleRate) noexcept
+{
+    if (!std::isfinite(sampleRate) || sampleRate <= 0.0) {
+        return false;
+    }
+
+    constexpr double envelopeDurations[] {0.005, 0.020, 0.030};
+    const double sizeLimit = static_cast<double>(std::numeric_limits<std::size_t>::max());
+    for (const double duration : envelopeDurations) {
+        const double scaledFrames = sampleRate * duration;
+        const double envelopeFrames = std::ceil(scaledFrames);
+        if (!std::isfinite(scaledFrames) || !std::isfinite(envelopeFrames)
+            || envelopeFrames < 1.0 || envelopeFrames >= sizeLimit) {
+            return false;
+        }
+    }
+
+    constexpr int highestMidiNote = 127;
+    const double highestFrequency = 440.0 * std::exp2((highestMidiNote - 69) / 12.0);
+    const double phaseIncrement = 2.0 * std::acos(-1.0) * highestFrequency / sampleRate;
+    const double phaseAfterFirstAdvance = 0.0 + phaseIncrement;
+    return std::isfinite(phaseIncrement) && std::isfinite(phaseAfterFirstAdvance);
+}
+
 bool validOutputFormat(int channelCount, std::uint64_t channelMask) noexcept
 {
     return channelCount >= 1 && channelCount <= 2
@@ -92,7 +116,7 @@ void updateMaximum(std::atomic<std::uint64_t>& destination, std::uint64_t value)
 PreparedMidiPlaybackPlanValidationResult validatePreparedMidiPlaybackPlan(
     const PreparedMidiPlaybackPlan& plan)
 {
-    if (!std::isfinite(plan.sampleRate) || plan.sampleRate <= 0.0
+    if (!validBuiltInSynthSampleRate(plan.sampleRate)
         || plan.maximumBlockFrames <= 0
         || !validOutputFormat(plan.outputChannelCount, plan.outputChannelMask)
         || plan.playbackStartSample < 0

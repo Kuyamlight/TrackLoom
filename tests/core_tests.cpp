@@ -2691,6 +2691,50 @@ void runtimeValidatorRejectsInvalidFormatsAndPreservesInstalledPlan()
     require(!runtime.installPlan(&valid), "install must reject every non-stopped runtime state");
 }
 
+void runtimeValidatorRejectsDenormalSampleRateBeforeInstall()
+{
+    auto valid = runtimePlan();
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&valid), "baseline plan should install before denormal rejection");
+
+    auto invalid = valid;
+    invalid.sampleRate = std::numeric_limits<double>::denorm_min();
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidFormat,
+        "denormal sample rate must be rejected before synth preparation");
+    require(!runtime.installPlan(&invalid), "denormal sample rate must not replace stopped plan");
+    require(runtime.start(), "failed denormal install must preserve the stopped baseline plan");
+}
+
+void runtimeValidatorRejectsUnrepresentableEnvelopeSampleRateBeforeInstall()
+{
+    auto valid = runtimePlan();
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&valid), "baseline plan should install before huge-rate rejection");
+
+    auto invalid = valid;
+    invalid.sampleRate = std::numeric_limits<double>::max();
+    requirePlanValidationFailure(invalid,
+        trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidFormat,
+        "sample rate with unrepresentable envelope frames must be rejected");
+    require(!runtime.installPlan(&invalid), "huge sample rate must not replace stopped plan");
+    require(runtime.start(), "failed huge-rate install must preserve the stopped baseline plan");
+}
+
+void runtimeValidatorAcceptsNormalSampleRates()
+{
+    constexpr double sampleRates[] {44'100.0, 48'000.0, 96'000.0};
+    for (const double sampleRate : sampleRates) {
+        auto plan = runtimePlan();
+        plan.sampleRate = sampleRate;
+        const auto validation = trackloom::validatePreparedMidiPlaybackPlan(plan);
+        require(validation.valid, "normal sample rate must remain valid");
+
+        trackloom::PreparedMidiPlaybackRuntime runtime;
+        require(runtime.installPlan(&plan), "normal sample rate must remain installable");
+    }
+}
+
 void runtimeValidatorRejectsInvalidEventValuesAndCoordinates()
 {
     auto valid = runtimePlan();
@@ -10065,6 +10109,9 @@ int main()
         runtimeHandlesMultipleLoopWrapsAndSameBaseKeyReleases();
         runtimeOrdersLoopHeadChaseAndNormalEventsByOrdinal();
         runtimeValidatorRejectsInvalidFormatsAndPreservesInstalledPlan();
+        runtimeValidatorRejectsUnrepresentableEnvelopeSampleRateBeforeInstall();
+        runtimeValidatorRejectsDenormalSampleRateBeforeInstall();
+        runtimeValidatorAcceptsNormalSampleRates();
         runtimeValidatorRejectsInvalidEventValuesAndCoordinates();
         runtimeValidatorRejectsMalformedLoopTablesAndSlots();
         runtimeValidatorRejectsOrderingAndOrdinalCorruption();
