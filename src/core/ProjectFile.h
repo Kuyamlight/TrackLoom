@@ -33,6 +33,15 @@ FileOperationResult saveProjectToFileAtomically(const Project& project, const st
 
 namespace detail {
 
+struct TemporaryProjectWriteResult {
+    bool success = false;
+    std::string error;
+};
+
+using TemporaryProjectWriteOperation = TemporaryProjectWriteResult (*) (
+    const std::filesystem::path& temporaryPath,
+    const std::string& canonicalText);
+
 // 测试保存流程的替换后处理边界；公开生产入口始终使用 replaceFileAtomically。
 using AtomicFileReplaceOperation = AtomicFileReplaceResult (*) (
     const std::filesystem::path& replacementPath,
@@ -50,6 +59,13 @@ FileOperationResult saveProjectToFileAtomicallyWithReplaceOperation(
 FileOperationResult saveProjectToFileAtomicallyWithOperations(
     const Project& project,
     const std::filesystem::path& path,
+    AtomicFileReplaceOperation replaceOperation,
+    SaveWorkspaceRemoveOperation removeWorkspace);
+
+FileOperationResult saveProjectToFileAtomicallyWithOperations(
+    const Project& project,
+    const std::filesystem::path& path,
+    TemporaryProjectWriteOperation writeOperation,
     AtomicFileReplaceOperation replaceOperation,
     SaveWorkspaceRemoveOperation removeWorkspace);
 

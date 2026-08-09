@@ -4,6 +4,7 @@
 
 #include <exception>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <system_error>
 #include <utility>
@@ -47,6 +48,69 @@ bool cleanupOwnedSaveWorkspace(
 bool removeSaveWorkspace(const std::filesystem::path& workspacePath, std::error_code& error)
 {
     return std::filesystem::remove(workspacePath, error);
+}
+
+detail::TemporaryProjectWriteResult writeTemporaryProjectFile(
+    const std::filesystem::path& temporaryPath,
+    const std::string& canonicalText)
+{
+    std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
+    if (!output.is_open() || !output) {
+        return { false, "Could not create temporary project file." };
+    }
+
+    if (canonicalText.size() > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max())) {
+        output.close();
+        return { false, "Temporary project file is too large to write." };
+    }
+
+    output.write(canonicalText.data(), static_cast<std::streamsize>(canonicalText.size()));
+    if (!output) {
+        output.close();
+        return { false, "Could not write temporary project file." };
+    }
+
+    output.flush();
+    if (!output) {
+        output.close();
+        return { false, "Could not flush temporary project file." };
+    }
+
+    output.close();
+    if (output.fail()) {
+        return { false, "Could not close temporary project file." };
+    }
+
+    return { true, "" };
+}
+
+bool readTemporaryProjectBytes(
+    const std::filesystem::path& temporaryPath,
+    std::string& bytes,
+    std::string& error)
+{
+    std::ifstream input(temporaryPath, std::ios::binary);
+    if (!input.is_open() || !input) {
+        error = "Could not reopen temporary project file for verification.";
+        return false;
+    }
+
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    if (input.bad()) {
+        input.close();
+        error = "Could not read temporary project file for verification.";
+        return false;
+    }
+
+    input.close();
+    if (input.fail()) {
+        error = "Could not close temporary project file after verification.";
+        return false;
+    }
+
+    bytes = contents.str();
+    return true;
 }
 
 std::string utf8PathForMessage(const std::filesystem::path& path)
@@ -147,6 +211,25 @@ FileOperationResult detail::saveProjectToFileAtomicallyWithOperations(
     AtomicFileReplaceOperation replaceOperation,
     SaveWorkspaceRemoveOperation removeWorkspace)
 {
+    return detail::saveProjectToFileAtomicallyWithOperations(
+        project,
+        path,
+        writeTemporaryProjectFile,
+        replaceOperation,
+        removeWorkspace);
+}
+
+FileOperationResult detail::saveProjectToFileAtomicallyWithOperations(
+    const Project& project,
+    const std::filesystem::path& path,
+    TemporaryProjectWriteOperation writeOperation,
+    AtomicFileReplaceOperation replaceOperation,
+    SaveWorkspaceRemoveOperation removeWorkspace)
+{
+    if (writeOperation == nullptr || replaceOperation == nullptr || removeWorkspace == nullptr) {
+        return FileOperationResult::fail("Project file operation callbacks must not be null.");
+    }
+
     if (path.empty()) {
         return FileOperationResult::fail("Project file path must not be empty.");
     }
@@ -186,32 +269,42 @@ FileOperationResult detail::saveProjectToFileAtomicallyWithOperations(
     }
 
     const auto temporaryPath = workspacePath / "replacement.tlproj";
-    bool temporaryFileOwned = false;
+    const bool temporaryFileOwned = true;
 
     try {
-        {
-            std::ofstream output(temporaryPath, std::ios::binary | std::ios::trunc);
-            temporaryFileOwned = output.is_open();
-            if (!output) {
-                return failBeforeReplacement(
-                    temporaryPath,
-                    workspacePath,
-                    temporaryFileOwned,
-                    "Could not create temporary project file.");
-            }
-
-            output << saveProjectToText(project);
-            if (!output) {
-                return failBeforeReplacement(
-                    temporaryPath,
-                    workspacePath,
-                    temporaryFileOwned,
-                    "Could not write temporary project file.");
-            }
+        const auto canonicalText = saveProjectToText(project);
+        const auto writeResult = writeOperation(temporaryPath, canonicalText);
+        if (!writeResult.success) {
+            const auto message = writeResult.error.empty()
+                ? "Could not write temporary project file."
+                : writeResult.error;
+            return failBeforeReplacement(
+                temporaryPath,
+                workspacePath,
+                temporaryFileOwned,
+                message);
         }
 
         // 临时文件写完后立即用正式读取路径验证，防止写出当前读取器无法理解的内容。
-        const auto validation = loadProjectFromFile(temporaryPath);
+        std::string temporaryBytes;
+        std::string readError;
+        if (!readTemporaryProjectBytes(temporaryPath, temporaryBytes, readError)) {
+            return failBeforeReplacement(
+                temporaryPath,
+                workspacePath,
+                temporaryFileOwned,
+                std::move(readError));
+        }
+
+        if (temporaryBytes != canonicalText) {
+            return failBeforeReplacement(
+                temporaryPath,
+                workspacePath,
+                temporaryFileOwned,
+                "Temporary project file bytes did not match the serialized project.");
+        }
+
+        const auto validation = loadProjectFromText(temporaryBytes);
         if (!validation.project.has_value()) {
             return failBeforeReplacement(
                 temporaryPath,

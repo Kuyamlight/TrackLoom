@@ -368,6 +368,77 @@ bool containsRecoveryPath(
 }
 
 std::filesystem::path injectedRetainedRecoveryPath;
+int injectedProjectFileReplacementCallCount = 0;
+
+trackloom::detail::TemporaryProjectWriteResult writeCanonicalProjectBytes(
+    const std::filesystem::path& temporaryPath,
+    const std::string& canonicalText)
+{
+    writeFileBytes(temporaryPath, canonicalText);
+    return { true, "" };
+}
+
+trackloom::detail::TemporaryProjectWriteResult writeTruncatedButValidProjectPrefix(
+    const std::filesystem::path& temporaryPath,
+    const std::string& canonicalText)
+{
+    const auto headerEnd = canonicalText.find('\n');
+    const auto nameEnd = canonicalText.find('\n', headerEnd + 1);
+    require(headerEnd != std::string::npos && nameEnd != std::string::npos,
+        "canonical project text should contain header and name lines");
+
+    const auto truncatedPrefix = canonicalText.substr(0, nameEnd + 1);
+    require(trackloom::loadProjectFromText(truncatedPrefix).project.has_value(),
+        "the deliberately truncated header-and-name prefix should remain parseable");
+    writeFileBytes(temporaryPath, truncatedPrefix);
+    return { true, "" };
+}
+
+trackloom::detail::TemporaryProjectWriteResult writeProjectThenReportFlushFailure(
+    const std::filesystem::path& temporaryPath,
+    const std::string& canonicalText)
+{
+    writeFileBytes(temporaryPath, canonicalText);
+    return { false, "Injected temporary project flush failure." };
+}
+
+trackloom::detail::TemporaryProjectWriteResult writeProjectThenReportCloseFailure(
+    const std::filesystem::path& temporaryPath,
+    const std::string& canonicalText)
+{
+    writeFileBytes(temporaryPath, canonicalText);
+    return { false, "Injected temporary project close failure." };
+}
+
+trackloom::AtomicFileReplaceResult recordAndInstallProjectFile(
+    const std::filesystem::path& replacementPath,
+    const std::filesystem::path& targetPath)
+{
+    ++injectedProjectFileReplacementCallCount;
+    std::error_code copyError;
+    std::filesystem::copy_file(
+        replacementPath,
+        targetPath,
+        std::filesystem::copy_options::overwrite_existing,
+        copyError);
+    if (copyError) {
+        return trackloom::AtomicFileReplaceResult::fail(
+            "Test replacement could not install the target.",
+            trackloom::AtomicFileTargetAvailability::Unknown,
+            replacementPath);
+    }
+
+    std::error_code removeError;
+    std::filesystem::remove(replacementPath, removeError);
+    if (removeError) {
+        return trackloom::AtomicFileReplaceResult::fail(
+            "Test replacement could not consume the replacement.",
+            trackloom::AtomicFileTargetAvailability::Available,
+            replacementPath);
+    }
+
+    return trackloom::AtomicFileReplaceResult::ok();
+}
 
 trackloom::AtomicFileReplaceResult replaceProjectFileAndRetainRecoveryPath(
     const std::filesystem::path& replacementPath,
@@ -5878,6 +5949,136 @@ void saveDoesNotWarnWhenWorkspaceWasRemovedDespiteFalseCleanupResult()
         "the deterministic cleanup operation should remove the workspace before reporting false");
 }
 
+void saveRejectsParseableButTruncatedTemporaryProjectBytes()
+{
+    const auto directory = makeTestDirectory("save_rejects_parseable_truncation");
+    const auto targetPath = directory / "song.tlproj";
+    auto workspacePath = targetPath;
+    workspacePath += ".trackloom-save-workspace";
+    const std::string oldTargetBytes { "original\0project\r\nbytes", 23 };
+    writeFileBytes(targetPath, oldTargetBytes);
+
+    trackloom::Project project("New Complete Project");
+    project.createTrack("Lead", trackloom::TrackType::Instrument);
+    injectedProjectFileReplacementCallCount = 0;
+
+    const auto saved = trackloom::detail::saveProjectToFileAtomicallyWithOperations(
+        project,
+        targetPath,
+        writeTruncatedButValidProjectPrefix,
+        recordAndInstallProjectFile,
+        removeWorkspaceThenReportNoRemoval);
+
+    require(!saved.success, "a parseable but truncated temporary project must not be installed");
+    require(injectedProjectFileReplacementCallCount == 0,
+        "byte-integrity failure must be detected before atomic replacement");
+    require(readFileBytes(targetPath) == oldTargetBytes,
+        "byte-integrity failure must preserve the old target byte for byte");
+    require(!std::filesystem::exists(workspacePath),
+        "a clean pre-replacement integrity failure should remove the owned save workspace");
+}
+
+void saveRejectsReportedTemporaryProjectFlushFailure()
+{
+    const auto directory = makeTestDirectory("save_rejects_flush_failure");
+    const auto targetPath = directory / "song.tlproj";
+    auto workspacePath = targetPath;
+    workspacePath += ".trackloom-save-workspace";
+    const std::string oldTargetBytes { "old\0flush\r\nbytes", 16 };
+    writeFileBytes(targetPath, oldTargetBytes);
+    injectedProjectFileReplacementCallCount = 0;
+
+    const auto saved = trackloom::detail::saveProjectToFileAtomicallyWithOperations(
+        trackloom::Project("Flush Failure"),
+        targetPath,
+        writeProjectThenReportFlushFailure,
+        recordAndInstallProjectFile,
+        removeWorkspaceThenReportNoRemoval);
+
+    require(!saved.success, "a reported temporary project flush failure must fail the save");
+    require(saved.error.find("flush") != std::string::npos,
+        "a temporary project flush failure should retain its diagnostic");
+    require(injectedProjectFileReplacementCallCount == 0,
+        "a temporary project flush failure must prevent atomic replacement");
+    require(readFileBytes(targetPath) == oldTargetBytes,
+        "a temporary project flush failure must preserve the old target byte for byte");
+    require(!std::filesystem::exists(workspacePath),
+        "a clean pre-replacement flush failure should remove the owned save workspace");
+}
+
+void saveRejectsReportedTemporaryProjectCloseFailure()
+{
+    const auto directory = makeTestDirectory("save_rejects_close_failure");
+    const auto targetPath = directory / "song.tlproj";
+    auto workspacePath = targetPath;
+    workspacePath += ".trackloom-save-workspace";
+    const std::string oldTargetBytes { "old\0close\r\nbytes", 16 };
+    writeFileBytes(targetPath, oldTargetBytes);
+    injectedProjectFileReplacementCallCount = 0;
+
+    const auto saved = trackloom::detail::saveProjectToFileAtomicallyWithOperations(
+        trackloom::Project("Close Failure"),
+        targetPath,
+        writeProjectThenReportCloseFailure,
+        recordAndInstallProjectFile,
+        removeWorkspaceThenReportNoRemoval);
+
+    require(!saved.success, "a reported temporary project close failure must fail the save");
+    require(saved.error.find("close") != std::string::npos,
+        "a temporary project close failure should retain its diagnostic");
+    require(injectedProjectFileReplacementCallCount == 0,
+        "a temporary project close failure must prevent atomic replacement");
+    require(readFileBytes(targetPath) == oldTargetBytes,
+        "a temporary project close failure must preserve the old target byte for byte");
+    require(!std::filesystem::exists(workspacePath),
+        "a clean pre-replacement close failure should remove the owned save workspace");
+}
+
+void saveRejectsNullInjectedFileOperationsWithoutTouchingTarget()
+{
+    const auto directory = makeTestDirectory("save_rejects_null_operations");
+    const std::string oldTargetBytes { "old\0callback\r\nbytes", 19 };
+
+    const auto verifyRejectedCallbacks = [&](const std::string& fileName,
+                                             trackloom::detail::TemporaryProjectWriteOperation writeOperation,
+                                             trackloom::detail::AtomicFileReplaceOperation replaceOperation,
+                                             trackloom::detail::SaveWorkspaceRemoveOperation removeOperation) {
+        const auto targetPath = directory / fileName;
+        auto workspacePath = targetPath;
+        workspacePath += ".trackloom-save-workspace";
+        writeFileBytes(targetPath, oldTargetBytes);
+
+        const auto saved = trackloom::detail::saveProjectToFileAtomicallyWithOperations(
+            trackloom::Project("Rejected Callback"),
+            targetPath,
+            writeOperation,
+            replaceOperation,
+            removeOperation);
+
+        require(!saved.success, "null injected project-file operations must fail safely");
+        require(readFileBytes(targetPath) == oldTargetBytes,
+            "null injected project-file operations must preserve the old target byte for byte");
+        require(!std::filesystem::exists(workspacePath),
+            "null injected project-file operations must be rejected before creating a workspace");
+    };
+
+    verifyRejectedCallbacks(
+        "null-writer.tlproj",
+        nullptr,
+        recordAndInstallProjectFile,
+        removeWorkspaceThenReportNoRemoval);
+    verifyRejectedCallbacks(
+        "null-replacer.tlproj",
+        writeCanonicalProjectBytes,
+        nullptr,
+        removeWorkspaceThenReportNoRemoval);
+    verifyRejectedCallbacks(
+        "null-remover.tlproj",
+        writeCanonicalProjectBytes,
+        recordAndInstallProjectFile,
+        nullptr);
+}
+
 void atomicFileReplaceReplacesExistingTarget()
 {
     const auto directory = makeTestDirectory("atomic_replace_existing");
@@ -8095,6 +8296,10 @@ int main()
         saveReportsRetainedHelperRecoveryPathAfterSuccessfulReplacement();
         saveReportsWorkspaceCleanupFailureAfterSuccessfulReplacement();
         saveDoesNotWarnWhenWorkspaceWasRemovedDespiteFalseCleanupResult();
+        saveRejectsParseableButTruncatedTemporaryProjectBytes();
+        saveRejectsReportedTemporaryProjectFlushFailure();
+        saveRejectsReportedTemporaryProjectCloseFailure();
+        saveRejectsNullInjectedFileOperationsWithoutTouchingTarget();
         atomicFileReplaceReplacesExistingTarget();
         atomicFileReplaceInstallsWhenTargetIsMissing();
         atomicFileReplaceMissingReplacementPreservesExistingTarget();
