@@ -44,6 +44,11 @@ bool cleanupOwnedSaveWorkspace(
     return cleanupSucceeded && !removeWorkspaceError;
 }
 
+bool removeSaveWorkspace(const std::filesystem::path& workspacePath, std::error_code& error)
+{
+    return std::filesystem::remove(workspacePath, error);
+}
+
 std::string utf8PathForMessage(const std::filesystem::path& path)
 {
     const auto utf8 = path.u8string();
@@ -128,6 +133,19 @@ FileOperationResult detail::saveProjectToFileAtomicallyWithReplaceOperation(
     const Project& project,
     const std::filesystem::path& path,
     AtomicFileReplaceOperation replaceOperation)
+{
+    return detail::saveProjectToFileAtomicallyWithOperations(
+        project,
+        path,
+        replaceOperation,
+        removeSaveWorkspace);
+}
+
+FileOperationResult detail::saveProjectToFileAtomicallyWithOperations(
+    const Project& project,
+    const std::filesystem::path& path,
+    AtomicFileReplaceOperation replaceOperation,
+    SaveWorkspaceRemoveOperation removeWorkspace)
 {
     if (path.empty()) {
         return FileOperationResult::fail("Project file path must not be empty.");
@@ -225,8 +243,14 @@ FileOperationResult detail::saveProjectToFileAtomicallyWithReplaceOperation(
         }
 
         std::error_code workspaceCleanupError;
-        const auto workspaceRemoved = std::filesystem::remove(workspacePath, workspaceCleanupError);
-        if (!workspaceRemoved || workspaceCleanupError) {
+        const auto workspaceRemoved = removeWorkspace(workspacePath, workspaceCleanupError);
+        auto workspaceNeedsRecovery = static_cast<bool>(workspaceCleanupError);
+        if (!workspaceRemoved && !workspaceCleanupError) {
+            std::error_code workspaceStatusError;
+            const auto workspaceStillExists = std::filesystem::exists(workspacePath, workspaceStatusError);
+            workspaceNeedsRecovery = workspaceStatusError || workspaceStillExists;
+        }
+        if (workspaceNeedsRecovery) {
             addRecoveryPath(recoveryPaths, workspacePath);
         }
 

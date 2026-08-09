@@ -38,11 +38,21 @@ struct AppProjectSessionResult {
     static AppProjectSessionResult fail(AppProjectSessionFailureReason reason, std::string message);
 };
 
+namespace detail {
+
+// 测试会话保存结果传播的最小边界；默认构造仍使用核心原子保存函数。
+using ProjectSaveOperation = FileOperationResult (*) (
+    const Project& project,
+    const std::filesystem::path& path);
+
+}
+
 // AppProjectSession 保存桌面应用“当前打开的工程”状态。
 // 它不定义工程文件格式，只组合 Project、当前文件路径和 dirty 标志，供 UI、快捷键和 AI 工具复用。
 class AppProjectSession final {
 public:
     AppProjectSession();
+    explicit AppProjectSession(detail::ProjectSaveOperation saveOperation);
 
     const Project& project() const;
 
@@ -71,6 +81,7 @@ private:
     CommandStack commandStack_;
     std::optional<std::filesystem::path> currentProjectPath_;
     bool dirty_ = false;
+    detail::ProjectSaveOperation saveOperation_;
 };
 
 }

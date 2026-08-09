@@ -402,6 +402,35 @@ trackloom::AtomicFileReplaceResult replaceProjectFileAndLeaveWorkspaceSentinel(
     return trackloom::AtomicFileReplaceResult::ok();
 }
 
+trackloom::AtomicFileReplaceResult replaceProjectFileWithoutRecovery(
+    const std::filesystem::path& replacementPath,
+    const std::filesystem::path& targetPath)
+{
+    std::error_code renameError;
+    std::filesystem::rename(replacementPath, targetPath, renameError);
+    if (renameError) {
+        return trackloom::AtomicFileReplaceResult::fail(
+            "Test replacement could not install the target.",
+            trackloom::AtomicFileTargetAvailability::Unknown,
+            replacementPath);
+    }
+
+    return trackloom::AtomicFileReplaceResult::ok();
+}
+
+bool removeWorkspaceThenReportNoRemoval(
+    const std::filesystem::path& workspacePath,
+    std::error_code& error)
+{
+    std::filesystem::remove(workspacePath, error);
+    if (error) {
+        return false;
+    }
+
+    error.clear();
+    return false;
+}
+
 #ifdef _WIN32
 
 class ScriptedWindowsAtomicFileOperations final : public trackloom::detail::WindowsAtomicFileOperations {
@@ -5829,6 +5858,26 @@ void saveReportsWorkspaceCleanupFailureAfterSuccessfulReplacement()
         "workspace cleanup failure must preserve the sentinel left after replacement");
 }
 
+void saveDoesNotWarnWhenWorkspaceWasRemovedDespiteFalseCleanupResult()
+{
+    const auto directory = makeTestDirectory("save_workspace_removed_without_result");
+    const auto targetPath = directory / "song.tlproj";
+    auto workspacePath = targetPath;
+    workspacePath += ".trackloom-save-workspace";
+
+    const auto saved = trackloom::detail::saveProjectToFileAtomicallyWithOperations(
+        trackloom::Project("Saved Without Workspace Warning"),
+        targetPath,
+        replaceProjectFileWithoutRecovery,
+        removeWorkspaceThenReportNoRemoval);
+
+    require(saved.success, "a target installed before workspace removal should report save success");
+    require(saved.warning.empty(), "an already removed workspace should not produce a cleanup warning");
+    require(saved.recoveryPaths.empty(), "an already removed workspace should not report recovery paths");
+    require(!std::filesystem::exists(workspacePath),
+        "the deterministic cleanup operation should remove the workspace before reporting false");
+}
+
 void atomicFileReplaceReplacesExistingTarget()
 {
     const auto directory = makeTestDirectory("atomic_replace_existing");
@@ -8045,6 +8094,7 @@ int main()
         saveReplacesExistingFile();
         saveReportsRetainedHelperRecoveryPathAfterSuccessfulReplacement();
         saveReportsWorkspaceCleanupFailureAfterSuccessfulReplacement();
+        saveDoesNotWarnWhenWorkspaceWasRemovedDespiteFalseCleanupResult();
         atomicFileReplaceReplacesExistingTarget();
         atomicFileReplaceInstallsWhenTargetIsMissing();
         atomicFileReplaceMissingReplacementPreservesExistingTarget();

@@ -19,7 +19,13 @@ AppProjectSessionResult AppProjectSessionResult::fail(
 }
 
 AppProjectSession::AppProjectSession()
+    : AppProjectSession(saveProjectToFileAtomically)
+{
+}
+
+AppProjectSession::AppProjectSession(detail::ProjectSaveOperation saveOperation)
     : project_("Untitled")
+    , saveOperation_(saveOperation ? saveOperation : saveProjectToFileAtomically)
 {
 }
 
@@ -112,7 +118,7 @@ AppProjectSessionResult AppProjectSession::save()
 
 AppProjectSessionResult AppProjectSession::saveAs(const std::filesystem::path& path)
 {
-    const auto saved = saveProjectToFileAtomically(project_, path);
+    const auto saved = saveOperation_(project_, path);
     if (!saved.success) {
         return AppProjectSessionResult::fail(
             AppProjectSessionFailureReason::SaveFailed,

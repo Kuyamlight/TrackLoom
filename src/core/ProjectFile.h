@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace trackloom {
@@ -37,10 +38,20 @@ using AtomicFileReplaceOperation = AtomicFileReplaceResult (*) (
     const std::filesystem::path& replacementPath,
     const std::filesystem::path& targetPath);
 
+using SaveWorkspaceRemoveOperation = bool (*) (
+    const std::filesystem::path& workspacePath,
+    std::error_code& error);
+
 FileOperationResult saveProjectToFileAtomicallyWithReplaceOperation(
     const Project& project,
     const std::filesystem::path& path,
     AtomicFileReplaceOperation replaceOperation);
+
+FileOperationResult saveProjectToFileAtomicallyWithOperations(
+    const Project& project,
+    const std::filesystem::path& path,
+    AtomicFileReplaceOperation replaceOperation,
+    SaveWorkspaceRemoveOperation removeWorkspace);
 
 }
 

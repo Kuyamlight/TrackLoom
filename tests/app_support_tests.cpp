@@ -78,6 +78,34 @@ void removeTestWorkspace()
     std::filesystem::remove_all(testWorkspace(), ignoredError);
 }
 
+std::filesystem::path injectedSessionRecoveryPathOne;
+std::filesystem::path injectedSessionRecoveryPathTwo;
+
+trackloom::FileOperationResult saveProjectWithInjectedRecoveryWarning(
+    const trackloom::Project&,
+    const std::filesystem::path&)
+{
+    return trackloom::FileOperationResult::ok(
+        "Recovery data requires inspection.",
+        { injectedSessionRecoveryPathOne, injectedSessionRecoveryPathTwo });
+}
+
+std::size_t occurrenceCount(const std::string& text, const std::string& value)
+{
+    if (value.empty()) {
+        return 0;
+    }
+
+    auto count = std::size_t { 0 };
+    auto position = text.find(value);
+    while (position != std::string::npos) {
+        ++count;
+        position = text.find(value, position + value.size());
+    }
+
+    return count;
+}
+
 const trackloom::AppCommandPaletteItem* findPaletteItem(
     const trackloom::AppCommandPaletteStatus& palette,
     int commandId)
@@ -587,6 +615,77 @@ void projectFileActionFeedbackWarnsAfterSuccessfulSave()
         "warning feedback should retain the normal successful save message");
     require(feedback.message.find(warning) != std::string::npos,
         "warning feedback should visibly explain the retained recovery data");
+}
+
+void projectSessionSaveAsPropagatesRecoveryWarningToFileActionFeedback()
+{
+    removeTestWorkspace();
+    const auto targetPath = testWorkspace() / "warning-save.trackloom-test";
+    injectedSessionRecoveryPathOne = testWorkspace() / "helper-recovery";
+    injectedSessionRecoveryPathTwo = testWorkspace() / "workspace-recovery";
+
+    trackloom::AppProjectSession session(saveProjectWithInjectedRecoveryWarning);
+    session.createNewProject("Warning Save");
+    session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto saved = session.saveAs(targetPath);
+    const auto feedback = trackloom::describeAppProjectFileActionResult(
+        trackloom::AppProjectFileAction::SaveAs,
+        saved);
+
+    require(saved.success, "injected successful save should remain successful through the app session");
+    require(saved.warning.find("Recovery data requires inspection.") != std::string::npos,
+        "app session should retain the core save warning");
+    require(saved.recoveryPaths.size() == 2,
+        "app session should retain every core recovery path");
+    require(saved.recoveryPaths.at(0) == injectedSessionRecoveryPathOne
+            && saved.recoveryPaths.at(1) == injectedSessionRecoveryPathTwo,
+        "app session should preserve the ordered core recovery paths");
+    require(session.currentProjectPath().has_value() && session.currentProjectPath().value() == targetPath,
+        "successful warning save should still set the current project path");
+    require(!session.isDirty(), "successful warning save should clear dirty state");
+    require(feedback.success && feedback.kind == trackloom::AppProjectFileActionFeedbackKind::Warning,
+        "successful warning save should produce warning feedback");
+    require(feedback.message.find("Recovery data requires inspection.") != std::string::npos,
+        "warning feedback should include the core warning text");
+    require(feedback.message.find(injectedSessionRecoveryPathOne.string()) != std::string::npos
+            && feedback.message.find(injectedSessionRecoveryPathTwo.string()) != std::string::npos,
+        "warning feedback should visibly include every structured recovery path");
+}
+
+void projectFileActionFeedbackDoesNotRepeatPathsAlreadyInWarning()
+{
+    const auto firstPath = std::filesystem::path("C:/recovery/already-mentioned");
+    const auto secondPath = std::filesystem::path("C:/recovery/only-structured");
+    const auto warning = std::string("Recovery data may be available at: ") + firstPath.string();
+    const auto feedback = trackloom::describeAppProjectFileActionResult(
+        trackloom::AppProjectFileAction::Save,
+        trackloom::AppProjectSessionResult::ok(warning, { firstPath, secondPath }));
+
+    require(feedback.success && feedback.kind == trackloom::AppProjectFileActionFeedbackKind::Warning,
+        "structured recovery paths should retain successful warning feedback");
+    require(occurrenceCount(feedback.message, firstPath.string()) == 1,
+        "feedback should not repeat a recovery path already visible in its warning");
+    require(occurrenceCount(feedback.message, secondPath.string()) == 1,
+        "feedback should append a recovery path missing from its warning");
+}
+
+void projectSessionNullSaveOperationFallsBackToCoreSave()
+{
+    removeTestWorkspace();
+    const auto targetPath = testWorkspace() / "null-save-operation.trackloom-test";
+
+    trackloom::AppProjectSession session(nullptr);
+    session.createNewProject("Null Save Operation");
+    session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto saved = session.saveAs(targetPath);
+
+    require(saved.success, "a null injected save operation should fall back to the core save operation");
+    require(std::filesystem::exists(targetPath), "null save operation fallback should write the target project");
+    require(session.currentProjectPath().has_value() && session.currentProjectPath().value() == targetPath,
+        "null save operation fallback should preserve normal save-as session state");
+    require(!session.isDirty(), "null save operation fallback should clear dirty state after saving");
 }
 
 void recentProjectsKeepNewestUniquePathsWithinLimit()
@@ -9755,6 +9854,9 @@ int main()
     projectFileActionFeedbackDescribesCanceledOpen();
     projectFileActionFeedbackDescribesSuccessfulSaveAs();
     projectFileActionFeedbackWarnsAfterSuccessfulSave();
+    projectSessionSaveAsPropagatesRecoveryWarningToFileActionFeedback();
+    projectFileActionFeedbackDoesNotRepeatPathsAlreadyInWarning();
+    projectSessionNullSaveOperationFallsBackToCoreSave();
     recentProjectsKeepNewestUniquePathsWithinLimit();
     recentProjectsSaveAndLoadUtf8TextFile();
     recentProjectsLoadMissingFileAsEmptyList();

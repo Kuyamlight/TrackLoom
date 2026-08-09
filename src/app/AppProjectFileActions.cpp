@@ -47,6 +47,31 @@ std::string actionFailurePrefix(AppProjectFileAction action)
     return "工程文件操作失败：";
 }
 
+std::string utf8PathForMessage(const std::filesystem::path& path)
+{
+    const auto utf8 = path.u8string();
+    return { reinterpret_cast<const char*>(utf8.data()), utf8.size() };
+}
+
+std::string warningWithRecoveryPaths(
+    std::string warning,
+    const std::vector<std::filesystem::path>& recoveryPaths)
+{
+    if (warning.empty()) {
+        warning = "Recovery data requires inspection.";
+    }
+
+    for (const auto& recoveryPath : recoveryPaths) {
+        const auto recoveryPathText = utf8PathForMessage(recoveryPath);
+        if (warning.find(recoveryPathText) == std::string::npos) {
+            warning += " Recovery data may be available at: " + recoveryPathText
+                + ". This path must be inspected before retrying.";
+        }
+    }
+
+    return warning;
+}
+
 AppProjectFileActionFeedback feedback(
     bool success,
     AppProjectFileActionFeedbackKind kind,
@@ -71,11 +96,11 @@ AppProjectFileActionFeedback describeAppProjectFileActionResult(
     const AppProjectSessionResult& result)
 {
     if (result.success) {
-        if (!result.warning.empty()) {
+        if (!result.warning.empty() || !result.recoveryPaths.empty()) {
             return feedback(
                 true,
                 AppProjectFileActionFeedbackKind::Warning,
-                actionSuccessMessage(action) + " " + result.warning);
+                actionSuccessMessage(action) + " " + warningWithRecoveryPaths(result.warning, result.recoveryPaths));
         }
 
         return feedback(true, AppProjectFileActionFeedbackKind::Success, actionSuccessMessage(action));
