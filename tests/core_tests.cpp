@@ -1,4 +1,5 @@
 #include "AtomicFileReplace.h"
+#include "BuiltInPolySynth.h"
 #include "AudioDisable.h"
 #include "AudioPan.h"
 #include "AudioProjectGraph.h"
@@ -25,6 +26,8 @@
 #include "ProjectSerializer.h"
 #include "Transport.h"
 
+#include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -2201,6 +2204,470 @@ void preparedMidiPlanUsesExistingTrackPlaybackRules()
         "solo mode should emit only the soloed track while hidden remains display-only");
     require(result.plan->events[0].instrumentSlotIndex == 3 && result.plan->events[1].instrumentSlotIndex == 3,
         "soloed track should retain its original project-order slot");
+}
+
+void builtInSynthSelectsOldestReleasingVoice()
+{
+    const std::array<trackloom::detail::BuiltInPolySynthVoiceSelectionState, 4> voices {{
+        {true, 1},
+        {false, 9},
+        {false, 3},
+        {true, 0},
+    }};
+
+    require(trackloom::detail::selectBuiltInPolySynthVoiceToSteal(voices) == 2,
+        "oldest releasing voice should be stolen before active voices");
+}
+
+void builtInSynthRendersA4()
+{
+    trackloom::BuiltInPolySynth synth;
+    require(synth.prepare(48000.0), "48 kHz should prepare");
+    trackloom::PreparedMidiEvent event;
+    event.type = trackloom::PreparedMidiEventType::NoteOn;
+    event.noteNumber = 69;
+    event.velocity = 127;
+    trackloom::PreparedMidiInstrumentSlot slot;
+    require(synth.noteOn(event, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+            "first note should use a free voice");
+    std::array<float, 512> left {};
+    std::array<float, 512> right {};
+    float* outputs[] { left.data(), right.data() };
+    synth.render(outputs, 2, 0, 512);
+    require(std::any_of(left.begin(), left.end(), [](float value) { return value != 0.0f; }),
+            "prepared note should render non-zero audio");
+}
+
+double measuredSineEnvelope(
+    const std::vector<float>& samples,
+    std::size_t frame,
+    double sampleRate,
+    std::size_t absoluteStartFrame = 0)
+{
+    const double phase = 2.0 * std::acos(-1.0) * 440.0
+        * static_cast<double>(absoluteStartFrame + frame) / sampleRate;
+    return std::fabs(static_cast<double>(samples[frame]) / (0.045 * std::sin(phase)));
+}
+
+std::size_t nearbyFrameWithStrongA4Phase(
+    std::size_t target,
+    double sampleRate,
+    std::size_t absoluteStartFrame = 0)
+{
+    for (std::size_t distance = 0; distance < 16; ++distance) {
+        for (const int direction : {1, -1}) {
+            const auto candidate = static_cast<std::int64_t>(target)
+                + direction * static_cast<std::int64_t>(distance);
+            if (candidate < 0) {
+                continue;
+            }
+            const double phase = 2.0 * std::acos(-1.0) * 440.0
+                * static_cast<double>(absoluteStartFrame + static_cast<std::size_t>(candidate)) / sampleRate;
+            if (std::fabs(std::sin(phase)) >= 0.7) {
+                return static_cast<std::size_t>(candidate);
+            }
+        }
+    }
+    throw std::runtime_error("fixture should find a strong A4 phase");
+}
+
+void builtInSynthUsesFixedAdsrAtSupportedRates()
+{
+    for (const double sampleRate : {44100.0, 48000.0, 96000.0}) {
+        trackloom::BuiltInPolySynth synth;
+        require(synth.prepare(sampleRate), "supported sample rate should prepare");
+        trackloom::PreparedMidiEvent noteOn;
+        noteOn.noteInstanceId = 11;
+        noteOn.noteNumber = 69;
+        noteOn.velocity = 127;
+        trackloom::PreparedMidiInstrumentSlot slot;
+        require(synth.noteOn(noteOn, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+            "ADSR fixture note should start");
+
+        const auto attackFrames = static_cast<std::size_t>(std::ceil(sampleRate * 0.005));
+        const auto decayFrames = static_cast<std::size_t>(std::ceil(sampleRate * 0.020));
+        const auto releaseFrames = static_cast<std::size_t>(std::ceil(sampleRate * 0.030));
+        const std::size_t heldFrames = attackFrames + decayFrames + 64;
+        std::vector<float> held(heldFrames);
+        float* heldOutputs[] {held.data()};
+        synth.render(heldOutputs, 1, 0, static_cast<int>(held.size()));
+
+        const auto attackProbe = nearbyFrameWithStrongA4Phase(attackFrames / 2, sampleRate);
+        const double measuredAttack = measuredSineEnvelope(held, attackProbe, sampleRate);
+        const double expectedAttack = static_cast<double>(attackProbe) / attackFrames;
+        require(std::fabs(measuredAttack - expectedAttack) <= 1.1 / attackFrames,
+            "attack should reach peak in 5 ms within one sample");
+
+        const auto decayProbe = nearbyFrameWithStrongA4Phase(attackFrames + decayFrames / 2, sampleRate);
+        const double measuredDecay = measuredSineEnvelope(held, decayProbe, sampleRate);
+        const double expectedDecay = 1.0
+            - 0.2 * static_cast<double>(decayProbe - attackFrames) / decayFrames;
+        require(std::fabs(measuredDecay - expectedDecay) <= 0.22 / decayFrames,
+            "decay should reach 0.8 sustain in 20 ms within one sample");
+
+        const auto sustainProbe = nearbyFrameWithStrongA4Phase(attackFrames + decayFrames + 32, sampleRate);
+        require(std::fabs(measuredSineEnvelope(held, sustainProbe, sampleRate) - 0.8) <= 0.00001,
+            "held voice should remain at 0.8 sustain");
+
+        trackloom::PreparedMidiEvent noteOff = noteOn;
+        noteOff.type = trackloom::PreparedMidiEventType::NoteOff;
+        require(synth.noteOff(noteOff, 0) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+            "matching note off should start release");
+        std::vector<float> released(releaseFrames);
+        float* releasedOutputs[] {released.data()};
+        synth.render(releasedOutputs, 1, 0, static_cast<int>(released.size()));
+        const auto releaseProbe = nearbyFrameWithStrongA4Phase(
+            releaseFrames / 2, sampleRate, heldFrames);
+        const double measuredRelease = measuredSineEnvelope(
+            released, releaseProbe, sampleRate, heldFrames);
+        const double expectedRelease = 0.8
+            * (1.0 - static_cast<double>(releaseProbe) / releaseFrames);
+        require(std::fabs(measuredRelease - expectedRelease) <= 0.9 / releaseFrames,
+            "release should reach zero in 30 ms within one sample");
+        require(!synth.hasActiveVoices(), "voice should become inactive after the 30 ms release");
+    }
+}
+
+std::vector<float> renderBuiltInSynthPan(float pan, int channelIndex, int channelCount)
+{
+    trackloom::BuiltInPolySynth synth;
+    require(synth.prepare(48000.0), "pan fixture should prepare");
+    trackloom::PreparedMidiEvent noteOn;
+    noteOn.noteInstanceId = 21;
+    noteOn.noteNumber = 69;
+    noteOn.velocity = 127;
+    trackloom::PreparedMidiInstrumentSlot slot;
+    slot.pan = pan;
+    require(synth.noteOn(noteOn, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "pan fixture note should start");
+    std::vector<std::vector<float>> channels(
+        static_cast<std::size_t>(channelCount), std::vector<float>(2048));
+    std::array<float*, 2> outputs {channels[0].data(), nullptr};
+    if (channelCount == 2) {
+        outputs[1] = channels[1].data();
+    }
+    synth.render(outputs.data(), channelCount, 0, 2048);
+    return channels[static_cast<std::size_t>(channelIndex)];
+}
+
+void builtInSynthUsesLinearStereoPanAndIgnoresPanForMono()
+{
+    const auto rightPanLeft = renderBuiltInSynthPan(1.0f, 0, 2);
+    const auto rightPanRight = renderBuiltInSynthPan(1.0f, 1, 2);
+    require(std::all_of(rightPanLeft.begin(), rightPanLeft.end(), [](float sample) {
+        return sample == 0.0f;
+    }), "full right pan should silence the left channel");
+    require(containsNonZeroSample(rightPanRight), "full right pan should retain the right channel");
+
+    const auto halfLeft = renderBuiltInSynthPan(-0.5f, 0, 2);
+    const auto halfRight = renderBuiltInSynthPan(-0.5f, 1, 2);
+    for (std::size_t frame = 0; frame < halfLeft.size(); ++frame) {
+        require(std::fabs(halfRight[frame] - halfLeft[frame] * 0.5f) <= 0.000001f,
+            "half-left pan should use linear 1.0/0.5 channel scales");
+    }
+
+    const auto monoRightPan = renderBuiltInSynthPan(1.0f, 0, 1);
+    const auto monoLeftPan = renderBuiltInSynthPan(-1.0f, 0, 1);
+    require(monoRightPan == monoLeftPan, "mono rendering should ignore pan");
+}
+
+trackloom::PreparedMidiEvent builtInSynthNoteEvent(
+    std::uint32_t noteInstanceId,
+    std::uint32_t eventOrdinal,
+    trackloom::PreparedMidiEventType type = trackloom::PreparedMidiEventType::NoteOn)
+{
+    trackloom::PreparedMidiEvent event;
+    event.noteInstanceId = noteInstanceId;
+    event.eventOrdinal = eventOrdinal;
+    event.noteNumber = 69;
+    event.velocity = type == trackloom::PreparedMidiEventType::NoteOn ? 127 : 0;
+    event.type = type;
+    return event;
+}
+
+void builtInSynthUsesFixedVoicesAndDeterministicStealing()
+{
+    const std::array<trackloom::detail::BuiltInPolySynthVoiceSelectionState, 3> activeTie {{
+        {true, 7}, {true, 3}, {true, 3},
+    }};
+    require(trackloom::detail::selectBuiltInPolySynthVoiceToSteal(activeTie) == 1,
+        "equal oldest active serials should defensively choose the lowest index");
+    const std::array<trackloom::detail::BuiltInPolySynthVoiceSelectionState, 2> maximumTie {{
+        {true, std::numeric_limits<std::uint64_t>::max()},
+        {true, std::numeric_limits<std::uint64_t>::max()},
+    }};
+    require(trackloom::detail::selectBuiltInPolySynthVoiceToSteal(maximumTie) == 0,
+        "maximum equal serials should still defensively choose the lowest index");
+    const std::array<trackloom::detail::BuiltInPolySynthVoiceSelectionState, 3> releaseTie {{
+        {false, 5}, {false, 5}, {true, 1},
+    }};
+    require(trackloom::detail::selectBuiltInPolySynthVoiceToSteal(releaseTie) == 0,
+        "equal releasing serials should defensively choose the lowest index");
+
+    trackloom::BuiltInPolySynth synth;
+    require(synth.prepare(48000.0), "voice fixture should prepare");
+    trackloom::PreparedMidiInstrumentSlot slot;
+    for (std::size_t index = 0; index < trackloom::BuiltInPolySynth::voiceCount; ++index) {
+        const auto event = builtInSynthNoteEvent(
+            static_cast<std::uint32_t>(100 + index), static_cast<std::uint32_t>(200 + index));
+        require(synth.noteOn(event, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+            "first sixteen notes should use free voices");
+        const auto snapshot = synth.voiceSnapshot(index);
+        require(snapshot.active && snapshot.key.noteInstanceId == 100 + index,
+            "free voices should be allocated by lowest index");
+        require(snapshot.voiceStartSerial == index && snapshot.eventOrdinal == 200 + index,
+            "voice metadata should retain monotonic serial and event ordinal");
+    }
+
+    const auto release = builtInSynthNoteEvent(105, 205, trackloom::PreparedMidiEventType::NoteOff);
+    require(synth.noteOff(release, 0) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "matching note off should put voice five into release");
+    const auto replacement = builtInSynthNoteEvent(999, 999);
+    require(synth.noteOn(replacement, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::VoiceStolen,
+        "seventeenth note should report a stolen voice");
+    require(synth.voiceSnapshot(5).key.noteInstanceId == 999,
+        "a releasing voice should be stolen before any active voice");
+    require(synth.voiceSnapshot(5).voiceStartSerial == 16,
+        "stolen voice should receive the next monotonic serial");
+    require(synth.voiceSnapshot(0).key.noteInstanceId == 100,
+        "releasing priority should preserve the oldest active voice");
+
+    trackloom::BuiltInPolySynth activeOnly;
+    require(activeOnly.prepare(48000.0), "active-only fixture should prepare");
+    for (std::size_t index = 0; index < trackloom::BuiltInPolySynth::voiceCount; ++index) {
+        require(activeOnly.noteOn(builtInSynthNoteEvent(static_cast<std::uint32_t>(index + 1), 0), 0, slot)
+                == trackloom::BuiltInPolySynthEventOutcome::Applied,
+            "active-only fixture should fill all voices");
+    }
+    require(activeOnly.noteOn(builtInSynthNoteEvent(1000, 0), 0, slot)
+            == trackloom::BuiltInPolySynthEventOutcome::VoiceStolen,
+        "full active synth should report voice stealing");
+    require(activeOnly.voiceSnapshot(0).key.noteInstanceId == 1000,
+        "oldest active serial should be stolen when no voice is releasing");
+}
+
+void builtInSynthMatchesCompleteInstanceKeyAndRejectsStaleNoteOff()
+{
+    trackloom::BuiltInPolySynth synth;
+    require(synth.prepare(48000.0), "instance fixture should prepare");
+    trackloom::PreparedMidiInstrumentSlot slot;
+    const auto first = builtInSynthNoteEvent(41, 1);
+    const auto second = builtInSynthNoteEvent(42, 2);
+    require(synth.noteOn(first, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "first same-pitch instance should start");
+    require(synth.noteOn(second, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "second same-pitch instance should start independently");
+    require(synth.noteOn(first, 7, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "same instance id in another loop iteration should start independently");
+
+    auto loopSevenOff = builtInSynthNoteEvent(41, 3, trackloom::PreparedMidiEventType::NoteOff);
+    require(synth.noteOff(loopSevenOff, 7) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "matching loop iteration should enter release");
+    require(synth.noteOff(loopSevenOff, 7) == trackloom::BuiltInPolySynthEventOutcome::StaleNoteOff,
+        "duplicate note off for an already releasing key should be stale");
+    require(synth.voiceSnapshot(0).key == trackloom::BuiltInPolySynthVoiceKey{41, 0},
+        "another loop iteration with the same instance id should remain assigned");
+    require(synth.voiceSnapshot(1).key == trackloom::BuiltInPolySynthVoiceKey{42, 0},
+        "another same-pitch instance should remain assigned");
+
+    for (std::uint32_t index = 3; index < trackloom::BuiltInPolySynth::voiceCount; ++index) {
+        require(synth.noteOn(builtInSynthNoteEvent(100 + index, 100 + index), 0, slot)
+                == trackloom::BuiltInPolySynthEventOutcome::Applied,
+            "fixture should fill the remaining free voices");
+    }
+    const auto replacement = builtInSynthNoteEvent(900, 900);
+    require(synth.noteOn(replacement, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::VoiceStolen,
+        "full synth should replace the releasing loop voice");
+    require(synth.voiceSnapshot(2).key == trackloom::BuiltInPolySynthVoiceKey{900, 0},
+        "replacement should invalidate the old releasing key");
+    require(synth.noteOff(loopSevenOff, 7) == trackloom::BuiltInPolySynthEventOutcome::StaleNoteOff,
+        "late note off for a stolen key should be ignored");
+    require(synth.voiceSnapshot(2).key == trackloom::BuiltInPolySynthVoiceKey{900, 0},
+        "late note off must not release the replacement instance");
+}
+
+void builtInSynthRejectsInvalidOutputWithoutAdvancing()
+{
+    trackloom::BuiltInPolySynth synth;
+    trackloom::BuiltInPolySynth reference;
+    require(synth.prepare(48000.0) && reference.prepare(48000.0),
+        "output-boundary fixtures should prepare");
+    trackloom::PreparedMidiInstrumentSlot slot;
+    const auto note = builtInSynthNoteEvent(77, 1);
+    require(synth.noteOn(note, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "output-boundary fixture should start");
+    require(reference.noteOn(note, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "output-boundary reference should start");
+
+    synth.render(nullptr, 1, 0, 64);
+    float* nullMono[] {nullptr};
+    synth.render(nullMono, 1, 0, 64);
+    std::array<float, 64> scratch {};
+    float* mono[] {scratch.data()};
+    synth.render(mono, 0, 0, 64);
+    float* invalidChannels[] {scratch.data(), scratch.data(), scratch.data()};
+    synth.render(invalidChannels, 3, 0, 64);
+    synth.render(mono, 1, -1, 64);
+    synth.render(mono, 1, 0, -1);
+
+    std::array<float, 512> actual {};
+    std::array<float, 512> expected {};
+    float* actualOutput[] {actual.data()};
+    float* expectedOutput[] {expected.data()};
+    synth.render(actualOutput, 1, 0, 512);
+    reference.render(expectedOutput, 1, 0, 512);
+    for (std::size_t frame = 0; frame < actual.size(); ++frame) {
+        require(std::fabs(actual[frame] - expected[frame]) <= 0.0000001f,
+            "invalid output requests must not advance synth state");
+    }
+}
+
+double measureUpwardCrossingFrequency(
+    const std::vector<float>& samples,
+    std::size_t startFrame,
+    double sampleRate)
+{
+    std::vector<double> crossings;
+    for (std::size_t frame = std::max<std::size_t>(startFrame, 1); frame < samples.size(); ++frame) {
+        const double before = samples[frame - 1];
+        const double after = samples[frame];
+        if (before <= 0.0 && after > 0.0) {
+            const double fraction = -before / (after - before);
+            crossings.push_back(static_cast<double>(frame - 1) + fraction);
+        }
+    }
+    require(crossings.size() >= 8, "frequency fixture should contain enough upward crossings");
+    return static_cast<double>(crossings.size() - 1) * sampleRate
+        / (crossings.back() - crossings.front());
+}
+
+void builtInSynthRendersA4AcrossSupportedRatesAndBlockSizes()
+{
+    for (const double sampleRate : {44100.0, 48000.0, 96000.0}) {
+        for (const int blockFrames : {64, 256, 512}) {
+            trackloom::BuiltInPolySynth synth;
+            require(synth.prepare(sampleRate), "frequency fixture should prepare");
+            trackloom::PreparedMidiInstrumentSlot slot;
+            require(synth.noteOn(builtInSynthNoteEvent(88, 1), 0, slot)
+                    == trackloom::BuiltInPolySynthEventOutcome::Applied,
+                "frequency fixture note should start");
+            const auto totalFrames = static_cast<std::size_t>(std::ceil(sampleRate * 0.100));
+            std::vector<float> samples(totalFrames);
+            float* output[] {samples.data()};
+            for (std::size_t offset = 0; offset < totalFrames;) {
+                const int frames = static_cast<int>(std::min<std::size_t>(
+                    static_cast<std::size_t>(blockFrames), totalFrames - offset));
+                synth.render(output, 1, static_cast<int>(offset), frames);
+                offset += static_cast<std::size_t>(frames);
+            }
+            const auto sustainStart = static_cast<std::size_t>(std::ceil(sampleRate * 0.030));
+            const double measuredHz = measureUpwardCrossingFrequency(samples, sustainStart, sampleRate);
+            require(std::fabs(measuredHz - 440.0) <= 1.0,
+                "A4 steady-state frequency should remain within one hertz");
+        }
+    }
+}
+
+void builtInSynthStartsAtRequestedFrameAndIsBlockEquivalent()
+{
+    trackloom::BuiltInPolySynth ranged;
+    require(ranged.prepare(48000.0), "ranged fixture should prepare");
+    trackloom::PreparedMidiInstrumentSlot slot;
+    require(ranged.noteOn(builtInSynthNoteEvent(89, 1), 0, slot)
+            == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "ranged fixture note should start");
+    std::array<float, 160> rangedSamples {};
+    float* rangedOutput[] {rangedSamples.data()};
+    ranged.render(rangedOutput, 1, 37, 64);
+    require(std::all_of(rangedSamples.begin(), rangedSamples.begin() + 37,
+        [](float sample) { return sample == 0.0f; }),
+        "render should not write before startFrame");
+    require(std::any_of(rangedSamples.begin() + 37, rangedSamples.begin() + 101,
+        [](float sample) { return sample != 0.0f; }),
+        "note should begin inside the requested sample range");
+    require(std::all_of(rangedSamples.begin() + 101, rangedSamples.end(),
+        [](float sample) { return sample == 0.0f; }),
+        "render should not write beyond frameCount");
+
+    trackloom::BuiltInPolySynth whole;
+    trackloom::BuiltInPolySynth chunked;
+    require(whole.prepare(48000.0) && chunked.prepare(48000.0),
+        "block-equivalence fixtures should prepare");
+    const auto note = builtInSynthNoteEvent(90, 1);
+    require(whole.noteOn(note, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied
+            && chunked.noteOn(note, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "block-equivalence notes should start");
+    std::array<float, 512> wholeSamples {};
+    std::array<float, 512> chunkedSamples {};
+    float* wholeOutput[] {wholeSamples.data()};
+    float* chunkedOutput[] {chunkedSamples.data()};
+    whole.render(wholeOutput, 1, 0, 512);
+    for (int offset = 0; offset < 512; offset += 64) {
+        chunked.render(chunkedOutput, 1, offset, 64);
+    }
+    for (std::size_t frame = 0; frame < wholeSamples.size(); ++frame) {
+        require(std::fabs(wholeSamples[frame] - chunkedSamples[frame]) <= 0.0000001f,
+            "phase and ADSR should remain continuous across block boundaries");
+    }
+}
+
+void builtInSynthCapsGainAndVelocityPerVoice()
+{
+    trackloom::BuiltInPolySynth synth;
+    require(synth.prepare(48000.0), "peak fixture should prepare");
+    auto note = builtInSynthNoteEvent(91, 1);
+    note.velocity = 64;
+    trackloom::PreparedMidiInstrumentSlot slot;
+    slot.gain = 4.0f;
+    require(synth.noteOn(note, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "amplified weak-velocity note should start");
+    std::vector<float> samples(2048);
+    float* output[] {samples.data()};
+    synth.render(output, 1, 0, static_cast<int>(samples.size()));
+    float peak = 0.0f;
+    for (const float sample : samples) {
+        peak = std::max(peak, std::fabs(sample));
+    }
+    require(peak <= 0.045f + 0.000001f, "one voice peak must not exceed 0.045");
+    require(peak >= 0.044f, "positive gain should amplify weak velocity up to the safe cap");
+
+    trackloom::BuiltInPolySynth silent;
+    require(silent.prepare(48000.0), "negative-gain fixture should prepare");
+    slot.gain = -1.0f;
+    require(silent.noteOn(note, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "negative-gain fixture note should still allocate");
+    std::array<float, 512> silentSamples {};
+    float* silentOutput[] {silentSamples.data()};
+    silent.render(silentOutput, 1, 0, 512);
+    require(std::all_of(silentSamples.begin(), silentSamples.end(),
+        [](float sample) { return sample == 0.0f; }),
+        "negative gain should clamp to silence");
+}
+
+void builtInSynthReleaseAllStopsWithinThirtyMilliseconds()
+{
+    trackloom::BuiltInPolySynth synth;
+    require(synth.prepare(48000.0), "stop-release fixture should prepare");
+    trackloom::PreparedMidiInstrumentSlot slot;
+    require(synth.noteOn(builtInSynthNoteEvent(92, 1), 0, slot)
+            == trackloom::BuiltInPolySynthEventOutcome::Applied,
+        "stop-release fixture note should start");
+    std::array<float, 1280> held {};
+    float* heldOutput[] {held.data()};
+    synth.render(heldOutput, 1, 0, static_cast<int>(held.size()));
+    synth.releaseAll();
+    constexpr int releaseFrames = 1440;
+    std::array<float, releaseFrames> release {};
+    float* releaseOutput[] {release.data()};
+    synth.render(releaseOutput, 1, 0, releaseFrames - 1);
+    require(synth.hasActiveVoices(), "voice should remain active until the last release frame");
+    synth.render(releaseOutput, 1, releaseFrames - 1, 1);
+    require(!synth.hasActiveVoices(), "releaseAll should clear voices after exactly 30 ms");
+    std::array<float, 64> after {};
+    float* afterOutput[] {after.data()};
+    synth.render(afterOutput, 1, 0, static_cast<int>(after.size()));
+    require(std::all_of(after.begin(), after.end(), [](float sample) { return sample == 0.0f; }),
+        "rendering after stop release should be silent");
 }
 
 void midiPlaybackRespectsTrackPlaybackState()
@@ -8799,6 +9266,17 @@ int main()
         preparedMidiPlanRejectsSamplePositionThatRoundsPastInt64Maximum();
         preparedMidiPlanAcceptsMaximumSafelyRoundableSamplePosition();
         preparedMidiPlanUsesExistingTrackPlaybackRules();
+        builtInSynthSelectsOldestReleasingVoice();
+        builtInSynthRendersA4();
+        builtInSynthUsesFixedAdsrAtSupportedRates();
+        builtInSynthUsesLinearStereoPanAndIgnoresPanForMono();
+        builtInSynthUsesFixedVoicesAndDeterministicStealing();
+        builtInSynthMatchesCompleteInstanceKeyAndRejectsStaleNoteOff();
+        builtInSynthRejectsInvalidOutputWithoutAdvancing();
+        builtInSynthRendersA4AcrossSupportedRatesAndBlockSizes();
+        builtInSynthStartsAtRequestedFrameAndIsBlockEquivalent();
+        builtInSynthCapsGainAndVelocityPerVoice();
+        builtInSynthReleaseAllStopsWithinThirtyMilliseconds();
         midiPlaybackRespectsTrackPlaybackState();
         midiPlaybackHiddenTrackStillPlays();
         midiPlaybackRejectsInvalidWindows();
