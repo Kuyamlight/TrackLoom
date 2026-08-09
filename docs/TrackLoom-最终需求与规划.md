@@ -448,6 +448,1062 @@ MIDI 规则：
 6. 2026-10-31 里程碑只有在固定 MIDI 工程通过内置合成器实际发声、输出设备可选择、所有相关自动测试通过，并在 48 kHz、256 samples、立体声下连续循环 10 分钟且应用无崩溃、xrun/underrun 为 0（后端不提供时 callback 超时为 0）、无可复现爆音、悬挂音符或循环边界丢拍时才可标为完成。设备不支持默认配置时必须按第 16.2 节记录偏差，不能省略证据。
 7. 本里程碑的 10 分钟证据不能替代 2027-05-31 候选版的 30 分钟音频验收；WAV 导入播放、离线 WAV 渲染和对应参考 PCM 验收继续按 2027-02-28 里程碑完成。
 
+#### 16.4.5 可执行实施计划
+
+> **执行要求：** 实施代理必须使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务执行；每个任务必须先取得与该任务缺失能力一致的 RED，再写最小生产实现，随后运行定向 GREEN、相关回归和 `git diff --check`。不得把多个任务压成一次大提交。
+
+**目标：** 在不让现有 `ProjectPlaybackSession`、UI `Timer` 或可变工程对象进入声卡 callback 的前提下，交付 Windows x64、WASAPI shared、固定 16 voice 内置正弦合成器的首条真实可听 MIDI 播放闭环，并留下可重复的自动测试与 10 分钟实机证据。
+
+**架构：** `PreparedMidiPlaybackPlan` 在非实时 worker 上从工程副本生成；平台无关 `BuiltInPolySynth` 和 `PreparedMidiPlaybackRuntime` 只消费不可变数值数据；`JuceAudioHost` 直接拥有 shared WASAPI `AudioIODeviceType`、当前 `AudioIODevice`、callback 和计划；`AppPlaybackController` 只协调 generation、worker、host 和 UI 状态。设备、计划和 UI 之间不得通过 `AudioDeviceManager`、`juce::Synthesiser` 或 callback 内共享可变 `Project` 连接。
+
+**技术栈：** C++20、JUCE 8.0.14、CMake/Ninja、MSVC 19.44、CTest、WASAPI shared。
+
+**全局执行约束：**
+
+- 从 `e21724e` 或包含该提交的更新基线创建 `codex/realtime-audio-foundation` 隔离工作树；先确认主工作树只有用户已有的 `.gitignore` 修改，隔离工作树不得复制、暂存或覆盖该修改。
+- 新工作树首次配置使用：
+
+  ```powershell
+  cmd.exe /d /s /c 'call "E:\Android\VS\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64 && "E:\Android\VS\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DTRACKLOOM_JUCE_ROOT="E:\Android\DevTools\JUCE" -DBUILD_TESTING=ON'
+  ```
+
+- 下文的 `CORE_TEST`、`APP_TEST`、`JUCE_TEST` 分别表示以下定向命令；任一测试宣称通过前必须重新执行相应命令并读取退出码与失败数：
+
+  ```powershell
+  # CORE_TEST
+  cmd.exe /d /s /c 'call "E:\Android\VS\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64 && "E:\Android\VS\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build build --target trackloom_core_tests --parallel && "E:\Android\VS\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe" --test-dir build -R "^trackloom_core_tests$" --output-on-failure'
+
+  # APP_TEST
+  cmd.exe /d /s /c 'call "E:\Android\VS\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64 && "E:\Android\VS\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build build --target trackloom_app_support_tests --parallel && "E:\Android\VS\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe" --test-dir build -R "^trackloom_app_support_tests$" --output-on-failure'
+
+  # JUCE_TEST（Task 5 建立目标后可用）
+  cmd.exe /d /s /c 'call "E:\Android\VS\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64 && "E:\Android\VS\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" --build build --target trackloom_juce_audio_tests --parallel && "E:\Android\VS\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe" --test-dir build -R "^trackloom_juce_audio_tests$" --output-on-failure'
+  ```
+
+- 所有新增 MSVC target 保留 `/utf-8`；callback 所触达函数不得把测试中的 fake、分配计数器或日志分支编入正式实时路径。
+- 每个任务结束都执行 `git diff --check`，只暂存任务列出的文件，核对 `git diff --cached --name-only` 后创建所列独立提交；未经明确授权不 push。
+
+##### Task 1：生成确定性的非循环不可变 MIDI 计划
+
+**文件：**
+
+- 新建 `src/core/PreparedMidiPlaybackPlan.h`
+- 新建 `src/core/PreparedMidiPlaybackPlan.cpp`
+- 修改 `src/core/CMakeLists.txt`
+- 修改 `tests/core_tests.cpp`
+
+**公开接口：**
+
+```cpp
+enum class PreparedMidiEventType : std::uint8_t { NoteOff, NoteOn };
+enum class PreparedMidiInstrumentKind : std::uint8_t { BuiltInSine };
+
+struct PreparedMidiEvent {
+    std::int64_t samplePosition = 0;
+    std::uint32_t noteInstanceId = 0;
+    std::uint32_t eventOrdinal = 0;
+    std::uint32_t instrumentSlotIndex = 0;
+    std::uint8_t channel = 1;
+    std::uint8_t noteNumber = 60;
+    std::uint8_t velocity = 0;
+    PreparedMidiEventType type = PreparedMidiEventType::NoteOn;
+};
+
+struct PreparedMidiInstrumentSlot {
+    PreparedMidiInstrumentKind kind = PreparedMidiInstrumentKind::BuiltInSine;
+    float gain = 1.0f;
+    float pan = 0.0f;
+    std::uint32_t outputBusIndex = 0;
+};
+
+struct PreparedMidiLoop {
+    std::int64_t loopStartSample = 0;
+    std::int64_t loopLengthSamples = 0;
+    std::vector<PreparedMidiEvent> boundaryNoteOffEvents;
+    std::vector<PreparedMidiEvent> startChaseNoteOnEvents;
+};
+
+struct PreparedMidiPlaybackPlan {
+    double sampleRate = 0.0;
+    int maximumBlockFrames = 0;
+    int outputChannelCount = 0;
+    std::uint64_t outputChannelMask = 0;
+    std::int64_t playbackStartSample = 0;
+    std::vector<PreparedMidiInstrumentSlot> instrumentSlots;
+    std::vector<PreparedMidiEvent> events;
+    std::vector<PreparedMidiEvent> initialChaseNoteOnEvents;
+    std::optional<PreparedMidiLoop> loop;
+};
+
+struct PreparedMidiPlaybackPlanBuildRequest {
+    Project projectSnapshot;
+    double sampleRate = 0.0;
+    int maximumBlockFrames = 0;
+    int outputChannelCount = 0;
+    std::uint64_t outputChannelMask = 0;
+    std::int64_t playbackStartSample = 0;
+    std::optional<PlaybackLoopRange> loopRange;
+};
+
+enum class PreparedMidiPlaybackPlanBuildFailureReason {
+    None,
+    Cancelled,
+    InvalidSampleRate,
+    InvalidMaximumBlockFrames,
+    InvalidOutputFormat,
+    InvalidPlaybackStart,
+    InvalidLoopRange,
+    InvalidTrackMix,
+    SamplePositionOverflow,
+    EventLimitExceeded,
+    CallbackEventLimitExceeded
+};
+
+struct PreparedMidiPlaybackPlanBuildResult {
+    PreparedMidiPlaybackPlanBuildFailureReason failureReason =
+        PreparedMidiPlaybackPlanBuildFailureReason::None;
+    std::unique_ptr<const PreparedMidiPlaybackPlan> plan;
+};
+
+PreparedMidiPlaybackPlanBuildResult buildPreparedMidiPlaybackPlan(
+    PreparedMidiPlaybackPlanBuildRequest request,
+    std::stop_token stopToken = {});
+
+namespace detail {
+struct PreparedMidiPlaybackPlanLimits {
+    std::size_t maximumTotalEvents = 1'000'000;
+    std::size_t maximumCallbackEvents = 4'096;
+};
+PreparedMidiPlaybackPlanBuildResult buildPreparedMidiPlaybackPlanWithLimits(
+    PreparedMidiPlaybackPlanBuildRequest request,
+    std::stop_token stopToken,
+    PreparedMidiPlaybackPlanLimits limits);
+}
+```
+
+**步骤：**
+
+1. 在 `core_tests.cpp` 先加入 `#include "PreparedMidiPlaybackPlan.h"` 和非循环测试。固定 48 kHz 工程包含 tempo 变化、两条乐器轨、重叠同音高、同 sample Note Off/Note On，以及 muted、soloed、disabled、hidden 四种轨道状态；断言合法事件与 `round(project.tickToSeconds(tick) * 48000)` 相差不超过 1 sample，hidden 仍产生事件，其他播放规则沿用现有 `MidiPlayback` 语义，slot 逐字冻结 gain/pan。
+2. 运行 `CORE_TEST`，记录 RED：编译必须因缺少 `PreparedMidiPlaybackPlan.h` 或声明而失败；若失败来自测试语法、环境或旧回归，先修正测试/环境，不能进入生产实现。
+3. 实现非循环 builder。先按工程轨道顺序建立兼容乐器 slot；按稳定 `(trackId, clipId, noteId)` 首次出现顺序分配从 0 开始的稠密 `noteInstanceId`；使用带溢出检查的 `llround(tickToSeconds * sampleRate)`；排序键固定为 `(samplePosition, NoteOff-before-NoteOn, track order, clip order, note order)`。原始 Note On 早于 `playbackStartSample` 且 Note Off 晚于该起点的音符，只在 `initialChaseNoteOnEvents` 合成一次起播 Note On；非循环 chase 使用绝对 `playbackStartSample`，循环首次 chase 使用相对 `loopStartSample` 的起播偏移。起点之前的普通事件不进入可消费区，后续真实 Note Off 仍保留。所有普通、initial chase、loop boundary 和 loop-start chase 事件合并按稳定来源顺序分配全局唯一 `eventOrdinal`；builder 不保存字符串到计划。
+4. 对非有限或负 gain、非有限或不在 `[-1, 1]` 的 pan 返回 `InvalidTrackMix`；不在 `[1, 2]` 的声道数、与声道数不一致的低两位 mask、非有限或不大于 0 的采样率，以及不大于 0 的最大 block 均返回对应稳定失败原因。
+5. 再运行 `CORE_TEST`；随后运行完整 `ctest --test-dir build --output-on-failure` 和 `git diff --check`。
+6. 只提交上述四个文件，提交信息：`feat: build immutable MIDI playback plans`。
+
+**可直接粘贴的首个 RED：** 把函数加入 `core_tests.cpp` 并在现有 `main()` 测试调用表注册；首次失败应为 `fatal error C1083: Cannot open include file: 'PreparedMidiPlaybackPlan.h'`，不是运行期断言。
+
+```cpp
+void preparedMidiPlanOrdersNoteOffBeforeNoteOn()
+{
+    trackloom::Project project("Prepared");
+    const auto track = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto clip = project.createClip(track.id, "Phrase", trackloom::ClipType::Midi, 0, 1920);
+    require(clip.has_value(), "fixture clip should exist");
+    require(project.createMidiNote(clip->id, 0, 960, 60, 100, 1).has_value(), "first note should exist");
+    require(project.createMidiNote(clip->id, 960, 960, 64, 100, 1).has_value(), "second note should exist");
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(result.plan != nullptr, "valid project should build a plan");
+    require(result.plan->events.size() == 4, "two notes should create four events");
+    require(result.plan->events[1].samplePosition == 24000, "note off should land at tick 960");
+    require(result.plan->events[1].type == trackloom::PreparedMidiEventType::NoteOff, "off must sort first");
+    require(result.plan->events[2].type == trackloom::PreparedMidiEventType::NoteOn, "on must sort second");
+}
+```
+
+**最小 GREEN 核心：** 先只让上述固定排序成立，再逐条补本任务其余 RED；排序实现固定使用完整 tuple，不能依赖 enum 当前整数值。
+
+```cpp
+std::stable_sort(events.begin(), events.end(), [](const auto& left, const auto& right) {
+    return std::tuple(left.samplePosition, left.type == PreparedMidiEventType::NoteOn,
+                      left.trackOrder, left.clipOrder, left.noteOrder)
+         < std::tuple(right.samplePosition, right.type == PreparedMidiEventType::NoteOn,
+                      right.trackOrder, right.clipOrder, right.noteOrder);
+});
+```
+
+##### Task 2：补齐循环计划、取消和容量预算
+
+**文件：**
+
+- 修改 `src/core/PreparedMidiPlaybackPlan.cpp`
+- 修改 `tests/core_tests.cpp`
+
+**步骤：**
+
+1. 先添加循环 RED：`[0, 3840)` 循环用 `start=3360,length=960` 的音符证明跨右边界只产生 boundary Off、不会在 tick 0 错误 chase；独立的 `[960, 3840)` 循环用 `start=480,length=960` 的音符证明循环起点已持续音会 chase。另覆盖从循环中点开始播放、恰好落在右边界的 Note Off、短到一个 512-frame block 可回绕多次的循环。断言正常 `events` 使用相对 `loopStartSample` 的 `[0, loopLengthSamples)` 坐标，边界释放只在 `boundaryNoteOffEvents`，每次回绕 chase 只在 `startChaseNoteOnEvents`，首次从循环中点起播的 chase 只在计划级 `initialChaseNoteOnEvents`，三张表沿用同一基础 `noteInstanceId`。
+2. 添加预算 RED：通过 `detail::buildPreparedMidiPlaybackPlanWithLimits` 把测试总上限降为 8，验证第 9 个事件返回 `EventLimitExceeded`，避免单元测试构造百万字符串对象；另用真实生产入口和 4,097 个同窗口事件验证正式 callback 上限没有被测试注入绕过。非法/零长度循环、sample 换算溢出分别返回稳定原因；预先请求停止的 `stop_token` 返回 `Cancelled` 且 `plan == nullptr`。
+3. 运行 `CORE_TEST`，记录断言 RED；此时接口已存在，预期失败必须来自尚未实现的 loop/budget/cancel 语义。
+4. 实现循环规范化：把非负 `playbackStartSample` 用安全 floor-mod 归一到 `[loopStartSample, loopStartSample + loopLengthSamples)`，计划保存归一后的工程位置但请求 key 保留原始起点用于过期比较；计划只保存一轮事件。跨右边界音符在边界表产生 Note Off；在循环起点仍持续的音符在 chase 表产生 Note On；从归一后中点起播的持续音只进入 initial chase。运行排序后再分配稳定 ordinal。每处理一条轨道、片段或音符，以及进入容量较大的排序/密度扫描前检查 `stopToken.stop_requested()`。
+5. 公共 `buildPreparedMidiPlaybackPlan` 固定调用 `detail` 实现的 1,000,000/4,096 正式上限，调用方不能传入更大的值。总事件计数包含 `events + initialChaseNoteOnEvents + boundaryNoteOffEvents + startChaseNoteOnEvents`。密度验证使用已准备 `maximumBlockFrames` 的半开 sample 窗口；循环情况把完整轮次数、余数窗口、边界表和 chase 表合并计数，覆盖一个 block 多次回绕，不能只检查单轮相邻事件。
+6. 运行 `CORE_TEST`、完整 CTest 和 `git diff --check`；提交：`feat: validate loop-aware MIDI playback plans`。
+
+**可直接粘贴的首个 RED：** 复用 Task 1 的 request 初始化，把 clip 长度设为 4800 tick 并加入 `start=3360,length=960` 的音符；首次运行应以 `loop boundary note off should be explicit` 断言失败。
+
+```cpp
+request.loopRange = trackloom::PlaybackLoopRange { 0, 3840 };
+const auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+require(result.plan != nullptr, "valid loop should build");
+require(result.plan->loop.has_value(), "plan should retain one normalized loop");
+require(result.plan->loop->loopStartSample == 0, "loop should start at sample zero");
+require(result.plan->loop->loopLengthSamples == 96000, "one 120 BPM bar should be 96000 samples");
+require(result.plan->loop->boundaryNoteOffEvents.size() == 1,
+        "loop boundary note off should be explicit");
+require(result.plan->loop->startChaseNoteOnEvents.empty(),
+        "note that begins near loop end must not be chased at tick zero");
+```
+
+**最小 GREEN 核心：** public 入口不得接收 limits；只有测试 detail 入口能缩小门槛。
+
+```cpp
+return detail::buildPreparedMidiPlaybackPlanWithLimits(
+    std::move(request),
+    stopToken,
+    detail::PreparedMidiPlaybackPlanLimits { 1'000'000, 4'096 });
+```
+
+##### Task 3：实现固定 16 voice 内置合成器
+
+**文件：**
+
+- 新建 `src/core/BuiltInPolySynth.h`
+- 新建 `src/core/BuiltInPolySynth.cpp`
+- 修改 `src/core/CMakeLists.txt`
+- 修改 `tests/core_tests.cpp`
+
+**公开接口：**
+
+```cpp
+struct BuiltInPolySynthVoiceKey {
+    std::uint32_t noteInstanceId = 0;
+    std::uint64_t loopIteration = 0;
+    bool operator==(const BuiltInPolySynthVoiceKey&) const = default;
+};
+
+enum class BuiltInPolySynthEventOutcome {
+    Applied,
+    VoiceStolen,
+    StaleNoteOff
+};
+
+struct BuiltInPolySynthVoiceSnapshot {
+    bool active = false;
+    BuiltInPolySynthVoiceKey key;
+    std::uint64_t voiceStartSerial = 0;
+    std::uint32_t eventOrdinal = 0;
+};
+
+class BuiltInPolySynth final {
+public:
+    static constexpr std::size_t voiceCount = 16;
+    bool prepare(double sampleRate) noexcept;
+    void reset() noexcept;
+    BuiltInPolySynthEventOutcome noteOn(
+        const PreparedMidiEvent& event,
+        std::uint64_t loopIteration,
+        const PreparedMidiInstrumentSlot& instrument) noexcept;
+    BuiltInPolySynthEventOutcome noteOff(
+        const PreparedMidiEvent& event,
+        std::uint64_t loopIteration) noexcept;
+    void releaseAll() noexcept;
+    void render(
+        float* const* outputChannels,
+        int channelCount,
+        int startFrame,
+        int frameCount) noexcept;
+    bool hasActiveVoices() const noexcept;
+    BuiltInPolySynthVoiceSnapshot voiceSnapshot(std::size_t index) const noexcept;
+};
+
+namespace detail {
+struct BuiltInPolySynthVoiceSelectionState {
+    bool active = false;
+    std::uint64_t voiceStartSerial = 0;
+};
+std::size_t selectBuiltInPolySynthVoiceToSteal(
+    std::span<const BuiltInPolySynthVoiceSelectionState> voices) noexcept;
+}
+```
+
+**步骤：**
+
+1. 先写 RED，覆盖 44.1/48/96 kHz、64/256/512 frames、A4 稳态频率 `abs(measuredHz - 440.0) <= 1.0`、Note On 精确 sample、跨 block 相位连续、5/20/30 ms ADSR 各允许舍入后 1 sample 误差、同音高不同 key、不同 `loopIteration`、16 voice、最低空闲 index、最老 `voiceStartSerial` 窃取、相同 serial 防御性最低 index、迟到 Note Off、mono/stereo pan 和峰值 `<= 0.045 + 1e-6`。
+2. 运行 `CORE_TEST`，记录因缺少 `BuiltInPolySynth.h`/API 的 RED。
+3. 用 `std::array<Voice, 16>` 实现，不使用 `juce::Synthesiser`、容器增长或锁。MIDI 频率固定为 `440.0 * exp2((noteNumber - 69) / 12.0)`；attack/decay/release 帧数分别为 `ceil(sampleRate * 0.005/0.020/0.030)`；新音符 phase 从 0 开始；release 从触发时当前包络值线性降到 0。
+4. 每 voice 最终幅度用 `min(0.045f, 0.045f * velocity / 127.0f * max(gain, 0.0f))` 限制；stereo 沿用现有线性 pan 规则，mono 忽略 pan。这样用户 gain 仍可在安全包络内放大弱力度，但任一 voice 不超过 0.045。
+5. `noteOn` 先找最低空闲 index；无空闲时调用纯函数 `detail::selectBuiltInPolySynthVoiceToSteal` 选择最小 `voiceStartSerial`，并列选最低 index。测试可用手工 span 构造并列 serial，不需要破坏 synth 的单调 serial 不变量。窃取先使旧 key 失效，再写新 key；`noteOff` 只匹配完整 key，找不到时返回 `StaleNoteOff`。
+6. 运行 `CORE_TEST`、完整 CTest、`git diff --check`；提交：`feat: add fixed built-in poly synth`。
+
+**可直接粘贴的首个 RED：** 首次应因缺少 `BuiltInPolySynth.h` 失败；接口出现后若输出仍全零，断言文本必须原样显示。
+
+```cpp
+void builtInSynthRendersA4()
+{
+    trackloom::BuiltInPolySynth synth;
+    require(synth.prepare(48000.0), "48 kHz should prepare");
+    trackloom::PreparedMidiEvent event;
+    event.type = trackloom::PreparedMidiEventType::NoteOn;
+    event.noteNumber = 69;
+    event.velocity = 127;
+    trackloom::PreparedMidiInstrumentSlot slot;
+    require(synth.noteOn(event, 0, slot) == trackloom::BuiltInPolySynthEventOutcome::Applied,
+            "first note should use a free voice");
+    std::array<float, 512> left {};
+    std::array<float, 512> right {};
+    float* outputs[] { left.data(), right.data() };
+    synth.render(outputs, 2, 0, 512);
+    require(std::any_of(left.begin(), left.end(), [](float value) { return value != 0.0f; }),
+            "prepared note should render non-zero audio");
+}
+```
+
+**最小 GREEN 核心：** voice 选择只扫描固定数组；不要在实现中建立 active-voice vector。
+
+```cpp
+std::size_t selected = voiceCount;
+for (std::size_t index = 0; index < voices_.size(); ++index) {
+    if (!voices_[index].active) { selected = index; break; }
+}
+```
+
+##### Task 4：实现平台无关实时播放运行时与 host 契约
+
+**文件：**
+
+- 新建 `src/core/PreparedMidiPlaybackRuntime.h`
+- 新建 `src/core/PreparedMidiPlaybackRuntime.cpp`
+- 新建 `src/core/RealtimePlaybackHost.h`
+- 修改 `src/core/CMakeLists.txt`
+- 修改 `tests/core_tests.cpp`
+
+**关键接口：**
+
+```cpp
+enum class RealtimePlaybackState : std::uint32_t {
+    Stopped, Playing, Stopping, Faulted
+};
+
+enum class RealtimeAudioError : std::uint32_t {
+    None, InvalidFormat, OversizedBlock, EventDensityExceeded,
+    CallbackException, DeviceError
+};
+
+struct RealtimeAudioDiagnosticsSnapshot {
+    RealtimePlaybackState state = RealtimePlaybackState::Stopped;
+    RealtimeAudioError lastError = RealtimeAudioError::None;
+    std::uint64_t callbackCount = 0;
+    std::uint64_t callbackTimeoutCount = 0;
+    std::uint64_t callbackExceptionCount = 0;
+    std::uint64_t oversizedBlockCount = 0;
+    std::uint64_t voiceStealCount = 0;
+    std::uint64_t staleNoteOffCount = 0;
+    std::uint64_t largestObservedBlockFrames = 0;
+    std::uint64_t renderedSampleCount = 0;
+    std::uint64_t loopIteration = 0;
+    std::int64_t projectSamplePosition = 0;
+};
+
+class PreparedMidiPlaybackRuntime final {
+public:
+    bool installPlan(const PreparedMidiPlaybackPlan* plan);
+    bool start() noexcept;
+    bool requestStop() noexcept;
+    void hardReset(RealtimeAudioError error = RealtimeAudioError::None) noexcept;
+    void processBlock(float* const* outputs, int channels, int frames);
+    void recordCallbackTimeout() noexcept;
+    void recordCallbackException() noexcept;
+    RealtimeAudioDiagnosticsSnapshot snapshot() const noexcept;
+};
+
+enum class PreparedMidiPlaybackPlanValidationFailureReason {
+    None,
+    InvalidFormat,
+    InvalidInstrumentSlot,
+    InvalidEventValue,
+    UnsortedEvents,
+    InvalidEventOrdinal,
+    InvalidLoopTable,
+    EventLimitExceeded,
+    CallbackEventLimitExceeded,
+    ValidationResourceUnavailable
+};
+
+struct PreparedMidiPlaybackPlanValidationResult {
+    bool valid = false;
+    PreparedMidiPlaybackPlanValidationFailureReason failureReason =
+        PreparedMidiPlaybackPlanValidationFailureReason::None;
+};
+
+PreparedMidiPlaybackPlanValidationResult validatePreparedMidiPlaybackPlan(
+    const PreparedMidiPlaybackPlan& plan);
+```
+
+`RealtimePlaybackHost.h` 同时定义 `AudioDeviceFormatSnapshot`（`generation/deviceId/deviceName/sampleRate/maximumBlockFrames/outputChannelCount/outputChannelMask/available`）、`RealtimePlaybackHostSnapshot`（设备格式、运行时诊断、后端 xrun）、稳定 host 失败枚举，以及仅供消息线程调用的抽象方法：
+
+```cpp
+struct AudioDeviceFormatSnapshot {
+    std::uint64_t generation = 0;
+    std::string deviceId;
+    std::string deviceName;
+    double sampleRate = 0.0;
+    int maximumBlockFrames = 0;
+    int outputChannelCount = 0;
+    std::uint64_t outputChannelMask = 0;
+    bool available = false;
+};
+
+struct RealtimePlaybackHostSnapshot {
+    AudioDeviceFormatSnapshot format;
+    RealtimeAudioDiagnosticsSnapshot realtime;
+    int xRunCount = -1;
+    bool deviceListRefreshPending = false;
+};
+
+enum class RealtimePlaybackHostFailureReason {
+    None,
+    DeviceUnavailable,
+    DeviceNotOpen,
+    DeviceFormatMismatch,
+    PlaybackNotStopped,
+    InvalidPlan,
+    DeviceStartFailed
+};
+
+struct RealtimePlaybackHostResult {
+    bool success = false;
+    RealtimePlaybackHostFailureReason failureReason =
+        RealtimePlaybackHostFailureReason::None;
+    std::string message;
+};
+
+class RealtimePlaybackHost {
+public:
+    virtual ~RealtimePlaybackHost() = default;
+    virtual AudioDeviceFormatSnapshot deviceFormatSnapshot() const = 0;
+    virtual RealtimePlaybackHostResult installAndStart(
+        std::unique_ptr<const PreparedMidiPlaybackPlan> plan) = 0;
+    virtual bool requestStop() noexcept = 0;
+    virtual void serviceNonRealtime() = 0;
+    virtual void hardStopAndReset() noexcept = 0;
+    virtual RealtimePlaybackHostSnapshot snapshot() const = 0;
+};
+```
+
+**步骤：**
+
+1. 先写运行时 RED：未播放清零、首次 block 在普通事件前只应用一次 initial chase、事件间分段渲染、实际 `frames` 推进、单/双声道与空指针、非循环结束、循环尾/头、恰好结束于右边界、一个 block 多次回绕、边界 Off 后下一轮 chase、连续 block 不重复两类 chase、相同基础 key 的跨轮 release 共存、`renderedSampleCount` 单调和 `projectSamplePosition` 回绕。
+2. 再写防御 RED：手工计划包含越界 `instrumentSlotIndex`、无序 sample/ordinal、非法通道/音高/力度、普通事件越出非循环/循环坐标、boundary 表含 Note On、chase 表含 Note Off、重复 ordinal、格式或容量不一致时，validator 和正式 `installPlan()` 必须在 callback 启动前拒绝且保留旧的 `Stopped` 状态；其中静态可判定的单 callback 4,097 个事件也必须在安装前以稳定密度原因拒绝。随后单独验证 callback 的纵深防御：测试文件定义 header 仅前向声明并授予 friend 的 `trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess`，直接装入一个 4,097-event 计划与测试游标、刻意绕过正式 validator；该 seam 不提供生产可调用函数、不增加 callback 条件分支，也不进入 `trackloom_core` 实现文件。经此 seam 调用 callback 时，必须在修改任何 voice 前整块静音并进入 `Faulted/EventDensityExceeded`。另验证超大 block 整块静音、记录 `largestObservedBlockFrames` 并进入 `Faulted`；事件密度/超大 block fault 均不推进事件游标或两个 sample 计数；`Playing → Stopping → Stopped` 最多渲染 `ceil(sampleRate * 0.030)` 帧；设备错误立即硬清；预热后 10,000 个受测 block 的全局 `operator new` 计数增量为 0。
+3. 运行 `CORE_TEST`，记录缺少 runtime/host 声明的编译 RED。
+4. `validatePreparedMidiPlaybackPlan()` 位于非实时线程，重新检查完整格式、事件值、slot 索引、三张表的类型/坐标、全局 ordinal 唯一且严格有序、总量和每 callback 密度；不得信任只有 builder 才能产生计划。ordinal 唯一性允许在这里分配临时 bitmap，但必须捕获分配失败并返回 `ValidationResourceUnavailable`。`installPlan()` 因此不是 callback API，也不声明 `noexcept`；它只允许 `Stopped`，并在写 plan 指针、voice 或游标前调用 validator，失败不能部分安装。
+5. 实现时只把验证后的稳定 `const PreparedMidiPlaybackPlan*` 和固定游标装入 runtime。每个 block 先清所有非空有效输出，再预数事件；只有总数不超过 4,096 才修改 synth。相同 sample 严格按 plan ordinal 应用；循环边界先 Off、递增 iteration、再在下一有效头样本 chase。非循环计划在所有事件已消费且 synth voice 全部静音后自动发布 `Stopped`；空计划在首个 callback 立即停止，测试音必须依靠该规则自动结束。
+6. 跨线程只发布 `std::atomic<std::uint32_t>`、`std::atomic<std::uint64_t>` 和 `std::atomic<std::int64_t>`；对三者加入 `is_always_lock_free` 静态断言。计划指针、voice 和游标不使用原子，因为只在设备 stop 已清空 pending callback 后替换。
+7. 运行 `CORE_TEST`、完整 CTest、`git diff --check`；提交：`feat: add realtime prepared playback runtime`。
+
+**可直接粘贴的首个 RED：** 首次应因缺少 runtime/validator 声明失败；若实现错误地信任手工计划，应显示下面的精确断言。
+
+```cpp
+void runtimeRejectsInvalidInstrumentSlotBeforeInstall()
+{
+    trackloom::PreparedMidiPlaybackPlan plan;
+    plan.sampleRate = 48000.0;
+    plan.maximumBlockFrames = 256;
+    plan.outputChannelCount = 2;
+    plan.outputChannelMask = 3;
+    plan.instrumentSlots.push_back(trackloom::PreparedMidiInstrumentSlot {});
+    plan.events.push_back(trackloom::PreparedMidiEvent {});
+    plan.events.front().instrumentSlotIndex = 1;
+    plan.events.front().velocity = 100;
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+
+    const auto validation = trackloom::validatePreparedMidiPlaybackPlan(plan);
+    require(!validation.valid, "out-of-range instrument slot must be rejected");
+    require(validation.failureReason ==
+                trackloom::PreparedMidiPlaybackPlanValidationFailureReason::InvalidInstrumentSlot,
+            "invalid slot should keep a stable failure reason");
+    require(!runtime.installPlan(&plan), "invalid plan must not be installed");
+    require(runtime.snapshot().state == trackloom::RealtimePlaybackState::Stopped,
+            "failed install must preserve stopped runtime");
+}
+```
+
+**最小 GREEN 核心：** validation 必须发生在任何状态写入之前。
+
+```cpp
+if (plan == nullptr
+    || state_.load(std::memory_order_acquire)
+        != static_cast<std::uint32_t>(RealtimePlaybackState::Stopped))
+    return false;
+if (!validatePreparedMidiPlaybackPlan(*plan).valid)
+    return false;
+plan_ = plan;
+return true;
+```
+
+callback 密度 fault 的测试不得调用上述正式安装入口。`PreparedMidiPlaybackRuntime.h` 只前向声明 `detail::PreparedMidiPlaybackRuntimeTestAccess` 并将其设为 friend；完整类型及其直接设置 `plan_`、游标和 `Playing` 状态的静态方法只定义在 `tests/core_tests.cpp`。这样同一组测试分别证明“正式入口静态拒绝 4,097 events”和“假定内部不变量被破坏时 callback 仍在触碰 synth 前静音并 fault”，不会制造发布代码可绕过 validator 的 API。
+
+##### Task 5：直连 JUCE shared WASAPI 设备和 callback
+
+**文件：**
+
+- 新建 `src/platform/juce/JuceAudioHost.h`
+- 新建 `src/platform/juce/JuceAudioHost.cpp`
+- 修改 `src/platform/juce/CMakeLists.txt`
+- 新建 `tests/support/FakeJuceAudioDeviceType.h`
+- 新建 `tests/juce_audio_tests.cpp`
+- 修改 `tests/CMakeLists.txt`
+
+**平台接口：**
+
+```cpp
+struct JuceAudioOpenRequest {
+    std::string outputDeviceName;
+    double requestedSampleRate = 48000.0;
+    int requestedBufferFrames = 256;
+    int requestedOutputChannels = 2;
+};
+
+struct JuceAudioOutputDeviceInfo {
+    std::string id;       // 首版为 "Windows Audio/" + JUCE 设备名
+    std::string name;
+    bool isDefault = false;
+    std::vector<double> sampleRates;
+    std::vector<int> bufferSizes;
+    int maximumOutputChannels = 0;
+};
+
+enum class JuceAudioHostFailureReason {
+    None,
+    UnsupportedPlatform,
+    DeviceTypeUnavailable,
+    DeviceNotFound,
+    DeviceCreateFailed,
+    DeviceOpenFailed,
+    PlaybackActive
+};
+
+struct JuceAudioHostResult {
+    bool success = false;
+    JuceAudioHostFailureReason failureReason = JuceAudioHostFailureReason::None;
+    std::string message;
+    std::string warning;
+    AudioDeviceFormatSnapshot actualFormat;
+};
+
+using JuceAudioDeviceTypeFactory =
+    std::function<std::unique_ptr<juce::AudioIODeviceType>()>;
+using JuceRealtimeTickOperation = std::int64_t (*)() noexcept;
+using JuceRealtimeBlockOperation = void (*)(
+    PreparedMidiPlaybackRuntime&,
+    float* const*,
+    int,
+    int);
+
+class JuceAudioHost final :
+    public RealtimePlaybackHost,
+    private juce::AudioIODeviceCallback,
+    private juce::AudioIODeviceType::Listener {
+public:
+    explicit JuceAudioHost(
+        JuceAudioDeviceTypeFactory factory = {},
+        JuceRealtimeTickOperation tickOperation = nullptr,
+        std::int64_t ticksPerSecond = 0,
+        JuceRealtimeBlockOperation blockOperation = nullptr);
+    ~JuceAudioHost() override;
+    std::vector<JuceAudioOutputDeviceInfo> refreshOutputDevices();
+    JuceAudioHostResult openOutput(const JuceAudioOpenRequest& request);
+    void close() noexcept;
+    JuceAudioHostResult playTestTone();
+    AudioDeviceFormatSnapshot deviceFormatSnapshot() const override;
+    RealtimePlaybackHostResult installAndStart(
+        std::unique_ptr<const PreparedMidiPlaybackPlan> plan) override;
+    bool requestStop() noexcept override;
+    void serviceNonRealtime() override;
+    void hardStopAndReset() noexcept override;
+    RealtimePlaybackHostSnapshot snapshot() const override;
+
+private:
+    void audioDeviceIOCallbackWithContext(
+        const float* const* inputs,
+        int inputChannelCount,
+        float* const* outputs,
+        int outputChannelCount,
+        int frames,
+        const juce::AudioIODeviceCallbackContext& context) override;
+    void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
+    void audioDeviceStopped() override;
+    void audioDeviceError(const juce::String& error) override;
+    void audioDeviceListChanged() override;
+};
+```
+
+**步骤：**
+
+1. 在共享的 `tests/support/FakeJuceAudioDeviceType.h` 建 `FakeAudioIODeviceType` 和 `FakeAudioIODevice`，记录 scan/create/open/start/stop/close 顺序、open 的 input/output mask、pending callback、实际格式和 xrun；Task 5 与 Task 8 的 JUCE 测试都复用它。先测试默认 factory 只产生 `Windows Audio` type（不要求真实设备存在），其余测试全部使用 fake，覆盖输出枚举、默认设备、0 input、1/2 output、协商后实际格式、format generation、stop 返回后才能换计划、`runtime.start()` 发生在 `device.start()` 前、`device.isPlaying()==false` 的失败回滚、设备重启、`audioDeviceAboutToStart` 报告意外格式变化、列表变化通知只置请求标志、消息线程 service 发现当前设备被移除后 stop/reset/plan 失效/generation 递增、`audioDeviceError` 只置稳定错误、测试音只在工程播放停止时允许。再注入无分配的函数指针 fake tick，验证 callback 耗时恰好等于 deadline 时 timeout 计数加一；注入会抛异常的 block function pointer，验证异常不逃出 callback、输出重新全零且 exception 计数加一。
+2. 修改 `tests/CMakeLists.txt` 建立独立 `trackloom_juce_audio_tests` 和同名 CTest；运行 `JUCE_TEST`，记录缺少 `JuceAudioHost.h`/target 的 RED。
+3. 默认 factory 只调用 `juce::AudioIODeviceType::createAudioIODeviceType_WASAPI(juce::WASAPIDeviceMode::shared)`；不枚举其他 type。`src/platform/juce/CMakeLists.txt` 为相关 target 定义 `JUCE_WASAPI=1`、`JUCE_DIRECTSOUND=0`、`JUCE_ASIO=0` 并保留 `/utf-8`。
+4. 每次 scan 后按名称 create 设备；查询可选采样率、buffer 和声道时只使用尚未 start 的临时 device。`open` 传空 input mask 和前 1/2 个 output bits；`Playing/Stopping` 时返回 `PlaybackActive`，不得暗中硬停。请求格式失败时只尝试该设备声明的默认/首个可用 shared 格式，并把实际偏差作为结构化 warning 返回；成功后读取实际 sample rate、buffer、active output mask，任一格式字段或设备实例变化都递增 generation。
+5. `installAndStart` 先调用 `validatePreparedMidiPlaybackPlan()`，再比较 plan 携带的四个数值格式字段（sample rate、maximum block、output channel count、output mask）与当前设备快照，并在停止设备前确认 runtime 已是 `Stopped`；device instance/id/name/available 和 generation 不进入平台无关 plan，由 Task 6 controller 在调用 host 前用完整 `deviceFormatGeneration` 复核。任一检查失败都不得 stop/start 或替换旧 plan，尤其不能通过提前 stop 截断 `Stopping` 尾音。全部一致时严格执行 `device.stop()` 清空可能残留的 pending callback、再次确认 `Stopped`、替换拥有的 plan、`runtime.installPlan()`、`runtime.start()`、`device.start(this)`。JUCE `start()` 没有返回值，因此返回后必须检查 `device.isPlaying()`；false 时立即 `device.stop()`、runtime hard reset、释放失败的新 plan 并返回 `DeviceStartFailed`。`audioDeviceAboutToStart` 若观察到与已核对快照不同的采样率、block 或声道，只发布数值型 format-mismatch 原子；`start()` 返回后若该标志已置位，同样 stop/reset 并返回 `DeviceFormatMismatch`，后续不得放行 callback。正常 callback 用 `float* const*` 和默认/测试 block function pointer 调用 runtime，不构造 `AudioBlock/MidiBuffer/String`；入口清零、以默认 `juce::Time::getHighResolutionTicks()` 或测试函数指针计时并 `catch (...)`，达到当前 block 实时期限时调用 `recordCallbackTimeout()`，异常时再次清零整块、调用 `recordCallbackException()` 并以 `CallbackException` 硬重置。
+6. `audioDeviceError` 与 `audioDeviceListChanged` 只写 lock-free 原子；`serviceNonRealtime()` 在消息线程读取错误、xrun 和 runtime 终止状态。收到列表变化后必须重新 scan；若当前输出名已不存在，立即 `device.stop()`、hard reset 为 `DeviceError`、close/reset 当前 device 和 plan，把格式设为 `available=false` 并递增 generation，不能保留旧计划等待设备同名重现。发生其他 device/runtime fault 时同样必须先 `device.stop()` 等 pending callback 清空，随后才 hard reset/close；若发现更大的 `largestObservedBlockFrames`，把 prepared maximum 更新为该值、递增完整 format generation，并要求重新构建计划。`close()` 固定为 `device.stop()`、runtime hard reset、`device.close()`、释放 plan/device；device type 和 listener 保留到 host 析构，确保关闭输出后仍可重新枚举和打开。
+7. `playTestTone()` 在非实时线程构造 440 Hz、200 ms Note On + 30 ms release 的临时计划，仍通过同一 runtime/stop 协议，最大 voice 幅度 0.02；不修改工程或播放头。
+8. 运行 `JUCE_TEST`，再运行现有 `trackloom_juce_tests`、完整 CTest 和 `git diff --check`；提交：`feat: host shared WASAPI audio output`。
+
+**可直接粘贴的首个 RED：** `FakeJuceAudioDeviceType` 默认提供一个名为 `Fake Speakers`、48 kHz、256 frames、2 outputs 的设备，并公开最后一次 open 的 input/output channel count；首次应因缺少两个新 header 失败。
+
+```cpp
+void juceAudioHostOpensOutputOnlySharedDevice()
+{
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    trackloom::JuceAudioHost host([&]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+        observedType = type.get();
+        return type;
+    });
+    const auto devices = host.refreshOutputDevices();
+    require(devices.size() == 1, "fake output should be enumerated");
+    const auto opened = host.openOutput({ "Fake Speakers", 48000.0, 256, 2 });
+    require(opened.success, "supported fake format should open");
+    require(observedType->lastOpenInputChannelCount() == 0, "audio milestone must request zero inputs");
+    require(observedType->lastOpenOutputChannelCount() == 2, "audio milestone should request stereo");
+    require(host.deviceFormatSnapshot().generation == 1, "first device instance should advance generation");
+}
+```
+
+**最小 GREEN 核心：** 正式 factory 只有下面一个分支；fake factory 不进入正式构造路径。
+
+```cpp
+std::unique_ptr<juce::AudioIODeviceType> createSharedWasapiType()
+{
+    return std::unique_ptr<juce::AudioIODeviceType>(
+        juce::AudioIODeviceType::createAudioIODeviceType_WASAPI(
+            juce::WASAPIDeviceMode::shared));
+}
+```
+
+##### Task 6：增加工程 generation 和可取消异步播放准备
+
+**文件：**
+
+- 修改 `src/app/AppProjectSession.h`
+- 修改 `src/app/AppProjectSession.cpp`
+- 修改 `src/app/AppPlaybackActions.h`
+- 修改 `src/app/AppPlaybackActions.cpp`
+- 修改 `src/app/AppMainMenu.cpp`
+- 修改 `src/app/juce/TrackLoomApplication.cpp`
+- 修改 `tests/app_support_tests.cpp`
+- 修改 `tests/CMakeLists.txt`
+
+**应用接口：**
+
+```cpp
+struct AppProjectPlaybackSnapshot {
+    Project project;
+    std::uint64_t projectEditGeneration = 0;
+};
+
+std::uint64_t AppProjectSession::projectEditGeneration() const noexcept;
+AppProjectPlaybackSnapshot AppProjectSession::capturePlaybackSnapshot() const;
+
+enum class AppPlaybackState {
+    Unavailable, Stopped, Preparing, Playing, Stopping, Faulted
+};
+
+enum class AppPlaybackFailureReason {
+    None,
+    NoAudioDevice,
+    PreparationCancelled,
+    PreparationFailed,
+    StalePreparation,
+    HostRejected,
+    DeviceFault
+};
+
+struct AppPlaybackActionFeedback {
+    bool success = false;
+    AppPlaybackActionFeedbackKind kind = AppPlaybackActionFeedbackKind::PrepareFailed;
+    AppPlaybackFailureReason failureReason = AppPlaybackFailureReason::None;
+    std::string message;
+};
+
+struct AppPlaybackStatus {
+    AppPlaybackState state = AppPlaybackState::Stopped;
+    AppPlaybackFailureReason failureReason = AppPlaybackFailureReason::None;
+    bool deviceAvailable = false;
+    bool canStart = false;
+    std::int64_t projectSamplePosition = 0;
+    std::uint64_t renderedSampleCount = 0;
+    double projectSeconds = 0.0;
+    std::string stateLabel;
+    std::string summary;
+};
+
+struct AppPlaybackPreparationKey {
+    std::uint64_t projectEditGeneration = 0;
+    std::uint64_t deviceFormatGeneration = 0;
+    std::int64_t playbackStartSample = 0;
+    std::optional<PlaybackLoopRange> loopRange;
+    bool operator==(const AppPlaybackPreparationKey&) const = default;
+};
+
+using AppPreparedPlanBuildOperation = std::function<
+    PreparedMidiPlaybackPlanBuildResult(
+        PreparedMidiPlaybackPlanBuildRequest,
+        std::stop_token)>;
+
+class AppPlaybackController final {
+public:
+    explicit AppPlaybackController(
+        RealtimePlaybackHost& host,
+        AppPreparedPlanBuildOperation build = buildPreparedMidiPlaybackPlan);
+    AppPlaybackActionFeedback start(
+        AppProjectPlaybackSnapshot project,
+        std::optional<PlaybackLoopRange> loopRange = std::nullopt);
+    AppPlaybackActionFeedback stop();
+    AppPlaybackActionFeedback rewindToStart();
+    void poll(const AppProjectSession& session);
+    AppPlaybackStatus status() const;
+    bool isPlaying() const noexcept;
+    std::int64_t currentSample() const noexcept;
+    double currentSeconds() const noexcept;
+};
+
+AppPlaybackActionFeedback startAppPlayback(
+    AppPlaybackController& playback,
+    const AppProjectSession& session,
+    std::optional<PlaybackLoopRange> loopRange = std::nullopt);
+AppPlaybackActionFeedback stopAppPlayback(AppPlaybackController& playback);
+AppPlaybackActionFeedback toggleAppPlayback(
+    AppPlaybackController& playback,
+    const AppProjectSession& session);
+AppPlaybackActionFeedback rewindAppPlaybackToStart(
+    AppPlaybackController& playback);
+```
+
+**步骤：**
+
+1. 先写 generation RED：初值固定；`editProject()`、成功 command、undo、redo、新建、成功 open 各递增一次；失败 command/undo/redo/open、save/saveAs 不递增。`capturePlaybackSnapshot()` 返回与同一 generation 对应的独立 Project 副本。
+2. 再用 `FakeRealtimePlaybackHost`、`std::latch` 控制的 fake builder 写异步 RED：`Unavailable/Stopped → Preparing → Playing → Stopping → Stopped` 与 host fault → `Faulted`；Preparing 期间测试线程可立即查询状态；stop 请求取消；旧工程 generation、旧完整设备 format generation、旧 start sample、旧 loop 均丢弃；过期/失败结果不调用 install；播放中编辑不替换当前计划；停止后重播使用新 generation；无设备或 host 正在播放测试音时 `canStart == false`。每条失败路径断言稳定 `AppPlaybackFailureReason`，不解析 message。
+3. 运行 `APP_TEST`，记录缺少 generation、新构造函数或状态 API 的编译 RED。
+4. generation 用 `std::uint64_t` 仅在消息线程修改。`editProject()` 在返回可写引用前保守递增；成功 command/undo/redo、新建/open 在实际替换完成后递增；保存不改变工程内容，不递增。
+5. controller 用一个 `std::jthread` 执行同步 builder；worker 只持有工程副本、格式值和 key。完成结果写入受 mutex 保护的单槽 mailbox 后标记完成；`poll()` 才 join 已完成线程、复核四项 key、调用 host。Preparing 中 stop 只 `request_stop()` 并进入 `Stopping`；worker 回报或确认退出后才转 `Stopped`，期间拒绝第二个 start。按钮 handler 不得等待仍运行的 worker；controller 析构时才允许 request-stop 后 join，以保证工程副本和 mailbox 生命周期。
+6. 把 `app_support_tests.cpp` 中所有旧的默认构造 `AppPlaybackController` 改为显式注入同一个可控 fake host；保留 `AppMainMenu.cpp` 当前编译所需的 `isPlaying()/currentSample()/currentSeconds()` 只读便利方法，旧 `prepared` 断言迁移到新的结构化 `AppPlaybackStatus`。旧播放语义测试必须改为断言状态和 host 交互，不能保留 UI 静音 block 模拟器作为兼容后门。
+7. `AppMainMenu` 的 Play enabled 只读取 `status.canStart`；Preparing/Playing 时 Stop enabled，Unavailable/Faulted/Stopping 时按稳定状态禁用。`poll()` 先调用 `host.serviceNonRealtime()`；host 进入 `Stopped/Faulted` 时更新应用状态。播放中 rewind 先进入 `Stopping`，停止完成后把起点设为 0 并重新准备；UI `Timer` 不再调用 `advanceOneUiBlock`。
+8. 在本任务内同步做 JUCE 壳的最小编译迁移，不能等 Task 8：先声明 `JuceAudioHost audioHost_`，再用 `AppPlaybackController playback_ { audioHost_ }`；所有 start/toggle 改传 `session_`，stop/rewind 使用新签名，`timerCallback()` 只调用 `playback_.poll(session_)` 和刷新。此步不增加设置窗口，设备尚未打开时 UI 只显示 Unavailable。
+9. 同时建立无人值守烟测：`initialise(commandLine)` 识别 `--hidden-smoke-test`，不显示窗口并在 250 ms 后从消息线程调用 `JUCEApplicationBase::quit()`；`tests/CMakeLists.txt` 注册 `trackloom_app_hidden_smoke_tests` 和 `TIMEOUT 10`。Task 8 抽取主组件时必须保留该既有行为，不重新发明第二套入口。
+10. 运行 `APP_TEST`、相关 core/JUCE CTest，构建 `trackloom_app` 并运行 `trackloom_app_hidden_smoke_tests`，再运行 `git diff --check`；提交：`app: coordinate asynchronous audio preparation`。
+
+**可直接粘贴的首个 RED：** 首次应因缺少 `projectEditGeneration()` 失败；若失败操作错误递增，第二个断言给出精确原因。
+
+```cpp
+void projectPlaybackGenerationTracksOnlyPossibleContentChanges()
+{
+    trackloom::AppProjectSession session;
+    const auto initial = session.projectEditGeneration();
+    session.editProject().rename("Changed");
+    require(session.projectEditGeneration() == initial + 1,
+            "editable project access should conservatively advance generation once");
+    const auto afterEdit = session.projectEditGeneration();
+    require(!session.undoProjectEdit(), "direct edit should clear command history");
+    require(session.projectEditGeneration() == afterEdit,
+            "failed undo must not advance project generation");
+    const auto snapshot = session.capturePlaybackSnapshot();
+    require(snapshot.projectEditGeneration == afterEdit, "snapshot and project copy must share one generation");
+    require(snapshot.project.name() == "Changed", "snapshot should copy the matching project state");
+}
+```
+
+**最小 GREEN 核心：** 所有递增集中到一个消息线程 helper，保存路径不得调用它。
+
+```cpp
+void AppProjectSession::advanceProjectEditGeneration() noexcept
+{
+    ++projectEditGeneration_;
+}
+```
+
+##### Task 7：增加本机音频设置、菜单和命令分发
+
+**文件：**
+
+- 新建 `src/app/AppAudioSettings.h`
+- 新建 `src/app/AppAudioSettings.cpp`
+- 修改 `src/app/CMakeLists.txt`
+- 修改 `src/app/AppMainMenu.h`
+- 修改 `src/app/AppMainMenu.cpp`
+- 修改 `src/app/AppCommandDispatcher.h`
+- 修改 `src/app/AppCommandDispatcher.cpp`
+- 修改 `tests/app_support_tests.cpp`
+
+**设置格式和命令：**
+
+```cpp
+struct AppAudioSettings {
+    std::string outputDeviceName;
+    double requestedSampleRate = 48000.0;
+    int requestedBufferFrames = 256;
+    int requestedOutputChannels = 2;
+};
+
+enum class AppAudioSettingsLoadKind { Loaded, Missing, Invalid };
+struct AppAudioSettingsLoadResult {
+    AppAudioSettingsLoadKind kind = AppAudioSettingsLoadKind::Missing;
+    AppAudioSettings settings;
+    std::string warning;
+};
+AppAudioSettingsLoadResult loadAppAudioSettings(const std::filesystem::path& path);
+bool saveAppAudioSettings(
+    const AppAudioSettings& settings,
+    const std::filesystem::path& path);
+using AppAudioSettingsLoadOperation = std::function<
+    AppAudioSettingsLoadResult(const std::filesystem::path&)>;
+using AppAudioSettingsSaveOperation = std::function<
+    bool(const AppAudioSettings&, const std::filesystem::path&)>;
+```
+
+`AppMainMenuCommand::OpenAudioSettings = 1303`、`AppCommandKind::OpenAudioSettings` 和 `AppCommandHandlers::openAudioSettings` 使用同一稳定映射；“工具”组显示“音频设置…”。诊断信息放在同一设置窗口，不再增加第二个重复命令。
+
+**步骤：**
+
+1. 先写设置 RED：缺失文件返回默认值与 `Missing`；合法 UTF-8 设备名往返；坏版本、非有限采样率、非正 buffer、非 1/2 声道返回默认值与 `Invalid`；保存失败不破坏内存设置。磁盘格式固定五行：`trackloom_audio_settings 1`、`output_device <std::quoted UTF-8>`、`sample_rate <double>`、`buffer_frames <int>`、`output_channels <int>`。
+2. 先写菜单/dispatcher RED：工具菜单存在且 enabled；command id 1303 映射正确；handler 被调用一次；缺 handler 返回 `MissingHandler`；命令面板能搜索“音频设置”。
+3. 运行 `APP_TEST`，记录缺少设置类型/enum 的编译 RED。
+4. 复用 `AppShortcutSettings` 的本机设置目录和容错风格，但文件固定为用户应用数据目录 `TrackLoom/audio-settings.txt`，不得写入工程或命令历史。
+5. 运行 `APP_TEST`、完整 CTest、`git diff --check`；提交：`app: add local audio settings command`。
+
+**可直接粘贴的首个 RED：** 使用现有测试临时目录 helper 生成 `missing-audio-settings.txt`；首次应因 `AppAudioSettings.h` 不存在而编译失败。
+
+```cpp
+void missingAudioSettingsUseDocumentedDefaults()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "missing-audio-settings.txt";
+    const auto loaded = trackloom::loadAppAudioSettings(path);
+    require(loaded.kind == trackloom::AppAudioSettingsLoadKind::Missing,
+            "missing settings should have a stable load kind");
+    require(loaded.settings.requestedSampleRate == 48000.0,
+            "missing settings should request 48 kHz");
+    require(loaded.settings.requestedBufferFrames == 256,
+            "missing settings should request 256 frames");
+    require(loaded.settings.requestedOutputChannels == 2,
+            "missing settings should request stereo");
+    require(trackloom::appMainMenuCommandId(
+                trackloom::AppMainMenuCommand::OpenAudioSettings) == 1303,
+            "audio settings command id must stay stable");
+}
+```
+
+**最小 GREEN 核心：** missing 与 invalid 都返回同一默认 settings，但 `kind` 和中文 warning 必须不同。
+
+```cpp
+if (!std::filesystem::exists(path))
+    return { AppAudioSettingsLoadKind::Missing, AppAudioSettings {}, {} };
+```
+
+##### Task 8：接入可测试的专用 JUCE 设置界面与真实播放控制
+
+**文件：**
+
+- 新建 `src/app/juce/AudioSettingsComponent.h`
+- 新建 `src/app/juce/AudioSettingsComponent.cpp`
+- 新建 `src/app/juce/TrackLoomMainComponent.h`
+- 新建 `src/app/juce/TrackLoomMainComponent.cpp`
+- 修改 `src/app/CMakeLists.txt`，新增 `trackloom_app_juce_support` library
+- 修改 `src/app/juce/TrackLoomApplication.cpp`
+- 新建 `tests/app_juce_audio_tests.cpp`
+- 修改 `tests/CMakeLists.txt`
+
+**可测试 JUCE 边界：**
+
+```cpp
+inline constexpr auto audioDeviceSelectorComponentId = "trackloom-audio-device";
+inline constexpr auto audioSampleRateSelectorComponentId = "trackloom-audio-sample-rate";
+inline constexpr auto audioBufferSelectorComponentId = "trackloom-audio-buffer";
+inline constexpr auto audioChannelsSelectorComponentId = "trackloom-audio-channels";
+inline constexpr auto audioApplyButtonComponentId = "trackloom-audio-apply";
+inline constexpr auto audioTestToneButtonComponentId = "trackloom-audio-test-tone";
+inline constexpr auto mainNewButtonComponentId = "trackloom-main-new";
+inline constexpr auto mainOpenButtonComponentId = "trackloom-main-open";
+inline constexpr auto mainSaveButtonComponentId = "trackloom-main-save";
+inline constexpr auto mainPlayButtonComponentId = "trackloom-main-play";
+inline constexpr auto mainPlaybackStatusComponentId = "trackloom-main-playback-status";
+
+struct AudioSettingsComponentCallbacks {
+    std::function<void(const AppAudioSettings&)> settingsApplied;
+    std::function<void(std::string)> feedback;
+};
+
+class AudioSettingsComponent final : public juce::Component {
+public:
+    AudioSettingsComponent(
+        JuceAudioHost& host,
+        AppAudioSettings initialSettings,
+        AudioSettingsComponentCallbacks callbacks = {});
+    void refreshFromHost();
+    AppAudioSettings selectedSettings() const;
+    bool applySelectedSettings();
+    bool triggerTestTone();
+};
+
+struct TrackLoomMainComponentDependencies {
+    std::unique_ptr<JuceAudioHost> audioHost;
+    AppPreparedPlanBuildOperation buildOperation = buildPreparedMidiPlaybackPlan;
+    std::filesystem::path audioSettingsPath;
+    AppAudioSettingsLoadOperation loadAudioSettings = loadAppAudioSettings;
+    AppAudioSettingsSaveOperation saveAudioSettings = saveAppAudioSettings;
+    std::function<void(std::string)> titleChanged;
+    std::function<void(std::unique_ptr<AudioSettingsComponent>)>
+        presentAudioSettings;
+};
+
+class TrackLoomMainComponent final
+    : public juce::Component
+    , public juce::MenuBarModel
+    , private juce::Timer
+    , private juce::KeyListener {
+public:
+    explicit TrackLoomMainComponent(TrackLoomMainComponentDependencies dependencies);
+    AppCommandDispatchResult dispatchCommand(int commandId);
+    void serviceUiTimer();
+    juce::StringArray getMenuBarNames() override;
+    juce::PopupMenu getMenuForIndex(int index, const juce::String& name) override;
+    void menuItemSelected(int commandId, int topLevelMenuIndex) override;
+    bool keyPressed(const juce::KeyPress& key) override;
+    bool keyPressed(const juce::KeyPress& key, juce::Component* origin) override;
+    void resized() override;
+
+private:
+    void timerCallback() override;
+};
+```
+
+**步骤：**
+
+1. 先建 `trackloom_app_juce_tests` RED。用 `juce::ScopedJuceInitialiser_GUI` 和 Task 5 fake device type 实例化 `AudioSettingsComponent`；通过上述固定 component id 取得真实 ComboBox/Button，断言只显示 `Windows Audio` shared 输出、设备/采样率/buffer/1–2 声道控件，播放中 Apply/测试音禁用，Stopped 时 `triggerTestTone()` 只调用 host 且不改变外部 session generation、dirty、command history 或 playback start。
+2. 再用 fake-device-backed `JuceAudioHost`、`std::latch` 阻塞的 `buildOperation`、返回 `Invalid` 的 `loadAudioSettings` 和 `presentAudioSettings` lambda 写 `TrackLoomMainComponent` 装配 RED：`dispatchCommand(1303)` 恰好交付一个设置组件；设置加载失败回退默认并返回中文 warning；通过固定 main component id 验证无设备时 Play disabled 但 New/Open/Save 仍 enabled；阻塞 builder 时状态 label 稳定显示“正在准备音频…”；连续调用 `serviceUiTimer()` 后只 poll，fake device 没收到 callback 渲染或 Transport 推进。
+3. 运行新 target，记录缺少 `AudioSettingsComponent.h`/JUCE support library 的编译 RED。
+4. `trackloom_app_juce_support` 链接 `trackloom_app_support`、`trackloom_juce`、`juce::juce_gui_basics`；把当前私有主组件及其直接使用的 JUCE-only helper 类、常量和转换函数从 `TrackLoomApplication.cpp` 移到可链接的 `TrackLoomMainComponent.{h,cpp}`，应用文件只保留 Application/MainWindow bootstrap，不能复制两份实现。设置组件使用普通 ComboBox/Label/Button 自行展示 shared WASAPI，不使用 `AudioDeviceSelectorComponent`。应用启动加载设置并打开/回退设备；播放或停止尾音期间禁用设备 Apply 和测试音，只有 `Stopped` 才能改变设备格式。应用关闭先取消 worker、停止 host、关闭设备，再销毁窗口。
+5. `TrackLoomMainComponentDependencies::audioHost` 必须非空；所有 operation 为空时构造函数补正式默认值。组件内部按“host 先声明、controller 后声明”的顺序持有，使 `JuceAudioHost` 先于引用它的 `AppPlaybackController` 构造、后于 controller 销毁。New/Open/Save/Play 按钮和播放状态 label 在构造时设置上述固定 ID。Play/Stop/Rewind、Space 和菜单继续走 `AppPlaybackActions/AppCommandDispatcher`，不能从 JUCE handler 直接 start/stop `AudioIODevice`。
+6. `timerCallback()` 只调用 controller poll、读取 host snapshot、刷新文字；诊断显示设备名、实际 sample rate、buffer、声道、callback、timeout、oversized block、xrun（`-1` 显示“后端未提供”）、voice stealing 和 stale Note Off。
+7. 抽取后保留 Task 6 已建立的 `--hidden-smoke-test`：构造真实主组件但不显示窗口，并继续用 `juce::Timer::callAfterDelay(250, [] { juce::JUCEApplicationBase::quit(); })` 从消息线程自动退出。`trackloom_app_hidden_smoke_tests` 继续使用 `$<TARGET_FILE:trackloom_app> --hidden-smoke-test` 和 `TIMEOUT 10`；普通启动不设置自动退出。
+8. 构建 `trackloom_app_juce_tests trackloom_app`，运行 `trackloom_app_juce_tests`、现有 JUCE tests、`trackloom_app_hidden_smoke_tests` 和完整 CTest；执行下面的额外 PowerShell 进程烟测并运行 `git diff --check`。提交：`app: connect realtime audio controls and settings UI`。
+
+   ```powershell
+   $process = Start-Process 'build\src\app\trackloom_app.exe' -ArgumentList '--hidden-smoke-test' -WindowStyle Hidden -PassThru
+   if (-not $process.WaitForExit(10000) -or $process.ExitCode -ne 0) {
+       throw 'trackloom_app hidden smoke test failed'
+   }
+   ```
+
+**可直接粘贴的首个 RED：** 首次应因缺少 `AudioSettingsComponent.h` 失败；component id 错误时必须显示下面的精确断言。
+
+```cpp
+void audioSettingsComponentExposesDedicatedSharedWasapiControls()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::JuceAudioHost host([]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        return std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+    });
+    trackloom::AudioSettingsComponent component(host, trackloom::AppAudioSettings {});
+    component.refreshFromHost();
+    require(dynamic_cast<juce::ComboBox*>(
+                component.findChildWithID(trackloom::audioDeviceSelectorComponentId)) != nullptr,
+            "dedicated audio device selector should be test-visible");
+    require(dynamic_cast<juce::TextButton*>(
+                component.findChildWithID(trackloom::audioTestToneButtonComponentId)) != nullptr,
+            "dedicated test tone button should be test-visible");
+}
+```
+
+**最小 GREEN 核心：** IDs 在控件加入组件时设置，测试不得依赖 child index 或中文 label。
+
+```cpp
+deviceSelector_.setComponentID(audioDeviceSelectorComponentId);
+testToneButton_.setComponentID(audioTestToneButtonComponentId);
+addAndMakeVisible(deviceSelector_);
+addAndMakeVisible(testToneButton_);
+```
+
+##### Task 9：固定参考工程、硬件烟测与阶段证据
+
+**文件：**
+
+- 新建 `tests/fixtures/audio/minimum-audible-midi/reference.trackloom`
+- 新建 `tests/fixtures/audio/minimum-audible-midi/expected-events.tsv`
+- 新建 `tests/fixtures/audio/minimum-audible-midi/expected-audio.properties`
+- 新建 `tests/fixtures/audio/minimum-audible-midi/SHA256SUMS`
+- 新建 `tests/fixtures/audio/minimum-audible-midi/README.md`
+- 新建 `tests/verify_audio_fixture_hashes.cmake`
+- 新建 `tests/juce_audio_hardware_smoke_tests.cpp`
+- 新建 `tests/evidence/audio/README.md`
+- 新建 `tests/evidence/audio/run-template.md`
+- 修改 `tests/core_tests.cpp`
+- 修改 `tests/CMakeLists.txt`
+
+**固定清单：** `reference.trackloom` 使用 120 BPM、4/4 和一条居中 unity-gain 乐器轨；工程格式本身不持久化 loop，所以 `README.md` 另外固定 builder 请求为 `sample_rate=48000`、`maximum_block_frames=256`、`output_channels=2`、`output_channel_mask=3`、`playback_start_sample=0`、`loop_start_tick=0`、`loop_end_tick=3840`。四个音符依次为 C4/E4/G4/C5，起点 0/960/1920/2880 tick、长度各 480 tick、velocity 96、channel 1。48 kHz 预期 Note On sample 为 0/24000/48000/72000，Note Off 为 12000/36000/60000/84000；loop 长度为 96000 samples，允许误差均为 1 sample。
+
+`expected-events.tsv` 首行固定为 `table\tsample_position\ttype\tnote_instance_id\tevent_ordinal\tinstrument_slot\tchannel\tnote\tvelocity`；本 fixture 的 8 行均属于 `events` 表，按 sample 与 Note Off-before-Note On 排序，boundary/initial-chase/loop-start-chase 三表为空。`expected-audio.properties` 固定 `render_frames=96000`、`render_block_frames=256`、`non_silent=true`、`rms_min=0.0001`、`peak_max=0.8`、`frequency_reference_note=60`、`frequency_reference_hz=261.625565`、`frequency_window_start_sample=2400`、`frequency_window_end_sample=9600`、`frequency_tolerance_hz=1.0`；频率只在 C4 已进入 sustain 且尚未 Note Off 的固定窗口内按同方向过零间距测量。
+
+**步骤：**
+
+1. 先加 fixture 驱动 RED：核心测试从磁盘打开 reference，按 README 的精确请求构建 plan，逐字段比较 `expected-events.tsv`；再把同一计划通过 `PreparedMidiPlaybackRuntime` 离线渲染 96000 frames，测量非零样本、RMS、绝对峰值和第一段 C4 稳态过零频率并逐项比较 properties 容差。在文件尚不存在时记录 RED。`tests/CMakeLists.txt` 给该测试设置 `${CMAKE_SOURCE_DIR}` 工作目录，避免从 build 目录解析相对路径。
+2. 创建上述固定内容，使用 `Get-FileHash -Algorithm SHA256` 生成签名。`verify_audio_fixture_hashes.cmake` 用 CMake `file(SHA256 ...)` 逐项核对 `SHA256SUMS` 中的 reference、expected-events、expected-audio 和 README；在 `tests/CMakeLists.txt` 注册独立 `trackloom_audio_fixture_hash_tests`，不得为了校验 fixture 在 core 引入新的加密库。再运行 `CORE_TEST` 和该 hash CTest 取得 GREEN。
+3. 新建 `trackloom_audio_hardware_smoke_tests`。未设置 `TRACKLOOM_AUDIO_HARDWARE_SMOKE=1` 时返回 77；启用时读取 `TRACKLOOM_AUDIO_OUTPUT_NAME`（空则默认设备）和 `TRACKLOOM_AUDIO_SMOKE_SECONDS`（默认 600），打开 reference、按实际设备格式重建同一 tick loop，并在退出时打印实际格式、10 次计划构建耗时、持续时间和全部诊断计数。若后端 xrun 值不为 `-1`，xrun 必须为 0；若为 `-1`，callback timeout 必须为 0；两种情况都要求 oversized block、callback exception、voice stealing 和 stale Note Off 为 0，否则测试返回非零。CTest 设置 `${CMAKE_SOURCE_DIR}` 工作目录，标记 `LABELS "manual;hardware"`、`SKIP_RETURN_CODE 77` 和 `TIMEOUT 720`。
+4. 自动门槛：fresh 配置后构建全部 target；完整 CTest 必须 0 failure，只有 MIDI/audio hardware smoke 可按 77 跳过；隐藏 app 烟测正常退出；`git diff --check` 通过。用固定 reference 连续构建计划至少 10 次，逐次记录耗时并校验单次不超过 250 ms。
+5. 实机门槛需要用户协助选择并监听目标输出设备。明确选择 48 kHz、256 samples、stereo 后执行：
+
+   ```powershell
+   $env:TRACKLOOM_AUDIO_HARDWARE_SMOKE = '1'
+   $env:TRACKLOOM_AUDIO_OUTPUT_NAME = '<由用户确认的设备名>'
+   $env:TRACKLOOM_AUDIO_SMOKE_SECONDS = '600'
+   $evidenceCommit = git rev-parse HEAD
+   Write-Output "Evidence commit: $evidenceCommit"
+   cmd.exe /d /s /c 'call "E:\Android\VS\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64 && "E:\Android\VS\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe" --test-dir build -R "^trackloom_audio_hardware_smoke_tests$" -V'
+   ```
+
+6. 把 `run-template.md` 复制为带绝对日期的证据文件，填写 commit、Windows、设备、驱动、请求与实际格式、10 次构建耗时、600 秒持续时间、xrun/timeout/oversized/voice-steal/stale-NoteOff 和人工监听结论。没有实机 GREEN 与完整字段时，不得把 2026-10-31 里程碑标成完成。
+7. 运行完整构建、完整 CTest、隐藏 app 烟测、硬件烟测和 `git diff --check`；提交 fixture/runner/template：`test: add audible MIDI playback acceptance fixture`。实际机器证据在验证完成后单独提交：`test: record WASAPI playback evidence`。
+
+**可直接粘贴的首个 RED：** 在任何 fixture 文件创建前注册此测试；首次运行必须以 `reference fixture should load` 失败，而不是静默生成 fixture。
+
+```cpp
+void audibleReferenceFixtureBuildsExpectedLoop()
+{
+    const auto loaded = trackloom::loadProjectFromFile(
+        std::filesystem::path("tests/fixtures/audio/minimum-audible-midi/reference.trackloom"));
+    require(loaded.project.has_value(), "reference fixture should load");
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = *loaded.project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.playbackStartSample = 0;
+    request.loopRange = trackloom::PlaybackLoopRange { 0, 3840 };
+    const auto built = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+    require(built.plan != nullptr, "reference fixture should build");
+    require(built.plan->events.size() == 8, "four reference notes should create eight events");
+    require(built.plan->loop->loopLengthSamples == 96000,
+            "reference loop should last exactly 96000 samples at 48 kHz");
+}
+```
+
+**最小 GREEN 哈希脚本：** `SHA256SUMS` 每行固定为 `<64 lowercase hex><two spaces><relative filename>`；脚本逐行解析并在第一处不一致时 `FATAL_ERROR`。
+
+```cmake
+file(SHA256 "${FIXTURE_DIR}/${expected_file}" actual_hash)
+if(NOT actual_hash STREQUAL expected_hash)
+    message(FATAL_ERROR "Audio fixture hash mismatch: ${expected_file}")
+endif()
+```
+
+**最终复审门槛：** Task 9 自动与实机证据完成后，使用独立 reviewer 对照第 16.4.1–16.4.4 节逐项检查；任何 Critical/Important 必须先补可复现 RED 并用独立 follow-up commit 修复。最终只在 fresh 全量构建、自动 CTest、隐藏应用烟测、10 分钟实机播放和 `git diff --check` 全部有当前 commit 证据时，才能更新第 16.2 节的 2026-10-31 里程碑状态。
+
 ### 16.5 毕业后范围
 
 以下能力仍保留在长期 A–H 路线中，但不作为 2027-05-31 毕业验收的前置条件：
