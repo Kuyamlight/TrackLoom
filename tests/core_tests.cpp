@@ -368,6 +368,7 @@ bool containsRecoveryPath(
 }
 
 std::filesystem::path injectedRetainedRecoveryPath;
+std::string injectedTemporaryProjectBytes;
 int injectedProjectFileReplacementCallCount = 0;
 
 trackloom::detail::TemporaryProjectWriteResult writeCanonicalProjectBytes(
@@ -378,19 +379,11 @@ trackloom::detail::TemporaryProjectWriteResult writeCanonicalProjectBytes(
     return { true, "" };
 }
 
-trackloom::detail::TemporaryProjectWriteResult writeTruncatedButValidProjectPrefix(
+trackloom::detail::TemporaryProjectWriteResult writeInjectedTemporaryProjectBytes(
     const std::filesystem::path& temporaryPath,
-    const std::string& canonicalText)
+    const std::string&)
 {
-    const auto headerEnd = canonicalText.find('\n');
-    const auto nameEnd = canonicalText.find('\n', headerEnd + 1);
-    require(headerEnd != std::string::npos && nameEnd != std::string::npos,
-        "canonical project text should contain header and name lines");
-
-    const auto truncatedPrefix = canonicalText.substr(0, nameEnd + 1);
-    require(trackloom::loadProjectFromText(truncatedPrefix).project.has_value(),
-        "the deliberately truncated header-and-name prefix should remain parseable");
-    writeFileBytes(temporaryPath, truncatedPrefix);
+    writeFileBytes(temporaryPath, injectedTemporaryProjectBytes);
     return { true, "" };
 }
 
@@ -438,6 +431,23 @@ trackloom::AtomicFileReplaceResult recordAndInstallProjectFile(
     }
 
     return trackloom::AtomicFileReplaceResult::ok();
+}
+
+trackloom::AtomicFileReplaceResult recordAndInstallProjectFileWithRecoveryPath(
+    const std::filesystem::path& replacementPath,
+    const std::filesystem::path& targetPath)
+{
+    const auto installed = recordAndInstallProjectFile(replacementPath, targetPath);
+    if (!installed.success) {
+        return installed;
+    }
+
+    return trackloom::AtomicFileReplaceResult::ok(injectedRetainedRecoveryPath);
+}
+
+bool throwDuringWorkspaceCleanup(const std::filesystem::path&, std::error_code&)
+{
+    throw std::runtime_error("Injected post-replacement cleanup failure.");
 }
 
 trackloom::AtomicFileReplaceResult replaceProjectFileAndRetainRecoveryPath(
@@ -5929,6 +5939,44 @@ void saveReportsWorkspaceCleanupFailureAfterSuccessfulReplacement()
         "workspace cleanup failure must preserve the sentinel left after replacement");
 }
 
+void saveReportsThrownCleanupAfterSuccessfulReplacementAsWarning()
+{
+    const auto directory = makeTestDirectory("save_cleanup_exception_warning");
+    const auto targetPath = directory / "song.tlproj";
+    auto workspacePath = targetPath;
+    workspacePath += ".trackloom-save-workspace";
+    injectedRetainedRecoveryPath = directory / "helper-retained-recovery";
+
+    const auto oldProjectText = trackloom::saveProjectToText(trackloom::Project("Old Project"));
+    writeFileBytes(targetPath, oldProjectText);
+    injectedProjectFileReplacementCallCount = 0;
+
+    const auto saved = trackloom::detail::saveProjectToFileAtomicallyWithOperations(
+        trackloom::Project("Installed New Project"),
+        targetPath,
+        writeCanonicalProjectBytes,
+        recordAndInstallProjectFileWithRecoveryPath,
+        throwDuringWorkspaceCleanup);
+    const auto loaded = trackloom::loadProjectFromFile(targetPath);
+
+    require(injectedProjectFileReplacementCallCount == 1,
+        "the test replacement must install the new target before cleanup throws");
+    require(saved.success,
+        "cleanup exceptions after a successful replacement must not report that saving failed");
+    require(!saved.warning.empty(),
+        "cleanup exceptions after a successful replacement must produce a recovery warning");
+    require(containsRecoveryPath(saved.recoveryPaths, workspacePath),
+        "cleanup exceptions after replacement must conservatively expose the save workspace");
+    require(containsRecoveryPath(saved.recoveryPaths, injectedRetainedRecoveryPath),
+        "cleanup exceptions must preserve any recovery path reported by the replacement helper");
+    require(loaded.project.has_value() && loaded.project->name() == "Installed New Project",
+        "the successfully installed target must remain loadable with the new project");
+    require(readFileBytes(targetPath) != oldProjectText,
+        "the old target must already have been replaced when cleanup throws");
+    require(std::filesystem::exists(workspacePath),
+        "the workspace must remain available for inspection after cleanup throws");
+}
+
 void saveDoesNotWarnWhenWorkspaceWasRemovedDespiteFalseCleanupResult()
 {
     const auto directory = makeTestDirectory("save_workspace_removed_without_result");
@@ -5960,16 +6008,28 @@ void saveRejectsParseableButTruncatedTemporaryProjectBytes()
 
     trackloom::Project project("New Complete Project");
     project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto canonicalText = trackloom::saveProjectToText(project);
+    const auto headerEnd = canonicalText.find('\n');
+    const auto nameEnd = canonicalText.find('\n', headerEnd + 1);
+    require(headerEnd != std::string::npos && nameEnd != std::string::npos,
+        "canonical project text should contain header and name lines");
+    injectedTemporaryProjectBytes = canonicalText.substr(0, nameEnd + 1);
+    require(injectedTemporaryProjectBytes.size() < canonicalText.size(),
+        "the truncated project fixture must be shorter than the canonical project text");
+    require(trackloom::loadProjectFromText(injectedTemporaryProjectBytes).project.has_value(),
+        "the truncated project fixture must independently prove that it remains parseable");
     injectedProjectFileReplacementCallCount = 0;
 
     const auto saved = trackloom::detail::saveProjectToFileAtomicallyWithOperations(
         project,
         targetPath,
-        writeTruncatedButValidProjectPrefix,
+        writeInjectedTemporaryProjectBytes,
         recordAndInstallProjectFile,
         removeWorkspaceThenReportNoRemoval);
 
     require(!saved.success, "a parseable but truncated temporary project must not be installed");
+    require(saved.error == "Temporary project file bytes did not match the serialized project.",
+        "the truncated temporary project must fail specifically at byte-integrity verification");
     require(injectedProjectFileReplacementCallCount == 0,
         "byte-integrity failure must be detected before atomic replacement");
     require(readFileBytes(targetPath) == oldTargetBytes,
@@ -8295,6 +8355,7 @@ int main()
         saveReplacesExistingFile();
         saveReportsRetainedHelperRecoveryPathAfterSuccessfulReplacement();
         saveReportsWorkspaceCleanupFailureAfterSuccessfulReplacement();
+        saveReportsThrownCleanupAfterSuccessfulReplacementAsWarning();
         saveDoesNotWarnWhenWorkspaceWasRemovedDespiteFalseCleanupResult();
         saveRejectsParseableButTruncatedTemporaryProjectBytes();
         saveRejectsReportedTemporaryProjectFlushFailure();

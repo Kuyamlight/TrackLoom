@@ -317,24 +317,32 @@ FileOperationResult detail::saveProjectToFileAtomicallyWithOperations(
         return failBeforeReplacement(temporaryPath, workspacePath, temporaryFileOwned, error.what());
     }
 
+    AtomicFileReplaceResult replacement;
     try {
-        const auto replacement = replaceOperation(temporaryPath, path);
-        if (!replacement.success) {
-            auto message = "Could not replace project file: " + replacement.error;
-            if (replacement.recoveryPath.has_value()) {
-                message = withRecoveryInspectionPath(std::move(message), *replacement.recoveryPath);
-            }
-            if (!replacement.recoveryPath.has_value() || *replacement.recoveryPath != workspacePath) {
-                message = withRecoveryInspectionPath(std::move(message), workspacePath);
-            }
-            return FileOperationResult::fail(std::move(message));
-        }
+        replacement = replaceOperation(temporaryPath, path);
+    } catch (const std::exception& error) {
+        return FileOperationResult::fail(withRecoveryInspectionPath(
+            std::string("Could not replace project file: ") + error.what(),
+            workspacePath));
+    }
 
-        std::vector<std::filesystem::path> recoveryPaths;
+    if (!replacement.success) {
+        auto message = "Could not replace project file: " + replacement.error;
         if (replacement.recoveryPath.has_value()) {
-            addRecoveryPath(recoveryPaths, *replacement.recoveryPath);
+            message = withRecoveryInspectionPath(std::move(message), *replacement.recoveryPath);
         }
+        if (!replacement.recoveryPath.has_value() || *replacement.recoveryPath != workspacePath) {
+            message = withRecoveryInspectionPath(std::move(message), workspacePath);
+        }
+        return FileOperationResult::fail(std::move(message));
+    }
 
+    std::vector<std::filesystem::path> recoveryPaths;
+    if (replacement.recoveryPath.has_value()) {
+        addRecoveryPath(recoveryPaths, *replacement.recoveryPath);
+    }
+
+    try {
         std::error_code workspaceCleanupError;
         const auto workspaceRemoved = removeWorkspace(workspacePath, workspaceCleanupError);
         auto workspaceNeedsRecovery = static_cast<bool>(workspaceCleanupError);
@@ -353,10 +361,11 @@ FileOperationResult detail::saveProjectToFileAtomicallyWithOperations(
 
         return FileOperationResult::ok();
     } catch (const std::exception& error) {
-        // 一旦进入原子替换阶段，不再清理 workspace；它可能包含唯一可控恢复副本。
-        return FileOperationResult::fail(withRecoveryInspectionPath(
-            std::string("Could not replace project file: ") + error.what(),
-            workspacePath));
+        addRecoveryPath(recoveryPaths, workspacePath);
+        auto warning = cleanupWarningFor(recoveryPaths);
+        warning += " Cleanup error: ";
+        warning += error.what();
+        return FileOperationResult::ok(std::move(warning), std::move(recoveryPaths));
     }
 }
 
