@@ -1,4 +1,4 @@
-+# TrackLoom｜织音
+# TrackLoom｜织音
 
 TrackLoom 是一款开源、Windows 优先、AI 原生的音乐创作工作站。项目采用 C++20、JUCE 与 CMake 构建；AI 服务使用 Python，并由用户自行配置的第三方 API 提供。
 
@@ -28,6 +28,8 @@ ctest --test-dir build --output-on-failure
 
 ## 许可证与源码
 
-TrackLoom 采用 **AGPL-3.0-only** 许可证；完整条款见 [LICENSE](LICENSE)。发布二进制或向网络用户提供修改后的版本时，请按 AGPLv3 提供相应源码；本仓库即为当前源码获取入口。
+TrackLoom 采用 **AGPL-3.0-only** 许可证；完整条款见 [LICENSE](LICENSE)，具体义务以许可证正文为准。以下说明仅用于项目发布准备，不构成法律意见。
+
+每个发行物都应关联精确的 TrackLoom commit、tag 或源码包，不应把当前开发分支自动视为任意发行物的完整 Corresponding Source。发布二进制或通过网络提供修改后的版本时，应按 AGPLv3 为该发行物提供对应源码，并确保构建所用的 JUCE 8.0.14 精确版本源码可取得；发行材料还应包含复现构建所需的脚本与配置，以及实际使用依赖要求保留的适用许可证和版权通知。
 
 第三方组件与许可证说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
