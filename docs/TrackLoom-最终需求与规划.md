@@ -396,7 +396,59 @@ MIDI 规则：
 | 2027-04-30 | 完成 30 分钟连续播放、导入导出、保存恢复、AI 固定样例集和至少一轮初学者任务测试，关闭所有阻断毕业闭环的已知高优先级问题。 |
 | 2027-05-31 | 完成 Windows x64 发布候选版、可重复演示工程、测试与用户任务证据包、论文功能对应表和答辩演示流程；任一毕业必须项或验收指标未达标即不得判定毕业基线通过，未达标项必须如实标注，不得用长期计划代替验收证据。 |
 
-### 16.4 毕业后范围
+### 16.4 2026-10-31 音频设备与内置发声实施设计
+
+- 设计确认日期：2026-08-09
+- 已确认选择：独立实时播放运行时、WASAPI 共享模式、可替换的轻量复音合成器、播放前不可变 MIDI 快照。
+
+本节细化第 16.3 节的 2026-10-31 里程碑，只定义第一条真实可听 MIDI 垂直切片。它不得被表述为 WAV 导入播放、录音、VST3、SoundFont、ASIO 或完整音频引擎已经完成；这些能力继续按后续里程碑和长期路线接入同一实时输出边界。
+
+#### 16.4.1 模块和线程边界
+
+1. 核心层新增平台无关的 `PreparedMidiPlaybackPlan` 及 builder。消息线程捕获当前工程与设备格式快照，非实时 worker 根据该快照、tempo map、循环范围和播放起点生成不可变计划；计划只保存预先排序的固定大小数值数据，不把轨道名称、片段名称或其他需要在回调中复制的字符串带入实时线程。非循环计划使用工程原点起算的绝对采样位置；循环计划保存单次规范循环内相对 `loopStartSample` 的采样偏移、循环长度和独立边界事件表。
+2. 每个计划事件至少包含采样坐标、Note On/Note Off、MIDI 通道、音高、力度、紧凑基础 `noteInstanceId`、稳定 `eventOrdinal` 和乐器槽位。builder 按稳定源音符身份为当前计划分配稠密、无碰撞的 `noteInstanceId`，不得截断字符串哈希冒充唯一标识；在相同 sample 先排 Note Off、后排 Note On，再沿用轨道、片段和音符的稳定顺序分配 `eventOrdinal`。乐器槽位保存播放开始时冻结的轨道增益、声像及路由信息；首版所有兼容乐器轨使用同一种内置音色，但不得把单音色写死为永久架构。
+3. JUCE 平台层新增独立 `JuceAudioHost`，直接独占 `juce::AudioIODeviceType`（`WASAPIDeviceMode::shared`）、当前 `juce::AudioIODevice`、音频 callback、当前计划、内置合成器和实时诊断状态。应用消息线程拥有并控制 host；音频 callback 不读取可变 `AppProjectSession`、`Project` 或 UI 对象。设备枚举和热插拔通知通过该专用 device type 完成，不让未支持的后端进入正式路径。
+4. 音频 callback 通过固定容量的非拥有声道视图写入 JUCE 提供的逐声道输出指针，不得把 `float**` 错当成当前要求单块连续平面内存的 `AudioBlock`。所有 voice、包络、游标、声道视图和必要 scratch 必须在设备启动或计划安装边界预分配。跨线程状态只允许使用经 `std::atomic<T>::is_always_lock_free` 静态断言确认的整数或枚举原子，不得在 callback 中使用 `atomic<shared_ptr>` 或其他可能退化为内部锁的原子类型。
+5. 现有 `ProjectPlaybackSession` 继续承担平台无关调度测试、现有外部 MIDI 输出和非实时逻辑，不直接进入声卡 callback。后续只有在其动态分配、工程读取和并发所有权边界得到独立验证后，才能合并实时路径。
+6. 当前 30 Hz JUCE `Timer` 只读取原子播放位置、设备状态和诊断计数并刷新界面，不再推进 Transport 或渲染静音 block。
+7. host 的关闭顺序固定为停止播放、调用 `AudioIODevice::stop()` 并等待 pending callback 清空、关闭设备、释放计划和合成器。设备切换、计划构建、音频图 rebuild、磁盘访问和设置保存全部位于消息线程或其他非实时线程。
+
+#### 16.4.2 计划生成和实时播放规则
+
+1. 用户发起播放时，消息线程捕获不可变工程播放快照、运行态 `projectEditGeneration` 和完整 `deviceFormatGeneration`；后者在设备实例、设备 id、实际采样率、当前或已准备最大 block、输出声道数或输出声道掩码任一变化时递增。实际 MIDI 收集与排序在可取消的非实时 worker 上执行，期间 UI 显示 `Preparing` 且继续响应。结果回到消息线程后必须再次核对工程 generation、完整设备格式 generation、循环范围和播放起点；任一条件变化都丢弃过期结果。builder 复用已有确定性 MIDI、tempo、循环、静音、独奏和禁用规则；隐藏状态只影响显示，不得过滤声音。计划构建失败或过期时不得开始播放，也不得静默复用旧计划。
+2. 计划事件数设显式上限，首版总上限为 1,000,000 个事件，每次 callback 最多处理 4,096 个计划事件。builder 必须按已准备的最大 block 验证普通窗口和循环回绕窗口的事件密度；运行时也必须在修改 voice 前预检当前 block。超过总量或单 callback 上限、采样率非法、tempo/循环范围非法或事件换算溢出时必须返回稳定失败原因并保持整块静音，不得截断、部分应用事件后继续播放。
+3. 首版只允许在停止状态替换计划。安装计划时，消息线程调用 `AudioIODevice::stop()`；该 API 必须在 pending callback 全部退出后才返回。随后替换拥有对象并重置 voice 和事件游标，再用 `AudioIODevice::start(callback)` 恢复设备回调；计划在整个播放期间保持地址和内容稳定。
+4. 播放中的工程修改正常进入工程命令历史和保存状态，但声音在下次停止并重新播放后才更新。首版播放中跳转采用“安全停止、设置新位置、重新生成或重置计划、重新开始”，不实现 block 边界无锁热替换。
+5. callback 每次先清零全部有效输出；只有设备、计划和播放状态均有效时，才消费当前半开采样窗口内的事件。它在相邻事件之间分段渲染 voice，处理事件后继续渲染。运行态分别维护只增不回绕的 `renderedSampleCount` 和可在循环边界回绕的 `projectSamplePosition`；UI 显示后者，连续运行与诊断证据使用前者，不能把两种时间混为同一计数。
+6. callback 跨循环右边界时必须把 block 拆为循环尾部和循环头部两个半开子窗口：先渲染 `[projectSamplePosition, loopEndSample)`，再处理边界 Note Off；随后递增 `loopIteration`、把工程位置和事件游标重置到循环起点，并在渲染第一个循环头样本前处理该轮 chase。若 block 恰好结束于右边界，边界 Note Off 和迭代递增在该 block 结束时完成，下一轮 chase 延迟到下一 callback 的 sample offset 0。单个 block 跨越多次短循环时重复同一规则，处理量仍受 block 帧数和每 callback 事件上限约束。
+7. voice 实例身份是 `(noteInstanceId, loopIteration)`；非循环播放的 `loopIteration` 固定为 0。上一轮仍处于 release 的 voice 与下一轮相同基础音符可以并存，Note Off 只能匹配同一轮实例。循环计划继续沿用半开窗口、右边界释放和起点 chase 规则，并保证连续 block 不重复 chase。
+8. 正常用户停止使用显式 `Stopping` 状态：callback 在安全边界停止消费后续计划事件，让当时所有活动 voice 进入既定 30 ms release，并只继续渲染这些尾音，直到 voice 提前全部静音或达到 `ceil(sampleRate * 0.030)` 帧的硬上限；随后硬重置 voice、发布 `Stopped`，只有此后的 callback 才保证全零。没有活动 voice 时可以立即进入 `Stopped`。新计划安装和重新播放必须等待 `Stopped`，不能把 release 尾音误当成已经停止。设备已经停止、断开或发生不可恢复错误时无法保证渲染尾音，host 必须在非实时清理路径立即硬重置 voice 和运行状态，不能等待永远不会再次到来的 callback。
+9. JUCE 8.0.14 的 `juce::AudioDeviceManager::audioDeviceIOCallbackInt()` 会在回调聚合路径取得 `audioCallbackLock`，`juce::Synthesiser::renderNextBlock()` 也会取得内部 `CriticalSection`。首版因此不通过 `AudioDeviceManager` 聚合实时 callback，也不使用 `juce::Synthesiser`；host 直接启动当前 `AudioIODevice`，并使用固定容量、无互斥锁的 `BuiltInPolySynth` 直接消费计划事件，不在 callback 中创建 `juce::MidiBuffer`。
+10. `BuiltInPolySynth` 使用 16 个固定 voice、正弦振荡器、力度缩放和固定 ADSR；初始目标为 5 ms attack、20 ms decay、0.8 sustain、30 ms release。每个 voice 的最大峰值为 0.045，使 16 voice 理论同相峰值不超过 0.72。Note On 按稳定 `eventOrdinal` 处理：存在空闲 voice 时选择最低 voice index；否则选择 `voiceStartSerial` 最小的 voice，并以最低 voice index 作为防御性并列规则。每个成功 Note On 获得单调递增的 `voiceStartSerial`。窃取时先使旧 `(noteInstanceId, loopIteration)` 失效，再把 voice 分配给新实例并递增 voice stealing 计数；旧实例后来到达的 Note Off 只能被忽略并递增 stale Note Off 计数，不得关闭该槽位的新实例。
+11. 音频 callback 禁止动态分配、排序、阻塞锁、文件或网络访问、外部 MIDI `sendMessageNow()`、不可控异常和 UI 调用。回调边界必须防止异常逃逸，并在任何无效状态下优先输出静音。
+
+#### 16.4.3 设备设置、状态和故障降级
+
+1. 首期只承诺 Windows x64 上的 WASAPI 共享模式。默认请求 0 路输入、2 路输出、48 kHz、256 samples 和立体声；允许用户选择 1–2 路输出。正式入口只允许 JUCE 设备类型 `Windows Audio`，必须隐藏或拒绝 DirectSound、`Windows Audio (Exclusive Mode)`、低延迟实验模式和 ASIO，避免把未验收后端误展示为已支持。驱动不支持默认配置时可以接受协商结果，但必须显示并在证据中记录实际设备、驱动、采样率、block 大小、声道数和偏差理由。ASIO 保留为后续适配器，不是本里程碑前置条件。
+2. “工具 → 音频设置…”打开专用 WASAPI 共享输出设置界面，使用 JUCE 控件展示该 device type 的输出设备、采样率、buffer 大小和声道选项，并提供低音量测试音。该界面不使用会暴露其他后端的通用 `AudioDeviceSelectorComponent`。测试音只在工程播放停止时可用，只验证当前输出，不修改工程、播放头或命令历史。
+3. 音频设备状态是本机运行配置，保存到用户应用数据目录，不写入 `.trackloom` 工程。设置恢复失败时回退到可用默认设备并显示警告，不得阻止用户打开和编辑工程。
+4. 无设备或初始化失败时，应用继续提供工程编辑和保存，播放入口禁用并显示稳定原因；设备断开或重启时立即静音、停止播放并使当前计划失效；采样率变化后必须重新生成计划才能播放。
+5. callback 收到超过已准备上限的 block 时整块静音并计数，由消息线程重新准备；输出指针为空、声道数量变化或其他格式异常时只处理有效指针，不越界、不保留旧缓冲内容。
+6. callback 不构造诊断字符串，只发布稳定错误枚举和原子数字。UI 至少展示当前设备、实际采样率、block 大小、输出声道数、callback 次数、callback 超时次数、超大 block 次数、xrun/underrun（后端可用时）、voice stealing 次数和 stale Note Off 次数。
+7. callback 执行时间达到或超过当前 block 对应的实时期限时递增超时计数；xrun/underrun 查询应在非实时线程读取后端状态。诊断失败本身不得阻塞或终止音频线程。
+8. JUCE 的 `audioDeviceError(const String&)` 可能从任意线程调用；该入口只发布稳定设备错误标志，不复制或格式化错误字符串。消息线程随后读取设备错误并生成用户反馈。设备列表变化通知同样只能请求消息线程刷新，不能在通知线程直接关闭、打开或替换设备。
+
+#### 16.4.4 自动测试、实机证据和完成门槛
+
+1. 核心计划测试覆盖 tick 到 sample 换算、tempo 变化、事件稳定排序、轨道增益和声像快照、静音/独奏/禁用、隐藏不影响声音、重叠同音高、非法输入、总事件和单 callback 密度上限、半开窗口、循环尾/头 block 切分、恰好结束于右边界、单 block 多次回绕、边界 Note Off、循环起点 chase、连续 block 不重复 chase、`loopIteration` 实例隔离，以及单调 `renderedSampleCount` 与回绕 `projectSamplePosition`。合法事件位置与预期偏差不得超过 1 sample。
+2. 合成器离线测试覆盖 44.1/48/96 kHz、64/256/512 samples block、Note On 精确起点、跨 block 连续性、Note Off 与 release、同音高和跨循环实例释放、16 voice、空闲 voice 最低 index、同 sample 稳定事件顺序、按 `voiceStartSerial` 窃取、并列防御规则、被窃取实例的迟到 Note Off 忽略、正常停止最多 30 ms release 后全零、设备错误硬重置和峰值上限。A4 稳态频率应在预先固定的容差内接近 440 Hz；设计理论同相峰值不超过 0.72，固定清单的验收峰值上限为 0.8。
+3. callback 和 fake backend 测试覆盖未播放清零、正常非零输出、实际 `numSamples` 推进、`Playing → Stopping → Stopped`、设备 `stop()` 清空 pending callback 后才允许替换计划、设备启动/停止/重启、采样率变化、空输出指针、单/双声道、超大 block、事件密度超限整块静音、初始化失败和 callback 异常隔离。完成预热后，受测 callback 自有路径的堆分配次数必须为 0，并通过代码审查确认没有锁等待和实时禁用操作。
+4. 应用层与 JUCE 测试覆盖音频设置菜单、命令分发、设备状态、设置恢复、测试音、播放禁用、`Preparing` 期间消息线程继续响应、取消构建、过期 `projectEditGeneration` 或设备格式结果被丢弃、中文反馈和 UI Timer 不再推进播放头；桌面应用继续通过隐藏启动和关闭烟测。
+5. 固定 MIDI 参考工程、预期事件及音频属性清单和内容签名放入版本控制；建议目录为 `tests/fixtures/audio/minimum-audible-midi/`。在答辩基准机上记录至少 10 次参考工程计划构建耗时，单次目标不超过 250 ms；未达标时必须保留 worker 隔离和可取消 UI，不得改回消息线程同步排序。每次实机证据至少记录 commit、Windows 版本、设备、驱动、采样率、block、声道、计划构建耗时、持续时间、xrun/超时计数和人工监听结论，建议保存到 `tests/evidence/audio/`。
+6. 2026-10-31 里程碑只有在固定 MIDI 工程通过内置合成器实际发声、输出设备可选择、所有相关自动测试通过，并在 48 kHz、256 samples、立体声下连续循环 10 分钟且应用无崩溃、xrun/underrun 为 0（后端不提供时 callback 超时为 0）、无可复现爆音、悬挂音符或循环边界丢拍时才可标为完成。设备不支持默认配置时必须按第 16.2 节记录偏差，不能省略证据。
+7. 本里程碑的 10 分钟证据不能替代 2027-05-31 候选版的 30 分钟音频验收；WAV 导入播放、离线 WAV 渲染和对应参考 PCM 验收继续按 2027-02-28 里程碑完成。
+
+### 16.5 毕业后范围
 
 以下能力仍保留在长期 A–H 路线中，但不作为 2027-05-31 毕业验收的前置条件：
 
