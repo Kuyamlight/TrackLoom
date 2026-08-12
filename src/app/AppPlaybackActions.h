@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <stop_token>
@@ -77,6 +78,28 @@ using AppPreparedPlanBuildOperation = std::function<
         PreparedMidiPlaybackPlanBuildRequest,
         std::stop_token)>;
 
+namespace detail {
+
+struct AppPlaybackPreparationCompletion {
+    AppPlaybackPreparationKey key;
+    PreparedMidiPlaybackPlanBuildResult result;
+};
+
+struct AppPlaybackPreparationCompletionState {
+    mutable std::mutex mailboxMutex;
+    std::optional<AppPlaybackPreparationCompletion> mailbox;
+    std::atomic<bool> completionPublished { false };
+};
+
+void runAppPlaybackPreparationBuild(
+    const std::shared_ptr<AppPlaybackPreparationCompletionState>& completionState,
+    PreparedMidiPlaybackPlanBuildRequest request,
+    AppPlaybackPreparationKey key,
+    AppPreparedPlanBuildOperation build,
+    std::stop_token stopToken) noexcept;
+
+}
+
 class AppPlaybackController final {
 public:
     explicit AppPlaybackController(
@@ -99,11 +122,6 @@ public:
     double currentSeconds() const noexcept;
 
 private:
-    struct CompletedPreparation {
-        AppPlaybackPreparationKey key;
-        PreparedMidiPlaybackPlanBuildResult result;
-    };
-
     void updateStatusFromHost(const RealtimePlaybackHostSnapshot& hostSnapshot);
     void updateStatusText();
     void finishPreparation(const AppProjectSession& session);
@@ -113,11 +131,11 @@ private:
     AppPlaybackStatus status_;
     std::int64_t playbackStartSample_ = defaultAppPlaybackStartSample;
     std::optional<PlaybackLoopRange> loopRange_;
+    std::optional<std::int64_t> nextPlaybackStartSample_;
+    std::optional<AppPlaybackPreparationKey> activePreparationKey_;
     bool rewindAfterStop_ = false;
+    std::shared_ptr<detail::AppPlaybackPreparationCompletionState> completionState_;
     std::jthread worker_;
-    mutable std::mutex mailboxMutex_;
-    std::optional<CompletedPreparation> mailbox_;
-    std::atomic<bool> workerCompleted_ { false };
 };
 
 AppPlaybackActionFeedback startAppPlayback(

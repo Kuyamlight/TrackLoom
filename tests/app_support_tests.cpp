@@ -4387,6 +4387,47 @@ void playbackPreparationIsQueryableAndCancellableWithoutJoiningInHandlers()
         "cancelled preparation must not install a playback plan");
 }
 
+void playbackWorkerBuildPublishesThroughIndependentCompletionState()
+{
+    auto completionState = std::make_shared<
+        trackloom::detail::AppPlaybackPreparationCompletionState>();
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request {
+        trackloom::Project {},
+        48000.0,
+        256,
+        2,
+        3,
+        1536,
+        trackloom::PlaybackLoopRange { 960, 3840 }
+    };
+    const trackloom::AppPlaybackPreparationKey key {
+        4,
+        7,
+        1536,
+        trackloom::PlaybackLoopRange { 960, 3840 }
+    };
+    trackloom::AppPreparedPlanBuildOperation build =
+        [](trackloom::PreparedMidiPlaybackPlanBuildRequest buildRequest, std::stop_token) {
+            return makeFakePreparedPlan(buildRequest);
+        };
+    std::stop_source stopSource;
+
+    trackloom::detail::runAppPlaybackPreparationBuild(
+        completionState,
+        std::move(request),
+        key,
+        std::move(build),
+        stopSource.get_token());
+
+    require(completionState->completionPublished.load(std::memory_order_acquire),
+        "independent worker completion state should publish after writing its mailbox");
+    std::scoped_lock lock(completionState->mailboxMutex);
+    require(completionState->mailbox.has_value()
+            && completionState->mailbox->key == key
+            && completionState->mailbox->result.plan != nullptr,
+        "worker seam should publish the build result and accepted key without a controller");
+}
+
 void playbackPreparationInstallsAndTracksHostLifecycle()
 {
     FakeRealtimePlaybackHost host;
@@ -4738,7 +4779,6 @@ void playbackRewindStopsThenPreparesAgainFromZero()
 void playbackPreparationUsesCurrentStoppedHostSampleAndRequestedLoop()
 {
     FakeRealtimePlaybackHost host;
-    host.setRealtimePosition(2048, 2048);
     trackloom::AppProjectSession session;
     std::int64_t capturedStart = -1;
     std::optional<trackloom::PlaybackLoopRange> capturedLoop;
@@ -4750,6 +4790,7 @@ void playbackPreparationUsesCurrentStoppedHostSampleAndRequestedLoop()
             capturedLoop = request.loopRange;
             return makeFakePreparedPlan(request);
         });
+    host.setRealtimePosition(2048, 2048);
     require(playback.start(session.capturePlaybackSnapshot(), requestedLoop).success,
         "non-zero preparation should accept the current stopped position and loop");
     pollPlaybackUntilWorkerSettles(playback, session);
@@ -4757,6 +4798,57 @@ void playbackPreparationUsesCurrentStoppedHostSampleAndRequestedLoop()
         "preparation key and build request should use the current stopped host sample");
     require(capturedLoop == requestedLoop,
         "preparation key and build request should use the requested loop");
+}
+
+void playbackCancelledPreparationCannotReplaceNewStartAndLoopIntent()
+{
+    FakeRealtimePlaybackHost host;
+    host.setRealtimePosition(1024, 1024);
+    trackloom::AppProjectSession session;
+    std::latch firstEntered(1);
+    std::latch releaseFirst(1);
+    std::latch secondBuilt(1);
+    std::vector<trackloom::PreparedMidiPlaybackPlanBuildRequest> requests;
+    const trackloom::PlaybackLoopRange firstLoop { 960, 3840 };
+    const trackloom::PlaybackLoopRange secondLoop { 1920, 7680 };
+    trackloom::AppPlaybackController playback(
+        host,
+        [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+            requests.push_back(request);
+            if (requests.size() == 1) {
+                firstEntered.count_down();
+                releaseFirst.wait();
+            } else {
+                secondBuilt.count_down();
+            }
+            return makeFakePreparedPlan(request);
+        });
+
+    require(playback.start(session.capturePlaybackSnapshot(), firstLoop).success,
+        "first preparation should accept the old stopped sample and loop");
+    firstEntered.wait();
+    require(playback.stop().success,
+        "first preparation should accept cancellation before its result is published");
+    releaseFirst.count_down();
+    pollPlaybackUntilWorkerSettles(playback, session);
+    require(host.installCallCount == 0,
+        "cancelled old preparation must not install before a replacement start");
+
+    host.setRealtimePosition(4096, 4096);
+    require(playback.start(session.capturePlaybackSnapshot(), secondLoop).success,
+        "replacement preparation should accept the new stopped sample and loop");
+    secondBuilt.wait();
+    pollPlaybackUntilWorkerSettles(playback, session);
+
+    require(requests.size() == 2,
+        "cancel then restart should build exactly one request for each accepted intent");
+    require(requests[0].playbackStartSample == 1024 && requests[0].loopRange == firstLoop,
+        "first build should retain only the old accepted start and loop intent");
+    require(requests[1].playbackStartSample == 4096 && requests[1].loopRange == secondLoop,
+        "replacement build should use only the fresh start and new accepted loop intent");
+    require(host.installCallCount == 1 && host.installedPlan != nullptr
+            && host.installedPlan->playbackStartSample == 4096,
+        "replacement should install only preparation B and never preparation A");
 }
 void midiClipActionCreatesDefaultClipOnInstrumentTrack()
 {
@@ -10348,6 +10440,7 @@ int main()
     trackStateActionRejectsMissingTrackWithoutDirtyingSession();
     trackStateActionUpdatesTrackListStatusLabels();
     playbackPreparationIsQueryableAndCancellableWithoutJoiningInHandlers();
+    playbackWorkerBuildPublishesThroughIndependentCompletionState();
     playbackPreparationInstallsAndTracksHostLifecycle();
     playbackStatusAndMenuUseStructuredControllerState();
     playbackUnavailableHostAndFaultExposeStableReasons();
@@ -10358,6 +10451,7 @@ int main()
     playbackKeepsInstalledPlanDuringEditsAndRebuildsAfterStop();
     playbackRewindStopsThenPreparesAgainFromZero();
     playbackPreparationUsesCurrentStoppedHostSampleAndRequestedLoop();
+    playbackCancelledPreparationCannotReplaceNewStartAndLoopIntent();
     audioClipActionCreatesDefaultClipOnAudioTrack();
     audioClipActionCreateCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionAppendsAfterExistingTrackClips();

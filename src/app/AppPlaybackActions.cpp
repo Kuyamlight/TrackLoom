@@ -38,11 +38,33 @@ const char* stateLabel(AppPlaybackState state)
 
 }
 
+void detail::runAppPlaybackPreparationBuild(
+    const std::shared_ptr<AppPlaybackPreparationCompletionState>& completionState,
+    PreparedMidiPlaybackPlanBuildRequest request,
+    AppPlaybackPreparationKey key,
+    AppPreparedPlanBuildOperation build,
+    std::stop_token stopToken) noexcept
+{
+    PreparedMidiPlaybackPlanBuildResult result;
+    try {
+        result = build(std::move(request), stopToken);
+    } catch (...) {
+        result.failureReason = PreparedMidiPlaybackPlanBuildFailureReason::InvalidOutputFormat;
+    }
+    {
+        std::scoped_lock lock(completionState->mailboxMutex);
+        completionState->mailbox.emplace(
+            AppPlaybackPreparationCompletion { std::move(key), std::move(result) });
+    }
+    completionState->completionPublished.store(true, std::memory_order_release);
+}
+
 AppPlaybackController::AppPlaybackController(
     RealtimePlaybackHost& host,
     AppPreparedPlanBuildOperation build)
     : host_(host)
     , build_(build ? std::move(build) : AppPreparedPlanBuildOperation(buildPreparedMidiPlaybackPlan))
+    , completionState_(std::make_shared<detail::AppPlaybackPreparationCompletionState>())
 {
     const auto hostSnapshot = host_.snapshot();
     status_.state = hostSnapshot.format.available
@@ -66,7 +88,6 @@ AppPlaybackActionFeedback AppPlaybackController::start(
     AppProjectPlaybackSnapshot project,
     std::optional<PlaybackLoopRange> loopRange)
 {
-    const auto requestedStartSample = status_.projectSamplePosition;
     const auto hostSnapshot = host_.snapshot();
     updateStatusFromHost(hostSnapshot);
     if (!hostSnapshot.format.available) {
@@ -83,6 +104,9 @@ AppPlaybackActionFeedback AppPlaybackController::start(
             AppPlaybackFailureReason::HostRejected, "无法开始播放：播放控制器当前不能启动。");
     }
 
+    const auto requestedStartSample = nextPlaybackStartSample_.value_or(
+        hostSnapshot.realtime.projectSamplePosition);
+    nextPlaybackStartSample_.reset();
     playbackStartSample_ = requestedStartSample;
     loopRange_ = loopRange;
     const AppPlaybackPreparationKey key {
@@ -91,6 +115,7 @@ AppPlaybackActionFeedback AppPlaybackController::start(
         playbackStartSample_,
         loopRange_
     };
+    activePreparationKey_ = key;
     PreparedMidiPlaybackPlanBuildRequest request {
         std::move(project.project),
         hostSnapshot.format.sampleRate,
@@ -102,28 +127,24 @@ AppPlaybackActionFeedback AppPlaybackController::start(
     };
 
     {
-        std::scoped_lock lock(mailboxMutex_);
-        mailbox_.reset();
+        std::scoped_lock lock(completionState_->mailboxMutex);
+        completionState_->mailbox.reset();
     }
-    workerCompleted_.store(false, std::memory_order_release);
+    completionState_->completionPublished.store(false, std::memory_order_release);
     status_.state = AppPlaybackState::Preparing;
     status_.failureReason = AppPlaybackFailureReason::None;
     status_.canStart = false;
     updateStatusText();
     const auto build = build_;
+    const auto completionState = completionState_;
     worker_ = std::jthread(
-        [this, request = std::move(request), key, build](std::stop_token stopToken) mutable {
-            PreparedMidiPlaybackPlanBuildResult result;
-            try {
-                result = build(std::move(request), stopToken);
-            } catch (...) {
-                result.failureReason = PreparedMidiPlaybackPlanBuildFailureReason::InvalidOutputFormat;
-            }
-            {
-                std::scoped_lock lock(mailboxMutex_);
-                mailbox_.emplace(CompletedPreparation { key, std::move(result) });
-            }
-            workerCompleted_.store(true, std::memory_order_release);
+        [completionState, request = std::move(request), key, build](std::stop_token stopToken) mutable {
+            detail::runAppPlaybackPreparationBuild(
+                completionState,
+                std::move(request),
+                key,
+                build,
+                stopToken);
         });
     return feedback(true, AppPlaybackActionFeedbackKind::Success,
         AppPlaybackFailureReason::None, "已开始准备播放。");
@@ -181,6 +202,7 @@ AppPlaybackActionFeedback AppPlaybackController::rewindToStart()
             AppPlaybackFailureReason::None, "正在停止并回到开头。");
     }
     if (status_.state == AppPlaybackState::Stopped) {
+        nextPlaybackStartSample_ = defaultAppPlaybackStartSample;
         playbackStartSample_ = defaultAppPlaybackStartSample;
         status_.projectSamplePosition = defaultAppPlaybackStartSample;
         status_.renderedSampleCount = 0;
@@ -206,7 +228,7 @@ void AppPlaybackController::poll(const AppProjectSession& session)
         updateStatusFromHost(hostSnapshot);
         return;
     }
-    if (workerCompleted_.load(std::memory_order_acquire)) {
+    if (completionState_->completionPublished.load(std::memory_order_acquire)) {
         finishPreparation(session);
         hostSnapshot = host_.snapshot();
     }
@@ -222,6 +244,7 @@ void AppPlaybackController::poll(const AppProjectSession& session)
         status_.failureReason = AppPlaybackFailureReason::None;
         if (rewindAfterStop_) {
             rewindAfterStop_ = false;
+            nextPlaybackStartSample_ = defaultAppPlaybackStartSample;
             playbackStartSample_ = defaultAppPlaybackStartSample;
             status_.projectSamplePosition = defaultAppPlaybackStartSample;
             status_.renderedSampleCount = 0;
@@ -246,19 +269,22 @@ void AppPlaybackController::finishPreparation(const AppProjectSession& session)
     if (worker_.joinable()) {
         worker_.join();
     }
-    workerCompleted_.store(false, std::memory_order_release);
-    std::optional<CompletedPreparation> completed;
+    completionState_->completionPublished.store(false, std::memory_order_release);
+    std::optional<detail::AppPlaybackPreparationCompletion> completed;
     {
-        std::scoped_lock lock(mailboxMutex_);
-        completed = std::move(mailbox_);
-        mailbox_.reset();
+        std::scoped_lock lock(completionState_->mailboxMutex);
+        completed = std::move(completionState_->mailbox);
+        completionState_->mailbox.reset();
     }
     if (!completed.has_value()) {
+        activePreparationKey_.reset();
         status_.state = AppPlaybackState::Faulted;
         status_.failureReason = AppPlaybackFailureReason::PreparationFailed;
         updateStatusText();
         return;
     }
+    const auto acceptedKey = activePreparationKey_;
+    activePreparationKey_.reset();
     if (status_.state == AppPlaybackState::Stopping) {
         status_.state = AppPlaybackState::Stopped;
         status_.failureReason = AppPlaybackFailureReason::PreparationCancelled;
@@ -272,13 +298,12 @@ void AppPlaybackController::finishPreparation(const AppProjectSession& session)
     }
 
     const auto format = host_.deviceFormatSnapshot();
-    const AppPlaybackPreparationKey currentKey {
-        session.projectEditGeneration(),
-        format.generation,
-        playbackStartSample_,
-        loopRange_
-    };
-    if (completed->key != currentKey || !format.available) {
+    const auto completedWrongIntent = !acceptedKey.has_value()
+        || completed->key != *acceptedKey;
+    const auto acceptedIntentIsStale = !acceptedKey.has_value()
+        || acceptedKey->projectEditGeneration != session.projectEditGeneration()
+        || acceptedKey->deviceFormatGeneration != format.generation;
+    if (completedWrongIntent || acceptedIntentIsStale || !format.available) {
         status_.state = format.available
             ? AppPlaybackState::Stopped
             : AppPlaybackState::Unavailable;
