@@ -65,7 +65,8 @@ enum class AppMainMenuCommand {
     MoveSelectedAudioClipToTargetTrack = 1272,
     // 工具入口只打开本地 UI 状态，不直接修改工程。
     OpenCommandPalette = 1301,
-    OpenShortcutStatus = 1302
+    OpenShortcutStatus = 1302,
+    OpenAudioSettings = 1303
 };
 
 struct AppMainMenuItem {

@@ -1,4 +1,5 @@
 #include "AppAudioClipActions.h"
+#include "AppAudioSettings.h"
 #include "AppCommandDispatcher.h"
 #include "AppCommandPalette.h"
 #include "AppCommandPaletteSession.h"
@@ -197,6 +198,170 @@ void appInfoExposesStableDesktopIdentity()
         "desktop app info should match the CMake project version");
     require(info.organizationName == "TrackLoom",
         "desktop app info should expose the local settings organization name");
+}
+
+void missingAudioSettingsUseDocumentedDefaults()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "missing-audio-settings.txt";
+    const auto loaded = trackloom::loadAppAudioSettings(path);
+    require(loaded.kind == trackloom::AppAudioSettingsLoadKind::Missing,
+            "missing settings should have a stable load kind");
+    require(loaded.settings.requestedSampleRate == 48000.0,
+            "missing settings should request 48 kHz");
+    require(loaded.settings.requestedBufferFrames == 256,
+            "missing settings should request 256 frames");
+    require(loaded.settings.requestedOutputChannels == 2,
+            "missing settings should request stereo");
+    require(trackloom::appMainMenuCommandId(
+                trackloom::AppMainMenuCommand::OpenAudioSettings) == 1303,
+            "audio settings command id must stay stable");
+}
+
+void audioSettingsSaveAndLoadUseTheDocumentedFiveLineFormat()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "settings" / "audio-settings.txt";
+    const trackloom::AppAudioSettings settings { "USB \xE8\x80\xB3\xE6\x9C\xBA", 44100.0, 512, 1 };
+
+    require(trackloom::saveAppAudioSettings(settings, path),
+            "audio settings should save to a new local settings file");
+
+    std::ifstream input(path, std::ios::binary);
+    std::string serialized((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    require(serialized
+                == "trackloom_audio_settings 1\n"
+                   "output_device \"USB \xE8\x80\xB3\xE6\x9C\xBA\"\n"
+                   "sample_rate 44100\n"
+                   "buffer_frames 512\n"
+                   "output_channels 1\n",
+            "audio settings should use the documented fixed five-line UTF-8 format");
+
+    const auto loaded = trackloom::loadAppAudioSettings(path);
+    require(loaded.kind == trackloom::AppAudioSettingsLoadKind::Loaded,
+            "valid audio settings should report loaded");
+    require(loaded.settings.outputDeviceName == settings.outputDeviceName,
+            "audio settings should round-trip the quoted UTF-8 device name");
+    require(loaded.settings.requestedSampleRate == settings.requestedSampleRate,
+            "audio settings should round-trip the requested sample rate");
+    require(loaded.settings.requestedBufferFrames == settings.requestedBufferFrames,
+            "audio settings should round-trip the requested buffer size");
+    require(loaded.settings.requestedOutputChannels == settings.requestedOutputChannels,
+            "audio settings should round-trip the requested output channels");
+}
+
+void audioSettingsSavePreservesUnicodeSettingsPaths()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace()
+        / std::filesystem::path(L"audio-\U0001F3A7")
+        / L"audio-settings.txt";
+    const trackloom::AppAudioSettings settings { "Unicode Path Output", 48000.0, 256, 2 };
+
+    require(trackloom::saveAppAudioSettings(settings, path),
+            "audio settings should save below a Unicode local settings path");
+    const auto loaded = trackloom::loadAppAudioSettings(path);
+    require(loaded.kind == trackloom::AppAudioSettingsLoadKind::Loaded
+                && loaded.settings.outputDeviceName == settings.outputDeviceName,
+            "audio settings should load from the same Unicode local settings path");
+}
+
+void invalidAudioSettingsLoadAsDefaultsAndCannotOverwriteSavedSettings()
+{
+    removeTestWorkspace();
+    const auto path = testWorkspace() / "settings" / "audio-settings.txt";
+    const trackloom::AppAudioSettings valid { "Studio Output", 48000.0, 256, 2 };
+    require(trackloom::saveAppAudioSettings(valid, path),
+            "invalid settings test should save a valid baseline file");
+
+    std::ifstream originalInput(path, std::ios::binary);
+    const std::string original((std::istreambuf_iterator<char>(originalInput)),
+        std::istreambuf_iterator<char>());
+    const trackloom::AppAudioSettings invalid { "Broken", std::numeric_limits<double>::infinity(), 0, 3 };
+    require(!trackloom::saveAppAudioSettings(invalid, path),
+            "invalid settings should not be saved");
+    std::ifstream afterFailedSaveInput(path, std::ios::binary);
+    const std::string afterFailedSave((std::istreambuf_iterator<char>(afterFailedSaveInput)),
+        std::istreambuf_iterator<char>());
+    require(afterFailedSave == original,
+            "a failed save should leave the existing local settings file unchanged");
+    require(valid.outputDeviceName == "Studio Output" && valid.requestedBufferFrames == 256,
+            "a failed save should not mutate caller-owned settings");
+
+    const std::string invalidFiles[] = {
+        "trackloom_audio_settings 2\noutput_device \"Output\"\nsample_rate 48000\nbuffer_frames 256\noutput_channels 2\n",
+        "trackloom_audio_settings 1\noutput_device \"Output\"\nsample_rate nan\nbuffer_frames 256\noutput_channels 2\n",
+        "trackloom_audio_settings 1\noutput_device \"Output\"\nsample_rate inf\nbuffer_frames 256\noutput_channels 2\n",
+        "trackloom_audio_settings 1\noutput_device \"Output\"\nsample_rate 48000\nbuffer_frames 0\noutput_channels 2\n",
+        "trackloom_audio_settings 1\noutput_device \"Output\"\nsample_rate 48000\nbuffer_frames 256\noutput_channels 3\n",
+        "trackloom_audio_settings 1\noutput_device Output\nsample_rate 48000\nbuffer_frames 256\noutput_channels 2\n",
+        "trackloom_audio_settings 1\noutput_device \"Output\"\nsample_rate 48000\nbuffer_frames 256\noutput_channels 2\ntrailing\n"
+        , "trackloom_audio_settings 1 output_device \"Output\" sample_rate 48000 buffer_frames 256 output_channels 2\n"
+    };
+    for (const auto& invalidFile : invalidFiles) {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output << invalidFile;
+        output.close();
+        const auto loaded = trackloom::loadAppAudioSettings(path);
+        require(loaded.kind == trackloom::AppAudioSettingsLoadKind::Invalid,
+                "invalid audio settings must expose the stable invalid kind");
+        require(loaded.settings.requestedSampleRate == 48000.0
+                    && loaded.settings.requestedBufferFrames == 256
+                    && loaded.settings.requestedOutputChannels == 2,
+                "invalid audio settings must fall back to documented defaults");
+        require(!loaded.warning.empty(),
+                "invalid audio settings must provide a warning");
+    }
+
+    const auto blockedParent = testWorkspace() / "blocked-parent";
+    {
+        std::ofstream blocker(blockedParent, std::ios::binary);
+        blocker << "not a directory";
+    }
+    require(!trackloom::saveAppAudioSettings(valid, blockedParent / "audio-settings.txt"),
+            "audio settings save should fail when its parent is a file");
+    std::ifstream unchangedInput(path, std::ios::binary);
+    const std::string afterFilesystemFailure(
+        (std::istreambuf_iterator<char>(unchangedInput)),
+        std::istreambuf_iterator<char>());
+    require(afterFilesystemFailure == invalidFiles[sizeof(invalidFiles) / sizeof(invalidFiles[0]) - 1],
+            "filesystem save failure should not overwrite an existing settings file");
+}
+
+void audioSettingsCommandAppearsInToolsAndDispatches()
+{
+    trackloom::AppProjectSession session;
+    session.createNewProject("Audio Settings Command");
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
+    trackloom::AppRecentProjects recent;
+    const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    const auto commandId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenAudioSettings);
+    const auto palette = trackloom::describeAppCommandPalette(menu);
+    const trackloom::AppCommandPaletteItem* paletteItem = nullptr;
+    for (const auto& item : palette.items) {
+        if (item.commandId == commandId) {
+            paletteItem = &item;
+            break;
+        }
+    }
+    require(menu.groups[5].items.back().commandId == commandId
+                && menu.groups[5].items.back().enabled
+                && menu.groups[5].items.back().label == "音频设置…",
+            "tools menu should expose enabled audio settings command");
+    require(paletteItem != nullptr && paletteItem->label == "音频设置…",
+            "command palette should make audio settings searchable");
+
+    int calls = 0;
+    trackloom::AppCommandHandlers handlers;
+    handlers.openAudioSettings = [&] { ++calls; };
+    const auto dispatched = trackloom::dispatchAppCommand(commandId, handlers);
+    require(dispatched.executed && dispatched.command == trackloom::AppCommandKind::OpenAudioSettings
+                && calls == 1,
+            "audio settings command should dispatch its handler once");
+    const auto missing = trackloom::dispatchAppCommand(commandId, {});
+    require(!missing.executed && missing.kind == trackloom::AppCommandDispatchResultKind::MissingHandler,
+            "audio settings command should report a missing handler");
 }
 
 void projectPlaybackGenerationTracksOnlyPossibleContentChanges()
@@ -1338,7 +1503,7 @@ void mainMenuDescribesFileAndPlaybackCommands()
         "stop command should be disabled while playback is stopped");
     require(!menu.groups[4].items[2].enabled,
         "rewind command should be disabled before the playback head moves");
-    require(menu.groups[5].items.size() == 2,
+    require(menu.groups[5].items.size() == 3,
         "tools menu should expose the current utility commands");
     require(menu.groups[5].items[0].commandId
             == trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenCommandPalette),
@@ -1655,7 +1820,7 @@ void commandPaletteFlattensMenuCommandsWithoutSeparatorsOrInfoRows()
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
     const auto palette = trackloom::describeAppCommandPalette(menu);
 
-    require(palette.items.size() == 36,
+    require(palette.items.size() == 37,
         "command palette should include menu commands but skip separators and disabled info rows");
     require(palette.items[0].groupName == "文件" && palette.items[0].label == "新建工程",
         "command palette should preserve the file menu group and command label");
@@ -10308,7 +10473,11 @@ void trackListStatusDescribesTrackPlaybackAndViewFlags()
 int main()
 {
     configureTestFailureOutput();
-
+    missingAudioSettingsUseDocumentedDefaults();
+    audioSettingsSaveAndLoadUseTheDocumentedFiveLineFormat();
+    audioSettingsSavePreservesUnicodeSettingsPaths();
+    invalidAudioSettingsLoadAsDefaultsAndCannotOverwriteSavedSettings();
+    audioSettingsCommandAppearsInToolsAndDispatches();
     appInfoExposesStableDesktopIdentity();
     projectPlaybackGenerationTracksOnlyPossibleContentChanges();
     projectPlaybackGenerationTracksCommandsFilesAndIndependentSnapshots();

@@ -1,5 +1,6 @@
 add_library(trackloom_app_support STATIC
     AppAudioClipActions.cpp
+    AppAudioSettings.cpp
     AppCommandDispatcher.cpp
     AppCommandPalette.cpp
     AppCommandPaletteSession.cpp

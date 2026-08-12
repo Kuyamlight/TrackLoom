@@ -132,6 +132,8 @@ AppCommandKind appCommandKindFromMainMenuCommand(AppMainMenuCommand command)
         return AppCommandKind::OpenCommandPalette;
     case AppMainMenuCommand::OpenShortcutStatus:
         return AppCommandKind::OpenShortcutStatus;
+    case AppMainMenuCommand::OpenAudioSettings:
+        return AppCommandKind::OpenAudioSettings;
     }
 
     return AppCommandKind::Unknown;
@@ -271,6 +273,8 @@ AppCommandDispatchResult dispatchAppCommand(
         return runSimpleCommand(command, handlers.openCommandPalette);
     case AppCommandKind::OpenShortcutStatus:
         return runSimpleCommand(command, handlers.openShortcutStatus);
+    case AppCommandKind::OpenAudioSettings:
+        return runSimpleCommand(command, handlers.openAudioSettings);
     case AppCommandKind::OpenRecentProject:
     case AppCommandKind::Unknown:
         break;

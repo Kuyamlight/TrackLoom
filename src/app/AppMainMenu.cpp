@@ -324,6 +324,10 @@ AppMainMenuStatus describeAppMainMenu(
         AppMainMenuCommand::OpenShortcutStatus,
         "快捷键状态...",
         true));
+    toolsMenu.items.push_back(commandItem(
+        AppMainMenuCommand::OpenAudioSettings,
+        "音频设置…",
+        true));
 
     status.groups.push_back(std::move(fileMenu));
     status.groups.push_back(std::move(editMenu));
