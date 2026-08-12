@@ -597,8 +597,7 @@ void JuceAudioHost::audioDeviceAboutToStart(juce::AudioIODevice* device)
         std::memory_order_relaxed);
     impl_->startOutputChannelMask.store(outputChannelMask, std::memory_order_relaxed);
     const auto mismatch = sampleRate != impl_->format.sampleRate
-        || blockFrames <= 0
-        || blockFrames > impl_->format.maximumBlockFrames
+        || blockFrames != impl_->format.maximumBlockFrames
         || outputChannelCount != impl_->format.outputChannelCount
         || outputChannelMask != impl_->format.outputChannelMask;
     impl_->formatMismatch.store(mismatch ? 1u : 0u, std::memory_order_release);

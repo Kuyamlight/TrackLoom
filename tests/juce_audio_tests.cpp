@@ -611,7 +611,7 @@ void juceAudioHostPublishesAndGuardsUnexpectedStartFormatChanges()
         if (mismatch == 0) {
             observedType->setStartFormat(44100.0, 256, 2);
         } else if (mismatch == 1) {
-            observedType->setStartFormat(48000.0, 512, 2);
+            observedType->setStartFormat(48000.0, 128, 2);
         } else if (mismatch == 2) {
             observedType->setStartFormat(48000.0, 256, 1);
         } else {
@@ -638,8 +638,8 @@ void juceAudioHostPublishesAndGuardsUnexpectedStartFormatChanges()
             require(changedFormat.sampleRate == 44100.0,
                 "sample-rate-only start changes must update the snapshot");
         } else if (mismatch == 1) {
-            require(changedFormat.maximumBlockFrames == 512,
-                "larger start blocks must update the prepared maximum");
+            require(changedFormat.maximumBlockFrames == 128,
+                "smaller start blocks must still update the exact format snapshot");
         } else if (mismatch == 2) {
             require(changedFormat.outputChannelCount == 1
                     && changedFormat.outputChannelMask == 1,
