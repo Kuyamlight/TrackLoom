@@ -34,13 +34,29 @@ const Project& AppProjectSession::project() const
     return project_;
 }
 
+std::uint64_t AppProjectSession::projectEditGeneration() const noexcept
+{
+    return projectEditGeneration_;
+}
+
+AppProjectPlaybackSnapshot AppProjectSession::capturePlaybackSnapshot() const
+{
+    return { project_, projectEditGeneration_ };
+}
+
 Project& AppProjectSession::editProject()
 {
     // 直接暴露可编辑工程是兼容旧应用动作的过渡入口。
     // 这些修改不会进入 CommandStack，因此必须清空旧历史，避免未来 undo 跳过未记录的编辑。
     commandStack_ = CommandStack {};
     dirty_ = true;
+    advanceProjectEditGeneration();
     return project_;
+}
+
+void AppProjectSession::advanceProjectEditGeneration() noexcept
+{
+    ++projectEditGeneration_;
 }
 
 const std::optional<std::filesystem::path>& AppProjectSession::currentProjectPath() const
@@ -62,6 +78,7 @@ CommandResult AppProjectSession::executeProjectCommand(std::unique_ptr<Command> 
     const auto result = commandStack_.execute(project_, std::move(command));
     if (result.success) {
         dirty_ = true;
+        advanceProjectEditGeneration();
     }
 
     return result;
@@ -74,6 +91,7 @@ bool AppProjectSession::undoProjectEdit()
     }
 
     dirty_ = true;
+    advanceProjectEditGeneration();
     return true;
 }
 
@@ -84,6 +102,7 @@ bool AppProjectSession::redoProjectEdit()
     }
 
     dirty_ = true;
+    advanceProjectEditGeneration();
     return true;
 }
 
@@ -103,6 +122,7 @@ void AppProjectSession::createNewProject(std::string name)
     commandStack_ = CommandStack {};
     currentProjectPath_.reset();
     dirty_ = false;
+    advanceProjectEditGeneration();
 }
 
 AppProjectSessionResult AppProjectSession::save()
@@ -143,6 +163,7 @@ AppProjectSessionResult AppProjectSession::openFrom(const std::filesystem::path&
     commandStack_ = CommandStack {};
     currentProjectPath_ = path;
     dirty_ = false;
+    advanceProjectEditGeneration();
     return AppProjectSessionResult::ok();
 }
 

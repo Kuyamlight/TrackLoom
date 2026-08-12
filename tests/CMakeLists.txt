@@ -20,6 +20,13 @@ target_link_libraries(trackloom_app_support_tests
 
 add_test(NAME trackloom_app_support_tests COMMAND trackloom_app_support_tests)
 
+if(TARGET trackloom_app)
+    add_test(NAME trackloom_app_hidden_smoke_tests
+        COMMAND trackloom_app --hidden-smoke-test)
+    set_tests_properties(trackloom_app_hidden_smoke_tests
+        PROPERTIES TIMEOUT 10)
+endif()
+
 if(TARGET trackloom_juce)
     add_executable(trackloom_juce_audio_tests
         juce_audio_tests.cpp

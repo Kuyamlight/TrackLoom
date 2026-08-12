@@ -298,14 +298,16 @@ AppMainMenuStatus describeAppMainMenu(
 
     AppMainMenuGroup playbackMenu;
     playbackMenu.name = "播放";
+    const auto playbackStatus = playback.status();
     playbackMenu.items.push_back(commandItem(
         AppMainMenuCommand::PlayProject,
         "播放",
-        !playback.isPlaying()));
+        playbackStatus.canStart));
     playbackMenu.items.push_back(commandItem(
         AppMainMenuCommand::StopProject,
         "停止",
-        playback.isPlaying()));
+        playbackStatus.state == AppPlaybackState::Preparing
+            || playbackStatus.state == AppPlaybackState::Playing));
     playbackMenu.items.push_back(commandItem(
         AppMainMenuCommand::RewindProject,
         "回到开头",

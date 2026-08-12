@@ -17,6 +17,7 @@
 #include "AppTrackListStatus.h"
 #include "AppTrackStateActions.h"
 #include "TrackLoomAppInfo.h"
+#include "JuceAudioHost.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -1254,14 +1255,7 @@ private:
 
     void timerCallback() override
     {
-        const auto feedback = trackloom::advanceAppPlaybackForUiTick(playback_, session_.project());
-        if (!feedback.success) {
-            lastActionMessage_ = feedback.message;
-            stopTimer();
-        } else if (feedback.kind == trackloom::AppPlaybackActionFeedbackKind::NoOp) {
-            stopTimer();
-        }
-
+        playback_.poll(session_);
         refreshFromSession();
     }
 
@@ -1485,46 +1479,32 @@ private:
 
     void startProjectPlayback()
     {
-        const auto feedback = trackloom::startAppPlayback(playback_, session_.project());
+        const auto feedback = trackloom::startAppPlayback(playback_, session_);
         lastActionMessage_ = feedback.message;
-        if (feedback.success) {
-            // 当前阶段还没有真实音频设备回调；先用 UI Timer 推进可见播放头。
-            // 后续接入声卡时，应改由设备 block 回调驱动播放会话。
-            startTimerHz(30);
-        }
+        startTimerHz(30);
         refreshFromSession();
     }
 
     void stopProjectPlayback()
     {
-        const auto feedback = trackloom::stopAppPlayback(playback_, session_.project());
+        const auto feedback = trackloom::stopAppPlayback(playback_);
         lastActionMessage_ = feedback.message;
-        if (feedback.success) {
-            stopTimer();
-        }
         refreshFromSession();
     }
 
     void toggleProjectPlayback()
     {
-        const auto feedback = trackloom::toggleAppPlayback(playback_, session_.project());
+        const auto feedback = trackloom::toggleAppPlayback(playback_, session_);
         lastActionMessage_ = feedback.message;
-        // Timer 只跟随成功后的真实播放状态，避免快捷键和按钮各自维护一套状态。
-        if (feedback.success && playback_.isPlaying()) {
-            startTimerHz(30);
-        } else if (feedback.success) {
-            stopTimer();
-        }
+        startTimerHz(30);
         refreshFromSession();
     }
 
     void rewindProjectPlayback()
     {
-        const auto feedback = trackloom::rewindAppPlaybackToStart(playback_, session_.project());
+        const auto feedback = trackloom::rewindAppPlaybackToStart(playback_);
         lastActionMessage_ = feedback.message;
-        if (feedback.success && playback_.isPlaying()) {
-            startTimerHz(30);
-        }
+        startTimerHz(30);
         refreshFromSession();
     }
 
@@ -2753,8 +2733,10 @@ private:
         playbackStatusLabel_.setText(toJuceString(playbackStatus.summary), juce::dontSendNotification);
         trackSummaryLabel_.setText(toJuceString(trackSummaryText(status)), juce::dontSendNotification);
         actionLabel_.setText(toJuceString(lastActionMessage_), juce::dontSendNotification);
-        playProjectButton_.setEnabled(!playback_.isPlaying());
-        stopProjectButton_.setEnabled(playback_.isPlaying());
+        playProjectButton_.setEnabled(playbackStatus.canStart);
+        stopProjectButton_.setEnabled(
+            playbackStatus.state == trackloom::AppPlaybackState::Preparing
+            || playbackStatus.state == trackloom::AppPlaybackState::Playing);
         rewindProjectButton_.setEnabled(playback_.currentSample() > 0);
         trackListText_.setText(
             toJuceString(trackListText(trackloom::describeAppTrackList(session_.project()))),
@@ -2851,7 +2833,8 @@ private:
     }
 
     trackloom::AppProjectSession session_;
-    trackloom::AppPlaybackController playback_;
+    trackloom::JuceAudioHost audioHost_;
+    trackloom::AppPlaybackController playback_ { audioHost_ };
     std::function<void(std::string)> titleChanged_;
     std::unique_ptr<juce::FileChooser> fileChooser_;
     std::filesystem::path recentProjectsSettingsPath_;
@@ -2992,7 +2975,8 @@ public:
     }
 };
 
-class TrackLoomApplication final : public juce::JUCEApplication {
+class TrackLoomApplication final : public juce::JUCEApplication,
+                                   private juce::Timer {
 public:
     const juce::String getApplicationName() override
     {
@@ -3009,8 +2993,12 @@ public:
         return true;
     }
 
-    void initialise(const juce::String&) override
+    void initialise(const juce::String& commandLine) override
     {
+        if (commandLine.contains("--hidden-smoke-test")) {
+            startTimer(250);
+            return;
+        }
         mainWindow_ = std::make_unique<MainWindow>(getApplicationName());
     }
 
@@ -3029,6 +3017,12 @@ public:
     }
 
 private:
+    void timerCallback() override
+    {
+        stopTimer();
+        juce::JUCEApplicationBase::quit();
+    }
+
     std::unique_ptr<MainWindow> mainWindow_;
 };
 

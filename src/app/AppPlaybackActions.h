@@ -1,26 +1,22 @@
 #pragma once
 
-#include "Project.h"
-#include "ProjectPlaybackSession.h"
-#include "Transport.h"
+#include "AppProjectSession.h"
+#include "PreparedMidiPlaybackPlan.h"
+#include "RealtimePlaybackHost.h"
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <stop_token>
 #include <string>
-#include <vector>
+#include <thread>
 
 namespace trackloom {
 
-// 首屏播放控制先使用固定、安全的本地运行参数。
-// 真实音频设备接入后，这些值会由设备回调配置覆盖。
-inline constexpr double defaultAppPlaybackSampleRate = 44100.0;
-inline constexpr int defaultAppPlaybackChannelCount = 2;
-inline constexpr int defaultAppPlaybackMaxBlockFrames = 512;
-inline constexpr int defaultAppPlaybackUiBlockFrames = 512;
-inline constexpr int defaultAppPlaybackReleaseSampleOffset = 0;
 inline constexpr std::int64_t defaultAppPlaybackStartSample = 0;
 
-// AppPlaybackActionFeedbackKind 给 UI 和测试提供稳定分支。
-// 播放控制是运行态动作，不应进入工程撤销栈，也不应标脏工程。
 enum class AppPlaybackActionFeedbackKind {
     Success,
     NoOp,
@@ -30,66 +26,110 @@ enum class AppPlaybackActionFeedbackKind {
     RenderFailed
 };
 
+enum class AppPlaybackState {
+    Unavailable,
+    Stopped,
+    Preparing,
+    Playing,
+    Stopping,
+    Faulted
+};
+
+enum class AppPlaybackFailureReason {
+    None,
+    NoAudioDevice,
+    PreparationCancelled,
+    PreparationFailed,
+    StalePreparation,
+    HostRejected,
+    DeviceFault
+};
+
 struct AppPlaybackActionFeedback {
     bool success = false;
     AppPlaybackActionFeedbackKind kind = AppPlaybackActionFeedbackKind::PrepareFailed;
+    AppPlaybackFailureReason failureReason = AppPlaybackFailureReason::None;
     std::string message;
 };
 
-// AppPlaybackStatus 是首屏读取播放状态的只读快照。
-// UI 应读取结构化字段，不要解析 summary 文案。
 struct AppPlaybackStatus {
-    bool prepared = false;
-    bool playing = false;
-    std::int64_t currentSample = 0;
-    double currentSeconds = 0.0;
+    AppPlaybackState state = AppPlaybackState::Stopped;
+    AppPlaybackFailureReason failureReason = AppPlaybackFailureReason::None;
+    bool deviceAvailable = false;
+    bool canStart = false;
+    std::int64_t projectSamplePosition = 0;
+    std::uint64_t renderedSampleCount = 0;
+    double projectSeconds = 0.0;
     std::string stateLabel;
     std::string summary;
 };
 
-// AppPlaybackController 保存桌面壳的运行态播放对象。
-// 它不属于 Project 文件格式；打开、新建或关闭工程时可按应用需要重置。
-class AppPlaybackController {
+struct AppPlaybackPreparationKey {
+    std::uint64_t projectEditGeneration = 0;
+    std::uint64_t deviceFormatGeneration = 0;
+    std::int64_t playbackStartSample = 0;
+    std::optional<PlaybackLoopRange> loopRange;
+    bool operator==(const AppPlaybackPreparationKey&) const = default;
+};
+
+using AppPreparedPlanBuildOperation = std::function<
+    PreparedMidiPlaybackPlanBuildResult(
+        PreparedMidiPlaybackPlanBuildRequest,
+        std::stop_token)>;
+
+class AppPlaybackController final {
 public:
-    bool ensurePrepared(const Project& project);
+    explicit AppPlaybackController(
+        RealtimePlaybackHost& host,
+        AppPreparedPlanBuildOperation build = buildPreparedMidiPlaybackPlan);
+    ~AppPlaybackController();
 
-    bool isPrepared() const;
-    bool isPlaying() const;
-    std::int64_t currentSample() const;
-    double currentSeconds() const;
+    AppPlaybackController(const AppPlaybackController&) = delete;
+    AppPlaybackController& operator=(const AppPlaybackController&) = delete;
 
-    void start();
-    bool stop(const Project& project);
-    bool rewindToStart(const Project& project);
-    bool advanceOneUiBlock(const Project& project);
+    AppPlaybackActionFeedback start(
+        AppProjectPlaybackSnapshot project,
+        std::optional<PlaybackLoopRange> loopRange = std::nullopt);
+    AppPlaybackActionFeedback stop();
+    AppPlaybackActionFeedback rewindToStart();
+    void poll(const AppProjectSession& session);
+    AppPlaybackStatus status() const;
+    bool isPlaying() const noexcept;
+    std::int64_t currentSample() const noexcept;
+    double currentSeconds() const noexcept;
 
 private:
-    ProjectPlaybackSession playbackSession_;
-    Transport transport_;
-    std::vector<float> scratchAudioBuffer_;
+    struct CompletedPreparation {
+        AppPlaybackPreparationKey key;
+        PreparedMidiPlaybackPlanBuildResult result;
+    };
+
+    void updateStatusFromHost(const RealtimePlaybackHostSnapshot& hostSnapshot);
+    void updateStatusText();
+    void finishPreparation(const AppProjectSession& session);
+
+    RealtimePlaybackHost& host_;
+    AppPreparedPlanBuildOperation build_;
+    AppPlaybackStatus status_;
+    std::int64_t playbackStartSample_ = defaultAppPlaybackStartSample;
+    std::optional<PlaybackLoopRange> loopRange_;
+    bool rewindAfterStop_ = false;
+    std::jthread worker_;
+    mutable std::mutex mailboxMutex_;
+    std::optional<CompletedPreparation> mailbox_;
+    std::atomic<bool> workerCompleted_ { false };
 };
 
 AppPlaybackActionFeedback startAppPlayback(
     AppPlaybackController& playback,
-    const Project& project);
-
-AppPlaybackActionFeedback stopAppPlayback(
-    AppPlaybackController& playback,
-    const Project& project);
-
-// 播放/停止切换是给按钮、快捷键、菜单和 AI 工具复用的统一入口；
-// UI 不需要自己判断 isPlaying 后再复制开始、停止和错误反馈规则。
+    const AppProjectSession& session,
+    std::optional<PlaybackLoopRange> loopRange = std::nullopt);
+AppPlaybackActionFeedback stopAppPlayback(AppPlaybackController& playback);
 AppPlaybackActionFeedback toggleAppPlayback(
     AppPlaybackController& playback,
-    const Project& project);
-
+    const AppProjectSession& session);
 AppPlaybackActionFeedback rewindAppPlaybackToStart(
-    AppPlaybackController& playback,
-    const Project& project);
-
-AppPlaybackActionFeedback advanceAppPlaybackForUiTick(
-    AppPlaybackController& playback,
-    const Project& project);
+    AppPlaybackController& playback);
 
 AppPlaybackStatus describeAppPlayback(const AppPlaybackController& playback);
 

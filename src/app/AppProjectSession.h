@@ -5,12 +5,18 @@
 #include "ProjectFile.h"
 
 #include <filesystem>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace trackloom {
+
+struct AppProjectPlaybackSnapshot {
+    Project project;
+    std::uint64_t projectEditGeneration = 0;
+};
 
 // AppProjectSessionFailureReason 给 UI 和快捷键提供稳定失败原因。
 // message 只用于显示或日志，不应作为逻辑分支依据。
@@ -55,6 +61,8 @@ public:
     explicit AppProjectSession(detail::ProjectSaveOperation saveOperation);
 
     const Project& project() const;
+    std::uint64_t projectEditGeneration() const noexcept;
+    AppProjectPlaybackSnapshot capturePlaybackSnapshot() const;
 
     // 请求可编辑工程时先标记 dirty，避免调用方改了工程却忘记告诉桌面壳。
     Project& editProject();
@@ -77,10 +85,13 @@ public:
     AppProjectSessionResult openFrom(const std::filesystem::path& path);
 
 private:
+    void advanceProjectEditGeneration() noexcept;
+
     Project project_;
     CommandStack commandStack_;
     std::optional<std::filesystem::path> currentProjectPath_;
     bool dirty_ = false;
+    std::uint64_t projectEditGeneration_ = 0;
     detail::ProjectSaveOperation saveOperation_;
 };
 

@@ -27,8 +27,11 @@
 
 #include <filesystem>
 #include <fstream>
+#include <atomic>
 #include <iostream>
+#include <latch>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -55,6 +58,135 @@ void require(bool condition, const std::string& message)
     }
 }
 
+std::filesystem::path testWorkspace();
+void removeTestWorkspace();
+
+class FakeRealtimePlaybackHost final : public trackloom::RealtimePlaybackHost {
+public:
+    FakeRealtimePlaybackHost()
+    {
+        snapshot_.format = {
+            1, "fake-device", "Fake Speakers", 48000.0, 256, 2, 3, true
+        };
+        snapshot_.realtime.state = trackloom::RealtimePlaybackState::Stopped;
+    }
+
+    trackloom::AudioDeviceFormatSnapshot deviceFormatSnapshot() const override
+    {
+        std::scoped_lock lock(mutex_);
+        return snapshot_.format;
+    }
+
+    trackloom::RealtimePlaybackHostResult installAndStart(
+        std::unique_ptr<const trackloom::PreparedMidiPlaybackPlan> plan) override
+    {
+        std::scoped_lock lock(mutex_);
+        ++installCallCount;
+        installedPlan = std::move(plan);
+        if (!installResult.success) {
+            return installResult;
+        }
+        snapshot_.realtime.projectSamplePosition = installedPlan->playbackStartSample;
+        snapshot_.realtime.renderedSampleCount = 0;
+        snapshot_.realtime.state = trackloom::RealtimePlaybackState::Playing;
+        return installResult;
+    }
+
+    bool requestStop() noexcept override
+    {
+        std::scoped_lock lock(mutex_);
+        ++stopCallCount;
+        if (requestStopResult) {
+            snapshot_.realtime.state = trackloom::RealtimePlaybackState::Stopping;
+        }
+        return requestStopResult;
+    }
+
+    void serviceNonRealtime() override
+    {
+        std::scoped_lock lock(mutex_);
+        ++serviceCallCount;
+    }
+
+    void hardStopAndReset() noexcept override
+    {
+        std::scoped_lock lock(mutex_);
+        snapshot_.realtime.state = trackloom::RealtimePlaybackState::Stopped;
+    }
+
+    trackloom::RealtimePlaybackHostSnapshot snapshot() const override
+    {
+        std::scoped_lock lock(mutex_);
+        return snapshot_;
+    }
+
+    void setDeviceAvailable(bool available)
+    {
+        std::scoped_lock lock(mutex_);
+        snapshot_.format.available = available;
+    }
+
+    void setFormatGeneration(std::uint64_t generation)
+    {
+        std::scoped_lock lock(mutex_);
+        snapshot_.format.generation = generation;
+    }
+
+    void setRealtimeState(trackloom::RealtimePlaybackState state)
+    {
+        std::scoped_lock lock(mutex_);
+        snapshot_.realtime.state = state;
+    }
+
+    void setRealtimePosition(std::int64_t sample, std::uint64_t rendered)
+    {
+        std::scoped_lock lock(mutex_);
+        snapshot_.realtime.projectSamplePosition = sample;
+        snapshot_.realtime.renderedSampleCount = rendered;
+    }
+
+    trackloom::RealtimePlaybackHostResult installResult {
+        true, trackloom::RealtimePlaybackHostFailureReason::None, "started"
+    };
+    bool requestStopResult = true;
+    int installCallCount = 0;
+    int stopCallCount = 0;
+    int serviceCallCount = 0;
+    std::unique_ptr<const trackloom::PreparedMidiPlaybackPlan> installedPlan;
+
+private:
+    mutable std::mutex mutex_;
+    trackloom::RealtimePlaybackHostSnapshot snapshot_;
+};
+
+trackloom::PreparedMidiPlaybackPlanBuildResult makeFakePreparedPlan(
+    const trackloom::PreparedMidiPlaybackPlanBuildRequest& request)
+{
+    auto plan = std::make_unique<trackloom::PreparedMidiPlaybackPlan>();
+    plan->sampleRate = request.sampleRate;
+    plan->maximumBlockFrames = request.maximumBlockFrames;
+    plan->outputChannelCount = request.outputChannelCount;
+    plan->outputChannelMask = request.outputChannelMask;
+    plan->playbackStartSample = request.playbackStartSample;
+    return { trackloom::PreparedMidiPlaybackPlanBuildFailureReason::None, std::move(plan) };
+}
+
+void pollPlaybackUntilWorkerSettles(
+    trackloom::AppPlaybackController& playback,
+    const trackloom::AppProjectSession& session)
+{
+    for (int attempt = 0; attempt < 10000; ++attempt) {
+        playback.poll(session);
+        const auto state = playback.status().state;
+        if (state != trackloom::AppPlaybackState::Preparing
+            && state != trackloom::AppPlaybackState::Stopping) {
+            return;
+        }
+        std::this_thread::yield();
+    }
+    require(false, "playback worker should settle within the bounded polling loop");
+}
+
 void appInfoExposesStableDesktopIdentity()
 {
     const auto info = trackloom::desktopAppInfo();
@@ -65,6 +197,90 @@ void appInfoExposesStableDesktopIdentity()
         "desktop app info should match the CMake project version");
     require(info.organizationName == "TrackLoom",
         "desktop app info should expose the local settings organization name");
+}
+
+void projectPlaybackGenerationTracksOnlyPossibleContentChanges()
+{
+    trackloom::AppProjectSession session;
+    const auto initial = session.projectEditGeneration();
+    session.editProject().rename("Changed");
+    require(session.projectEditGeneration() == initial + 1,
+        "editable project access should conservatively advance generation once");
+    const auto afterEdit = session.projectEditGeneration();
+    require(!session.undoProjectEdit(), "direct edit should clear command history");
+    require(session.projectEditGeneration() == afterEdit,
+        "failed undo must not advance project generation");
+    const auto snapshot = session.capturePlaybackSnapshot();
+    require(snapshot.projectEditGeneration == afterEdit,
+        "snapshot and project copy must share one generation");
+    require(snapshot.project.name() == "Changed",
+        "snapshot should copy the matching project state");
+}
+
+void projectPlaybackGenerationTracksCommandsFilesAndIndependentSnapshots()
+{
+    removeTestWorkspace();
+    std::filesystem::create_directories(testWorkspace());
+    const auto savedPath = testWorkspace() / "generation-saved.trackloom-test";
+    const auto openedPath = testWorkspace() / "generation-opened.trackloom-test";
+
+    trackloom::AppProjectSession session;
+    require(session.projectEditGeneration() == 0,
+        "new project sessions should begin at generation zero");
+
+    const auto commandGeneration = session.projectEditGeneration();
+    const auto command = session.executeProjectCommand(
+        std::make_unique<trackloom::AddTrackCommand>("Lead", trackloom::TrackType::Instrument));
+    require(command.success, "generation test command should succeed");
+    require(session.projectEditGeneration() == commandGeneration + 1,
+        "successful commands should advance generation exactly once");
+
+    const auto undoGeneration = session.projectEditGeneration();
+    require(session.undoProjectEdit(), "generation test undo should succeed");
+    require(session.projectEditGeneration() == undoGeneration + 1,
+        "successful undo should advance generation exactly once");
+    const auto redoGeneration = session.projectEditGeneration();
+    require(session.redoProjectEdit(), "generation test redo should succeed");
+    require(session.projectEditGeneration() == redoGeneration + 1,
+        "successful redo should advance generation exactly once");
+
+    const auto failedGeneration = session.projectEditGeneration();
+    require(!session.executeProjectCommand(nullptr).success,
+        "null project command should fail");
+    require(session.projectEditGeneration() == failedGeneration,
+        "failed commands should not advance generation");
+
+    const auto newGeneration = session.projectEditGeneration();
+    session.createNewProject("Saved");
+    require(session.projectEditGeneration() == newGeneration + 1,
+        "creating a project should advance generation exactly once");
+    const auto beforeSave = session.projectEditGeneration();
+    require(session.saveAs(savedPath).success, "generation test save-as should succeed");
+    require(session.projectEditGeneration() == beforeSave,
+        "successful save-as should not advance generation");
+    require(session.save().success, "generation test save should succeed");
+    require(session.projectEditGeneration() == beforeSave,
+        "successful save should not advance generation");
+
+    trackloom::AppProjectSession source;
+    source.createNewProject("Opened");
+    require(source.saveAs(openedPath).success, "generation test source save should succeed");
+    const auto beforeOpen = session.projectEditGeneration();
+    require(session.openFrom(openedPath).success, "generation test open should succeed");
+    require(session.projectEditGeneration() == beforeOpen + 1,
+        "successful open should advance generation exactly once");
+    const auto afterOpen = session.projectEditGeneration();
+    require(!session.openFrom(testWorkspace() / "missing.trackloom-test").success,
+        "missing project open should fail");
+    require(session.projectEditGeneration() == afterOpen,
+        "failed open should not advance generation");
+
+    const auto snapshot = session.capturePlaybackSnapshot();
+    session.editProject().rename("Later Edit");
+    require(snapshot.projectEditGeneration == afterOpen,
+        "captured snapshot should keep its matching generation");
+    require(snapshot.project.name() == "Opened",
+        "captured snapshot should remain independent from later edits");
 }
 
 std::filesystem::path testWorkspace()
@@ -1005,7 +1221,8 @@ void mainMenuDescribesFileAndPlaybackCommands()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Menu Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
@@ -1143,7 +1360,8 @@ void mainMenuReflectsUndoRedoHistory()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Edit Menu History");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
 
     const auto commandResult = session.executeProjectCommand(
@@ -1176,7 +1394,8 @@ void mainMenuReflectsSelectedTrackCommands()
     const auto first = session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
     const auto second = session.editProject().createTrack("Pad", trackloom::TrackType::Instrument);
     const auto audio = session.editProject().createTrack("Vocal", trackloom::TrackType::Audio);
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
 
     trackloom::AppMainMenuSelection selection;
@@ -1297,7 +1516,8 @@ void mainMenuReflectsSelectedClipCommands()
     require(midiClip.success && audioClip.success,
         "selected clip menu test should create MIDI and audio clips");
 
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
     trackloom::AppMainMenuSelection selection;
     selection.selectedInstrumentTrackId = targetInstrument.id;
@@ -1367,30 +1587,39 @@ void mainMenuReflectsPlayingTransportState()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Playing Menu Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    std::latch built(1);
+    trackloom::AppPlaybackController playback(
+        host,
+        [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+            auto result = makeFakePreparedPlan(request);
+            built.count_down();
+            return result;
+        });
     trackloom::AppRecentProjects recent;
 
-    require(trackloom::startAppPlayback(playback, session.project()).success,
-        "playing menu test should start playback before describing the menu");
-    require(trackloom::advanceAppPlaybackForUiTick(playback, session.project()).success,
-        "playing menu test should move the playback head before describing rewind state");
+    require(trackloom::startAppPlayback(playback, session).success,
+        "playing menu test should start preparing playback");
+    built.wait();
+    pollPlaybackUntilWorkerSettles(playback, session);
+    host.setRealtimePosition(512, 512);
+    playback.poll(session);
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
     const auto& playbackItems = menu.groups[4].items;
-
     require(!playbackItems[0].enabled,
-        "play command should be disabled while playback is already running");
+        "play command should be disabled while playback is running");
     require(playbackItems[1].enabled,
         "stop command should be enabled while playback is running");
     require(playbackItems[2].enabled,
-        "rewind command should be enabled after the playback head has moved");
+        "rewind command should be enabled after the host playback head moves");
 }
-
 void mainMenuListsRecentProjectsWithStableCommandIds()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Recent Menu Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
     const auto first = testWorkspace() / "first-menu.trackloom";
     const auto second = testWorkspace() / "second-menu.trackloom";
@@ -1419,7 +1648,8 @@ void commandPaletteFlattensMenuCommandsWithoutSeparatorsOrInfoRows()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Palette Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
@@ -1471,7 +1701,8 @@ void commandPaletteIncludesRecentProjectsAndFiltersByQuery()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Palette Recent Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
     recent.record(testWorkspace() / "palette-first.trackloom");
 
@@ -1495,7 +1726,8 @@ void commandPaletteSelectsFirstEnabledCommandForQuery()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Palette Select Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
@@ -1520,7 +1752,8 @@ void commandPaletteSelectionSkipsDisabledAndMissingMatches()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Palette Disabled Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
@@ -1538,7 +1771,8 @@ void commandPaletteSelectionReportsSelectedResultKind()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Palette Result Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
@@ -1557,7 +1791,8 @@ void commandPaletteSelectionDistinguishesDisabledMatchesFromMissingMatches()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Palette Result Failure Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
@@ -1658,7 +1893,8 @@ void commandPaletteAddsShortcutLabelsForVisibleCommands()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Palette Shortcut Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
@@ -1693,7 +1929,8 @@ void commandPaletteUsesActiveShortcutBindingsForLabels()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Palette Active Shortcut Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
     const auto saveProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject);
 
@@ -1722,7 +1959,8 @@ void commandPaletteMergesMultipleShortcutLabelsForOneCommand()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Palette Shortcut Merge Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
@@ -1741,7 +1979,8 @@ void commandPaletteFiltersByShortcutLabel()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Palette Shortcut Search Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
@@ -1766,7 +2005,8 @@ void commandPaletteFiltersByMergedShortcutLabel()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Palette Merged Shortcut Search Snapshot");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
     session.executeProjectCommand(
         std::make_unique<trackloom::AddTrackCommand>("Undo seed", trackloom::TrackType::Instrument));
@@ -3311,7 +3551,8 @@ void shortcutStatusDescribesActiveRowsAndSummary()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Shortcut Status");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
     const auto saveProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject);
     const auto openProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenProject);
@@ -3348,7 +3589,8 @@ void shortcutStatusReportsConflictsWithMenuLabels()
 {
     trackloom::AppProjectSession session;
     session.createNewProject("Shortcut Conflict Status");
-    trackloom::AppPlaybackController playback;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
     trackloom::AppRecentProjects recent;
     const auto saveProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::SaveProject);
     const auto openProjectId = trackloom::appMainMenuCommandId(trackloom::AppMainMenuCommand::OpenProject);
@@ -4088,341 +4330,434 @@ void trackStateActionUpdatesTrackListStatusLabels()
         "track list summary should include hidden state after app toggle");
 }
 
-void playbackActionStartsTransportWithoutDirtyingProject()
+void playbackPreparationIsQueryableAndCancellableWithoutJoiningInHandlers()
 {
-    removeTestWorkspace();
-    const auto path = testWorkspace() / "playback-start-action.trackloom-test";
-
+    FakeRealtimePlaybackHost host;
     trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Playback Start");
-    require(session.saveAs(path).success,
-        "playback start action test should save setup edits before runtime control");
+    session.createNewProject("Async Preparation");
+    std::latch builderEntered(1);
+    std::latch releaseBuilder(1);
+    std::latch builderFinished(1);
 
-    const auto feedback = trackloom::startAppPlayback(playback, session.project());
+    trackloom::AppPlaybackController playback(
+        host,
+        [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token stopToken) {
+            builderEntered.count_down();
+            releaseBuilder.wait();
+            trackloom::PreparedMidiPlaybackPlanBuildResult result;
+            if (stopToken.stop_requested()) {
+                result.failureReason = trackloom::PreparedMidiPlaybackPlanBuildFailureReason::Cancelled;
+            } else {
+                result = makeFakePreparedPlan(request);
+            }
+            builderFinished.count_down();
+            return result;
+        });
 
-    require(feedback.success,
-        "playback action should start the app transport");
-    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::Success,
-        "successful playback start action should expose a stable success kind");
-    require(playback.isPrepared(),
-        "playback start action should prepare the runtime playback session");
-    require(playback.isPlaying(),
-        "playback start action should put the app transport into playing state");
-    require(playback.currentSample() == 0,
-        "playback start action should not move the playback position by itself");
-    require(!session.isDirty(),
-        "playback start action should not dirty the project session");
-    require(feedback.message.find("播放") != std::string::npos,
-        "successful playback start feedback should describe playback");
+    const auto initial = playback.status();
+    require(initial.state == trackloom::AppPlaybackState::Stopped && initial.canStart,
+        "available stopped host should allow asynchronous playback start");
+    const auto started = playback.start(session.capturePlaybackSnapshot());
+    require(started.success, "asynchronous playback start request should be accepted");
+    builderEntered.wait();
+    require(playback.status().state == trackloom::AppPlaybackState::Preparing,
+        "playback status should be immediately queryable while builder is blocked");
+    require(!playback.status().canStart,
+        "active preparation should disable a second start");
+
+    const auto stopped = playback.stop();
+    require(stopped.success, "stop during preparation should request cancellation");
+    require(playback.status().state == trackloom::AppPlaybackState::Stopping,
+        "stop during preparation should not wait for the worker to exit");
+    releaseBuilder.count_down();
+    builderFinished.wait();
+    for (int attempt = 0;
+         attempt < 1000 && playback.status().state == trackloom::AppPlaybackState::Stopping;
+         ++attempt) {
+        playback.poll(session);
+        std::this_thread::yield();
+    }
+
+    const auto final = playback.status();
+    require(final.state == trackloom::AppPlaybackState::Stopped,
+        "cancelled preparation should become stopped only after worker completion is polled");
+    require(final.failureReason == trackloom::AppPlaybackFailureReason::PreparationCancelled,
+        "cancelled preparation should expose a stable failure reason");
+    require(host.installCallCount == 0,
+        "cancelled preparation must not install a playback plan");
 }
 
-void playbackActionStopsTransportWithoutDirtyingProject()
+void playbackPreparationInstallsAndTracksHostLifecycle()
 {
-    removeTestWorkspace();
-    const auto path = testWorkspace() / "playback-stop-action.trackloom-test";
-
+    FakeRealtimePlaybackHost host;
     trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Playback Stop");
-    require(session.saveAs(path).success,
-        "playback stop action test should save setup edits before runtime control");
-    require(trackloom::startAppPlayback(playback, session.project()).success,
-        "playback stop action test should start playback before stopping");
+    session.createNewProject("Lifecycle");
+    std::latch built(1);
+    trackloom::AppPlaybackController playback(
+        host,
+        [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+            auto result = makeFakePreparedPlan(request);
+            built.count_down();
+            return result;
+        });
 
-    const auto feedback = trackloom::stopAppPlayback(playback, session.project());
+    require(trackloom::startAppPlayback(playback, session).success,
+        "playback start action should accept asynchronous preparation");
+    require(playback.status().state == trackloom::AppPlaybackState::Preparing,
+        "accepted start should enter Preparing before poll installs the plan");
+    built.wait();
+    pollPlaybackUntilWorkerSettles(playback, session);
+    require(playback.status().state == trackloom::AppPlaybackState::Playing,
+        "completed preparation should install and enter Playing");
+    require(host.installCallCount == 1,
+        "completed preparation should install exactly one plan");
+    require(!session.isDirty(), "runtime playback must not dirty the project");
 
-    require(feedback.success,
-        "playback action should stop the app transport");
-    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::Success,
-        "successful playback stop action should expose a stable success kind");
-    require(playback.isPrepared(),
-        "playback stop action should keep the runtime playback session prepared");
-    require(!playback.isPlaying(),
-        "playback stop action should put the app transport into stopped state");
-    require(!session.isDirty(),
-        "playback stop action should not dirty the project session");
-    require(feedback.message.find("停止") != std::string::npos,
-        "successful playback stop feedback should describe the stop action");
+    host.setRealtimePosition(512, 512);
+    playback.poll(session);
+    require(playback.currentSample() == 512 && playback.currentSeconds() > 0.0,
+        "poll should expose the host playback position");
+    require(trackloom::stopAppPlayback(playback).success,
+        "playing stop action should request the host stop");
+    require(playback.status().state == trackloom::AppPlaybackState::Stopping,
+        "accepted host stop should enter Stopping");
+    host.setRealtimeState(trackloom::RealtimePlaybackState::Stopped);
+    playback.poll(session);
+    require(playback.status().state == trackloom::AppPlaybackState::Stopped,
+        "polled host stop completion should enter Stopped");
 }
 
-void playbackActionStopsCleanlyBeforeStart()
+void playbackStatusAndMenuUseStructuredControllerState()
 {
+    FakeRealtimePlaybackHost host;
     trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Stop Before Start");
+    session.createNewProject("Status");
+    trackloom::AppPlaybackController playback(host);
+    trackloom::AppRecentProjects recent;
 
-    const auto feedback = trackloom::stopAppPlayback(playback, session.project());
+    const auto stopped = playback.status();
+    require(stopped.state == trackloom::AppPlaybackState::Stopped && stopped.canStart,
+        "available stopped host should report a startable structured state");
+    auto menu = trackloom::describeAppMainMenu(session, playback, recent);
+    require(menu.groups[4].items[0].enabled && !menu.groups[4].items[1].enabled,
+        "menu should enable Play from canStart and disable Stop while stopped");
 
-    require(feedback.success,
-        "playback stop action should accept an already stopped runtime");
-    require(playback.isPrepared(),
-        "playback stop action should prepare runtime state before using the core safe stop command");
-    require(!playback.isPlaying(),
-        "playback stop action should leave the app transport stopped");
-    require(!session.isDirty(),
-        "playback stop action before start should not dirty the project session");
+    FakeRealtimePlaybackHost playingHost;
+    std::latch built(1);
+    trackloom::AppPlaybackController playing(
+        playingHost,
+        [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+            auto result = makeFakePreparedPlan(request);
+            built.count_down();
+            return result;
+        });
+    require(trackloom::toggleAppPlayback(playing, session).success,
+        "toggle should start stopped playback");
+    built.wait();
+    pollPlaybackUntilWorkerSettles(playing, session);
+    menu = trackloom::describeAppMainMenu(session, playing, recent);
+    require(!menu.groups[4].items[0].enabled && menu.groups[4].items[1].enabled,
+        "menu should disable Play and enable Stop while playing");
+    require(playing.status().stateLabel == "播放中",
+        "structured playing status should expose the playing label");
 }
 
-void playbackToggleStartsStoppedTransportWithoutDirtyingProject()
+void playbackUnavailableHostAndFaultExposeStableReasons()
 {
-    // 从停止态切换到播放态时，只应改变运行态播放控制，不能把工程标记为已修改。
-    removeTestWorkspace();
-    const auto path = testWorkspace() / "playback-toggle-start.trackloom-test";
-
+    FakeRealtimePlaybackHost unavailableHost;
+    unavailableHost.setDeviceAvailable(false);
     trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Toggle Start");
-    require(session.saveAs(path).success,
-        "toggle start test should save setup edits before runtime control");
+    trackloom::AppPlaybackController unavailable(unavailableHost);
+    require(unavailable.status().state == trackloom::AppPlaybackState::Unavailable,
+        "missing device should enter Unavailable");
+    require(!unavailable.status().canStart,
+        "missing device should disable start");
+    const auto noDevice = startAppPlayback(unavailable, session);
+    require(!noDevice.success
+            && noDevice.failureReason == trackloom::AppPlaybackFailureReason::NoAudioDevice,
+        "missing device start should expose NoAudioDevice");
 
-    const auto feedback = trackloom::toggleAppPlayback(playback, session.project());
-
-    require(feedback.success,
-        "toggle playback should start a stopped runtime");
-    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::Success,
-        "successful toggle start should expose the stable success kind");
-    require(playback.isPrepared(),
-        "toggle playback from stopped should prepare playback runtime");
-    require(playback.isPlaying(),
-        "toggle playback from stopped should start playback");
-    require(playback.currentSample() == 0,
-        "toggle playback from stopped should not move the playback position by itself");
-    require(!session.isDirty(),
-        "toggle playback from stopped should not dirty the project session");
+    FakeRealtimePlaybackHost faultHost;
+    trackloom::AppPlaybackController faulted(faultHost);
+    faultHost.setRealtimeState(trackloom::RealtimePlaybackState::Faulted);
+    faulted.poll(session);
+    require(faulted.status().state == trackloom::AppPlaybackState::Faulted
+            && faulted.status().failureReason == trackloom::AppPlaybackFailureReason::DeviceFault,
+        "host fault should expose Faulted and DeviceFault");
+    require(!faulted.status().canStart,
+        "faulted host should disable start");
 }
 
-void playbackToggleStopsPlayingTransportWithoutDirtyingProject()
+void playbackDropsStaleProjectAndDevicePreparationWithoutInstalling()
 {
-    // 从播放态切换到停止态时，必须复用标准停止路径，并保持工程 dirty 状态不变。
-    removeTestWorkspace();
-    const auto path = testWorkspace() / "playback-toggle-stop.trackloom-test";
-
-    trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Toggle Stop");
-    require(session.saveAs(path).success,
-        "toggle stop test should save setup edits before runtime control");
-    require(trackloom::startAppPlayback(playback, session.project()).success,
-        "toggle stop test should start playback before toggling");
-
-    const auto feedback = trackloom::toggleAppPlayback(playback, session.project());
-
-    require(feedback.success,
-        "toggle playback should stop a playing runtime");
-    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::Success,
-        "successful toggle stop should expose the stable success kind");
-    require(playback.isPrepared(),
-        "toggle playback from playing should keep playback runtime prepared");
-    require(!playback.isPlaying(),
-        "toggle playback from playing should stop playback");
-    require(!session.isDirty(),
-        "toggle playback from playing should not dirty the project session");
+    {
+        FakeRealtimePlaybackHost host;
+        trackloom::AppProjectSession session;
+        std::latch entered(1);
+        std::latch release(1);
+        trackloom::AppPlaybackController playback(
+            host,
+            [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+                entered.count_down();
+                release.wait();
+                return makeFakePreparedPlan(request);
+            });
+        require(playback.start(session.capturePlaybackSnapshot()).success,
+            "stale project test should start preparation");
+        entered.wait();
+        session.editProject().rename("Edited During Preparation");
+        release.count_down();
+        pollPlaybackUntilWorkerSettles(playback, session);
+        require(playback.status().failureReason == trackloom::AppPlaybackFailureReason::StalePreparation,
+            "edited project should reject the old preparation with StalePreparation");
+        require(host.installCallCount == 0,
+            "stale project preparation must not call install");
+    }
+    {
+        FakeRealtimePlaybackHost host;
+        trackloom::AppProjectSession session;
+        std::latch entered(1);
+        std::latch release(1);
+        trackloom::AppPlaybackController playback(
+            host,
+            [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+                entered.count_down();
+                release.wait();
+                return makeFakePreparedPlan(request);
+            });
+        require(playback.start(session.capturePlaybackSnapshot()).success,
+            "stale device test should start preparation");
+        entered.wait();
+        host.setFormatGeneration(2);
+        release.count_down();
+        pollPlaybackUntilWorkerSettles(playback, session);
+        require(playback.status().failureReason == trackloom::AppPlaybackFailureReason::StalePreparation,
+            "changed device generation should reject old preparation");
+        require(host.installCallCount == 0,
+            "stale device preparation must not call install");
+    }
 }
 
-void playbackToggleStopsAfterUiAdvanceAndKeepsPosition()
-{
-    // 播放头已经推进后再停止，不应偷偷回到开头；回到开头由单独的 rewind 动作负责。
-    trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Toggle After Advance");
-    require(trackloom::startAppPlayback(playback, session.project()).success,
-        "toggle after advance test should start playback before advancing");
-    require(trackloom::advanceAppPlaybackForUiTick(playback, session.project()).success,
-        "toggle after advance test should advance playback before toggling");
-
-    const auto sampleBeforeToggle = playback.currentSample();
-    const auto feedback = trackloom::toggleAppPlayback(playback, session.project());
-
-    require(feedback.success,
-        "toggle playback should stop after playback has advanced");
-    require(!playback.isPlaying(),
-        "toggle playback after advance should stop playback");
-    require(playback.currentSample() == sampleBeforeToggle,
-        "toggle playback after advance should keep the current playback position");
-    require(!session.isDirty(),
-        "toggle playback after advance should not dirty the project session");
-}
-
-void playbackStatusDescribesStoppedAndPlayingStates()
+void playbackPreparationAndHostFailuresUseStableReasons()
 {
     trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Playback Status");
-
-    const auto stopped = trackloom::describeAppPlayback(playback);
-    require(!stopped.playing,
-        "fresh playback status should start stopped");
-    require(stopped.stateLabel == "已停止",
-        "fresh playback status should expose a stopped label");
-
-    require(trackloom::startAppPlayback(playback, session.project()).success,
-        "playback status test should start playback");
-    const auto playing = trackloom::describeAppPlayback(playback);
-
-    require(playing.prepared,
-        "playing status should report prepared runtime state");
-    require(playing.playing,
-        "playing status should report playing runtime state");
-    require(playing.currentSample == 0,
-        "playing status should expose the current sample");
-    require(playing.stateLabel == "播放中",
-        "playing status should expose a playing label");
-    require(playing.summary.find("播放中") != std::string::npos,
-        "playing status summary should include the visible playback state");
+    {
+        FakeRealtimePlaybackHost host;
+        std::latch built(1);
+        trackloom::AppPlaybackController playback(
+            host,
+            [&](trackloom::PreparedMidiPlaybackPlanBuildRequest, std::stop_token) {
+                built.count_down();
+                return trackloom::PreparedMidiPlaybackPlanBuildResult {
+                    trackloom::PreparedMidiPlaybackPlanBuildFailureReason::InvalidLoopRange,
+                    nullptr
+                };
+            });
+        require(playback.start(session.capturePlaybackSnapshot()).success,
+            "failed build test should accept asynchronous work");
+        built.wait();
+        pollPlaybackUntilWorkerSettles(playback, session);
+        require(playback.status().state == trackloom::AppPlaybackState::Faulted
+                && playback.status().failureReason == trackloom::AppPlaybackFailureReason::PreparationFailed,
+            "builder failure should expose PreparationFailed");
+        require(host.installCallCount == 0,
+            "failed builder result must not call install");
+    }
+    {
+        FakeRealtimePlaybackHost host;
+        host.installResult = {
+            false, trackloom::RealtimePlaybackHostFailureReason::DeviceStartFailed, "rejected"
+        };
+        std::latch built(1);
+        trackloom::AppPlaybackController playback(
+            host,
+            [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+                auto result = makeFakePreparedPlan(request);
+                built.count_down();
+                return result;
+            });
+        require(playback.start(session.capturePlaybackSnapshot()).success,
+            "host rejection test should accept asynchronous work");
+        built.wait();
+        pollPlaybackUntilWorkerSettles(playback, session);
+        require(playback.status().state == trackloom::AppPlaybackState::Faulted
+                && playback.status().failureReason == trackloom::AppPlaybackFailureReason::HostRejected,
+            "install failure should expose HostRejected");
+        require(host.installCallCount == 1,
+            "host rejection should occur at the single install boundary");
+    }
 }
 
-void playbackUiTickAdvancesPlayingTransportWithoutDirtyingProject()
+void playbackHostFaultDuringPreparationDiscardsCompletedPlan()
 {
-    removeTestWorkspace();
-    const auto path = testWorkspace() / "playback-ui-tick.trackloom-test";
-
+    FakeRealtimePlaybackHost host;
     trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Playback UI Tick");
-    require(session.saveAs(path).success,
-        "playback UI tick test should save setup edits before runtime control");
-    require(trackloom::startAppPlayback(playback, session.project()).success,
-        "playback UI tick test should start playback before advancing");
-
-    const auto feedback = trackloom::advanceAppPlaybackForUiTick(playback, session.project());
-
-    require(feedback.success,
-        "playback UI tick should advance a playing runtime");
-    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::Success,
-        "successful playback UI tick should expose a stable success kind");
-    require(playback.currentSample() == trackloom::defaultAppPlaybackUiBlockFrames,
-        "playback UI tick should advance the transport by one app UI block");
-    require(playback.currentSeconds() > 0.0,
-        "playback UI tick should make the visible playback seconds advance");
-    require(!session.isDirty(),
-        "playback UI tick should not dirty the project session");
-
-    const auto status = trackloom::describeAppPlayback(playback);
-    require(status.currentSample == trackloom::defaultAppPlaybackUiBlockFrames,
-        "playback status should report the advanced sample position");
-    require(status.summary.find("秒") != std::string::npos,
-        "playback status summary should include a human-readable seconds value");
+    std::latch entered(1);
+    std::latch release(1);
+    trackloom::AppPlaybackController playback(
+        host,
+        [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+            entered.count_down();
+            release.wait();
+            return makeFakePreparedPlan(request);
+        });
+    require(playback.start(session.capturePlaybackSnapshot()).success,
+        "fault during preparation test should start preparation");
+    entered.wait();
+    host.setRealtimeState(trackloom::RealtimePlaybackState::Faulted);
+    playback.poll(session);
+    require(playback.status().state == trackloom::AppPlaybackState::Faulted
+            && playback.status().failureReason == trackloom::AppPlaybackFailureReason::DeviceFault,
+        "host fault during preparation should immediately expose DeviceFault");
+    release.count_down();
+    for (int attempt = 0; attempt < 10000 && host.installCallCount == 0; ++attempt) {
+        playback.poll(session);
+        std::this_thread::yield();
+        if (playback.status().state == trackloom::AppPlaybackState::Faulted
+            && playback.status().failureReason == trackloom::AppPlaybackFailureReason::DeviceFault) {
+            continue;
+        }
+    }
+    require(host.installCallCount == 0,
+        "completed preparation after a host fault must not install a plan");
 }
 
-void playbackUiTickSkipsStoppedTransportWithoutPreparingRuntime()
-{
-    trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Stopped UI Tick");
-
-    const auto feedback = trackloom::advanceAppPlaybackForUiTick(playback, session.project());
-
-    require(feedback.success,
-        "playback UI tick should treat stopped playback as a harmless no-op");
-    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::NoOp,
-        "stopped playback UI tick should expose a stable no-op kind");
-    require(!playback.isPrepared(),
-        "stopped playback UI tick should not prepare playback until the user starts playback");
-    require(playback.currentSample() == 0,
-        "stopped playback UI tick should keep the playback position unchanged");
-    require(!session.isDirty(),
-        "stopped playback UI tick should not dirty the project session");
-}
-
-void playbackUiTickSkipsAfterStopAndKeepsPosition()
-{
-    trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Tick After Stop");
-    require(trackloom::startAppPlayback(playback, session.project()).success,
-        "tick after stop test should start playback before advancing");
-    require(trackloom::advanceAppPlaybackForUiTick(playback, session.project()).success,
-        "tick after stop test should advance once before stopping");
-    require(trackloom::stopAppPlayback(playback, session.project()).success,
-        "tick after stop test should stop playback before the no-op tick");
-
-    const auto sampleAfterStop = playback.currentSample();
-    const auto feedback = trackloom::advanceAppPlaybackForUiTick(playback, session.project());
-
-    require(feedback.success,
-        "playback UI tick after stop should be a harmless no-op");
-    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::NoOp,
-        "playback UI tick after stop should expose a stable no-op kind");
-    require(playback.currentSample() == sampleAfterStop,
-        "playback UI tick after stop should keep the stopped position");
-}
-
-void playbackRewindReturnsPlayingTransportToStartWithoutDirtyingProject()
-{
-    removeTestWorkspace();
-    const auto path = testWorkspace() / "playback-rewind-playing.trackloom-test";
-
-    trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Rewind Playing");
-    require(session.saveAs(path).success,
-        "playing rewind test should save setup edits before runtime control");
-    require(trackloom::startAppPlayback(playback, session.project()).success,
-        "playing rewind test should start playback before advancing");
-    require(trackloom::advanceAppPlaybackForUiTick(playback, session.project()).success,
-        "playing rewind test should advance playback before rewinding");
-
-    const auto feedback = trackloom::rewindAppPlaybackToStart(playback, session.project());
-
-    require(feedback.success,
-        "rewind action should move a playing transport back to the beginning");
-    require(feedback.kind == trackloom::AppPlaybackActionFeedbackKind::Success,
-        "successful rewind action should expose a stable success kind");
-    require(playback.isPlaying(),
-        "rewind while playing should keep playback running");
-    require(playback.currentSample() == 0,
-        "rewind while playing should move the playback position to sample zero");
-    require(!session.isDirty(),
-        "rewind while playing should not dirty the project session");
-    require(feedback.message.find("开头") != std::string::npos,
-        "successful rewind feedback should describe returning to the beginning");
-}
-
-void playbackRewindReturnsStoppedTransportToStartWithoutDirtyingProject()
+void playbackTestToneAndActivePreparationDisableSecondStart()
 {
     trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Rewind Stopped");
-    require(trackloom::startAppPlayback(playback, session.project()).success,
-        "stopped rewind test should start playback before advancing");
-    require(trackloom::advanceAppPlaybackForUiTick(playback, session.project()).success,
-        "stopped rewind test should advance playback before stopping");
-    require(trackloom::stopAppPlayback(playback, session.project()).success,
-        "stopped rewind test should stop playback before rewinding");
+    FakeRealtimePlaybackHost testToneHost;
+    testToneHost.setRealtimeState(trackloom::RealtimePlaybackState::Playing);
+    trackloom::AppPlaybackController testTone(testToneHost);
+    require(!testTone.status().canStart,
+        "host test tone playback should disable app playback start");
+    const auto rejected = testTone.start(session.capturePlaybackSnapshot());
+    require(!rejected.success
+            && rejected.failureReason == trackloom::AppPlaybackFailureReason::HostRejected,
+        "host test tone should reject start with HostRejected");
 
-    const auto feedback = trackloom::rewindAppPlaybackToStart(playback, session.project());
-
-    require(feedback.success,
-        "rewind action should move a stopped transport back to the beginning");
-    require(!playback.isPlaying(),
-        "rewind while stopped should keep playback stopped");
-    require(playback.currentSample() == 0,
-        "rewind while stopped should move the playback position to sample zero");
-    require(!session.isDirty(),
-        "rewind while stopped should not dirty the project session");
+    FakeRealtimePlaybackHost host;
+    std::latch entered(1);
+    std::latch release(1);
+    trackloom::AppPlaybackController preparing(
+        host,
+        [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+            entered.count_down();
+            release.wait();
+            return makeFakePreparedPlan(request);
+        });
+    require(preparing.start(session.capturePlaybackSnapshot()).success,
+        "first preparation should be accepted");
+    entered.wait();
+    const auto second = preparing.start(session.capturePlaybackSnapshot());
+    require(!second.success
+            && second.failureReason == trackloom::AppPlaybackFailureReason::HostRejected,
+        "second start should be rejected while preparation is active");
+    release.count_down();
+    pollPlaybackUntilWorkerSettles(preparing, session);
 }
 
-void playbackRewindPreparesFreshRuntimeWithoutStartingPlayback()
+void playbackKeepsInstalledPlanDuringEditsAndRebuildsAfterStop()
 {
+    FakeRealtimePlaybackHost host;
     trackloom::AppProjectSession session;
-    trackloom::AppPlaybackController playback;
-    session.createNewProject("Fresh Rewind");
-
-    const auto feedback = trackloom::rewindAppPlaybackToStart(playback, session.project());
-
-    require(feedback.success,
-        "rewind action should prepare a fresh runtime so safe seek can run");
-    require(playback.isPrepared(),
-        "rewind action on a fresh runtime should prepare playback state");
-    require(!playback.isPlaying(),
-        "rewind action on a fresh runtime should not start playback");
-    require(playback.currentSample() == 0,
-        "rewind action on a fresh runtime should keep the playback position at sample zero");
-    require(!session.isDirty(),
-        "rewind action on a fresh runtime should not dirty the project session");
+    std::vector<std::string> builtProjectNames;
+    std::latch firstBuilt(1);
+    std::latch secondBuilt(1);
+    trackloom::AppPlaybackController playback(
+        host,
+        [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+            builtProjectNames.push_back(request.projectSnapshot.name());
+            auto result = makeFakePreparedPlan(request);
+            if (builtProjectNames.size() == 1) {
+                firstBuilt.count_down();
+            } else {
+                secondBuilt.count_down();
+            }
+            return result;
+        });
+    session.createNewProject("First Generation");
+    require(playback.start(session.capturePlaybackSnapshot()).success,
+        "first generation should start preparation");
+    firstBuilt.wait();
+    pollPlaybackUntilWorkerSettles(playback, session);
+    require(playback.isPlaying(), "first generation should be playing");
+    session.editProject().rename("Second Generation");
+    playback.poll(session);
+    require(host.installCallCount == 1 && playback.isPlaying(),
+        "editing during playback should not replace the installed plan");
+    require(playback.stop().success, "playing plan should accept stop");
+    host.setRealtimeState(trackloom::RealtimePlaybackState::Stopped);
+    playback.poll(session);
+    require(playback.start(session.capturePlaybackSnapshot()).success,
+        "stopped playback should accept rebuilding the edited project");
+    secondBuilt.wait();
+    pollPlaybackUntilWorkerSettles(playback, session);
+    require(host.installCallCount == 2,
+        "replay after stop should install one new plan");
+    require(builtProjectNames.size() == 2
+            && builtProjectNames[0] == "First Generation"
+            && builtProjectNames[1] == "Second Generation",
+        "replay should build from the new project generation snapshot");
 }
 
+void playbackRewindStopsThenPreparesAgainFromZero()
+{
+    FakeRealtimePlaybackHost host;
+    trackloom::AppProjectSession session;
+    session.createNewProject("Rewind");
+    std::atomic<int> buildCount { 0 };
+    trackloom::AppPlaybackController playback(
+        host,
+        [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+            ++buildCount;
+            return makeFakePreparedPlan(request);
+        });
+    require(playback.start(session.capturePlaybackSnapshot()).success,
+        "rewind test should start initial preparation");
+    pollPlaybackUntilWorkerSettles(playback, session);
+    host.setRealtimePosition(1024, 1024);
+    playback.poll(session);
+
+    require(playback.rewindToStart().success,
+        "rewind while playing should request an orderly stop");
+    require(playback.status().state == trackloom::AppPlaybackState::Stopping,
+        "rewind while playing should first enter Stopping");
+    require(host.stopCallCount == 1,
+        "rewind while playing should request one host stop");
+    host.setRealtimeState(trackloom::RealtimePlaybackState::Stopped);
+    playback.poll(session);
+    require(playback.status().state == trackloom::AppPlaybackState::Preparing,
+        "host stop completion should begin fresh preparation for rewind");
+    pollPlaybackUntilWorkerSettles(playback, session);
+    require(playback.status().state == trackloom::AppPlaybackState::Playing,
+        "rewind preparation should resume playback");
+    require(playback.currentSample() == 0 && buildCount.load() == 2,
+        "rewind should rebuild from sample zero exactly once");
+}
+
+void playbackPreparationUsesCurrentStoppedHostSampleAndRequestedLoop()
+{
+    FakeRealtimePlaybackHost host;
+    host.setRealtimePosition(2048, 2048);
+    trackloom::AppProjectSession session;
+    std::int64_t capturedStart = -1;
+    std::optional<trackloom::PlaybackLoopRange> capturedLoop;
+    const trackloom::PlaybackLoopRange requestedLoop { 960, 3840 };
+    trackloom::AppPlaybackController playback(
+        host,
+        [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+            capturedStart = request.playbackStartSample;
+            capturedLoop = request.loopRange;
+            return makeFakePreparedPlan(request);
+        });
+    require(playback.start(session.capturePlaybackSnapshot(), requestedLoop).success,
+        "non-zero preparation should accept the current stopped position and loop");
+    pollPlaybackUntilWorkerSettles(playback, session);
+    require(capturedStart == 2048,
+        "preparation key and build request should use the current stopped host sample");
+    require(capturedLoop == requestedLoop,
+        "preparation key and build request should use the requested loop");
+}
 void midiClipActionCreatesDefaultClipOnInstrumentTrack()
 {
     removeTestWorkspace();
@@ -9883,6 +10218,8 @@ int main()
     configureTestFailureOutput();
 
     appInfoExposesStableDesktopIdentity();
+    projectPlaybackGenerationTracksOnlyPossibleContentChanges();
+    projectPlaybackGenerationTracksCommandsFilesAndIndependentSnapshots();
     projectSessionTracksNewProjectAndDirtyState();
     projectSessionSavesAndOpensProjectFile();
     projectSessionKeepsCurrentProjectWhenOpenFails();
@@ -10010,19 +10347,17 @@ int main()
     trackStateActionHiddenCanBeUndoneAndRedoneThroughSessionHistory();
     trackStateActionRejectsMissingTrackWithoutDirtyingSession();
     trackStateActionUpdatesTrackListStatusLabels();
-    playbackActionStartsTransportWithoutDirtyingProject();
-    playbackActionStopsTransportWithoutDirtyingProject();
-    playbackActionStopsCleanlyBeforeStart();
-    playbackToggleStartsStoppedTransportWithoutDirtyingProject();
-    playbackToggleStopsPlayingTransportWithoutDirtyingProject();
-    playbackToggleStopsAfterUiAdvanceAndKeepsPosition();
-    playbackStatusDescribesStoppedAndPlayingStates();
-    playbackUiTickAdvancesPlayingTransportWithoutDirtyingProject();
-    playbackUiTickSkipsStoppedTransportWithoutPreparingRuntime();
-    playbackUiTickSkipsAfterStopAndKeepsPosition();
-    playbackRewindReturnsPlayingTransportToStartWithoutDirtyingProject();
-    playbackRewindReturnsStoppedTransportToStartWithoutDirtyingProject();
-    playbackRewindPreparesFreshRuntimeWithoutStartingPlayback();
+    playbackPreparationIsQueryableAndCancellableWithoutJoiningInHandlers();
+    playbackPreparationInstallsAndTracksHostLifecycle();
+    playbackStatusAndMenuUseStructuredControllerState();
+    playbackUnavailableHostAndFaultExposeStableReasons();
+    playbackDropsStaleProjectAndDevicePreparationWithoutInstalling();
+    playbackPreparationAndHostFailuresUseStableReasons();
+    playbackHostFaultDuringPreparationDiscardsCompletedPlan();
+    playbackTestToneAndActivePreparationDisableSecondStart();
+    playbackKeepsInstalledPlanDuringEditsAndRebuildsAfterStop();
+    playbackRewindStopsThenPreparesAgainFromZero();
+    playbackPreparationUsesCurrentStoppedHostSampleAndRequestedLoop();
     audioClipActionCreatesDefaultClipOnAudioTrack();
     audioClipActionCreateCanBeUndoneAndRedoneThroughSessionHistory();
     audioClipActionAppendsAfterExistingTrackClips();

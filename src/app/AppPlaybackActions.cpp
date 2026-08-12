@@ -1,42 +1,19 @@
 #include "AppPlaybackActions.h"
 
-#include "PlaybackControl.h"
-
 #include <iomanip>
 #include <sstream>
-#include <string>
 #include <utility>
 
 namespace trackloom {
 namespace {
 
-AppPlaybackActionFeedback successFeedback(std::string message)
-{
-    AppPlaybackActionFeedback feedback;
-    feedback.success = true;
-    feedback.kind = AppPlaybackActionFeedbackKind::Success;
-    feedback.message = std::move(message);
-    return feedback;
-}
-
-AppPlaybackActionFeedback noOpFeedback(std::string message)
-{
-    AppPlaybackActionFeedback feedback;
-    feedback.success = true;
-    feedback.kind = AppPlaybackActionFeedbackKind::NoOp;
-    feedback.message = std::move(message);
-    return feedback;
-}
-
-AppPlaybackActionFeedback failureFeedback(
+AppPlaybackActionFeedback feedback(
+    bool success,
     AppPlaybackActionFeedbackKind kind,
+    AppPlaybackFailureReason reason,
     std::string message)
 {
-    AppPlaybackActionFeedback feedback;
-    feedback.success = false;
-    feedback.kind = kind;
-    feedback.message = std::move(message);
-    return feedback;
+    return { success, kind, reason, std::move(message) };
 }
 
 std::string secondsText(double seconds)
@@ -46,186 +23,373 @@ std::string secondsText(double seconds)
     return stream.str();
 }
 
+const char* stateLabel(AppPlaybackState state)
+{
+    switch (state) {
+    case AppPlaybackState::Unavailable: return "不可用";
+    case AppPlaybackState::Stopped: return "已停止";
+    case AppPlaybackState::Preparing: return "准备中";
+    case AppPlaybackState::Playing: return "播放中";
+    case AppPlaybackState::Stopping: return "停止中";
+    case AppPlaybackState::Faulted: return "故障";
+    }
+    return "故障";
 }
 
-bool AppPlaybackController::ensurePrepared(const Project& project)
+}
+
+AppPlaybackController::AppPlaybackController(
+    RealtimePlaybackHost& host,
+    AppPreparedPlanBuildOperation build)
+    : host_(host)
+    , build_(build ? std::move(build) : AppPreparedPlanBuildOperation(buildPreparedMidiPlaybackPlan))
 {
-    if (playbackSession_.isPrepared()) {
-        return true;
+    const auto hostSnapshot = host_.snapshot();
+    status_.state = hostSnapshot.format.available
+        ? AppPlaybackState::Stopped
+        : AppPlaybackState::Unavailable;
+    status_.failureReason = hostSnapshot.format.available
+        ? AppPlaybackFailureReason::None
+        : AppPlaybackFailureReason::NoAudioDevice;
+    updateStatusFromHost(hostSnapshot);
+}
+
+AppPlaybackController::~AppPlaybackController()
+{
+    if (worker_.joinable()) {
+        worker_.request_stop();
+        worker_.join();
+    }
+}
+
+AppPlaybackActionFeedback AppPlaybackController::start(
+    AppProjectPlaybackSnapshot project,
+    std::optional<PlaybackLoopRange> loopRange)
+{
+    const auto requestedStartSample = status_.projectSamplePosition;
+    const auto hostSnapshot = host_.snapshot();
+    updateStatusFromHost(hostSnapshot);
+    if (!hostSnapshot.format.available) {
+        status_.state = AppPlaybackState::Unavailable;
+        status_.failureReason = AppPlaybackFailureReason::NoAudioDevice;
+        updateStatusText();
+        return feedback(false, AppPlaybackActionFeedbackKind::PrepareFailed,
+            AppPlaybackFailureReason::NoAudioDevice, "无法开始播放：音频设备不可用。");
+    }
+    if (status_.state != AppPlaybackState::Stopped
+        || hostSnapshot.realtime.state != RealtimePlaybackState::Stopped
+        || worker_.joinable()) {
+        return feedback(false, AppPlaybackActionFeedbackKind::PrepareFailed,
+            AppPlaybackFailureReason::HostRejected, "无法开始播放：播放控制器当前不能启动。");
     }
 
-    if (!transport_.setSampleRate(defaultAppPlaybackSampleRate)) {
-        return false;
+    playbackStartSample_ = requestedStartSample;
+    loopRange_ = loopRange;
+    const AppPlaybackPreparationKey key {
+        project.projectEditGeneration,
+        hostSnapshot.format.generation,
+        playbackStartSample_,
+        loopRange_
+    };
+    PreparedMidiPlaybackPlanBuildRequest request {
+        std::move(project.project),
+        hostSnapshot.format.sampleRate,
+        hostSnapshot.format.maximumBlockFrames,
+        hostSnapshot.format.outputChannelCount,
+        hostSnapshot.format.outputChannelMask,
+        playbackStartSample_,
+        loopRange_
+    };
+
+    {
+        std::scoped_lock lock(mailboxMutex_);
+        mailbox_.reset();
+    }
+    workerCompleted_.store(false, std::memory_order_release);
+    status_.state = AppPlaybackState::Preparing;
+    status_.failureReason = AppPlaybackFailureReason::None;
+    status_.canStart = false;
+    updateStatusText();
+    const auto build = build_;
+    worker_ = std::jthread(
+        [this, request = std::move(request), key, build](std::stop_token stopToken) mutable {
+            PreparedMidiPlaybackPlanBuildResult result;
+            try {
+                result = build(std::move(request), stopToken);
+            } catch (...) {
+                result.failureReason = PreparedMidiPlaybackPlanBuildFailureReason::InvalidOutputFormat;
+            }
+            {
+                std::scoped_lock lock(mailboxMutex_);
+                mailbox_.emplace(CompletedPreparation { key, std::move(result) });
+            }
+            workerCompleted_.store(true, std::memory_order_release);
+        });
+    return feedback(true, AppPlaybackActionFeedbackKind::Success,
+        AppPlaybackFailureReason::None, "已开始准备播放。");
+}
+
+AppPlaybackActionFeedback AppPlaybackController::stop()
+{
+    if (status_.state == AppPlaybackState::Preparing) {
+        if (worker_.joinable()) {
+            worker_.request_stop();
+        }
+        status_.state = AppPlaybackState::Stopping;
+        status_.failureReason = AppPlaybackFailureReason::None;
+        updateStatusText();
+        return feedback(true, AppPlaybackActionFeedbackKind::Success,
+            AppPlaybackFailureReason::None, "正在取消播放准备。");
+    }
+    if (status_.state == AppPlaybackState::Playing) {
+        if (!host_.requestStop()) {
+            status_.state = AppPlaybackState::Faulted;
+            status_.failureReason = AppPlaybackFailureReason::HostRejected;
+            updateStatusText();
+            return feedback(false, AppPlaybackActionFeedbackKind::StopFailed,
+                AppPlaybackFailureReason::HostRejected, "无法停止播放：主机拒绝停止请求。");
+        }
+        status_.state = AppPlaybackState::Stopping;
+        status_.failureReason = AppPlaybackFailureReason::None;
+        updateStatusText();
+        return feedback(true, AppPlaybackActionFeedbackKind::Success,
+            AppPlaybackFailureReason::None, "正在停止播放。");
+    }
+    if (status_.state == AppPlaybackState::Stopped
+        || status_.state == AppPlaybackState::Unavailable) {
+        return feedback(true, AppPlaybackActionFeedbackKind::NoOp,
+            status_.failureReason, "播放已经停止。");
+    }
+    return feedback(false, AppPlaybackActionFeedbackKind::StopFailed,
+        AppPlaybackFailureReason::HostRejected, "无法停止播放：控制器状态不允许停止。");
+}
+
+AppPlaybackActionFeedback AppPlaybackController::rewindToStart()
+{
+    if (status_.state == AppPlaybackState::Playing) {
+        if (!host_.requestStop()) {
+            status_.state = AppPlaybackState::Faulted;
+            status_.failureReason = AppPlaybackFailureReason::HostRejected;
+            updateStatusText();
+            return feedback(false, AppPlaybackActionFeedbackKind::SeekFailed,
+                AppPlaybackFailureReason::HostRejected, "无法回到开头：主机拒绝停止请求。");
+        }
+        rewindAfterStop_ = true;
+        status_.state = AppPlaybackState::Stopping;
+        updateStatusText();
+        return feedback(true, AppPlaybackActionFeedbackKind::Success,
+            AppPlaybackFailureReason::None, "正在停止并回到开头。");
+    }
+    if (status_.state == AppPlaybackState::Stopped) {
+        playbackStartSample_ = defaultAppPlaybackStartSample;
+        status_.projectSamplePosition = defaultAppPlaybackStartSample;
+        status_.renderedSampleCount = 0;
+        status_.projectSeconds = 0.0;
+        updateStatusText();
+        return feedback(true, AppPlaybackActionFeedbackKind::Success,
+            AppPlaybackFailureReason::None, "已回到开头。");
+    }
+    return feedback(false, AppPlaybackActionFeedbackKind::SeekFailed,
+        AppPlaybackFailureReason::HostRejected, "无法回到开头：控制器状态不允许跳转。");
+}
+
+void AppPlaybackController::poll(const AppProjectSession& session)
+{
+    host_.serviceNonRealtime();
+    auto hostSnapshot = host_.snapshot();
+    if (hostSnapshot.realtime.state == RealtimePlaybackState::Faulted) {
+        if (worker_.joinable()) {
+            worker_.request_stop();
+        }
+        status_.state = AppPlaybackState::Faulted;
+        status_.failureReason = AppPlaybackFailureReason::DeviceFault;
+        updateStatusFromHost(hostSnapshot);
+        return;
+    }
+    if (workerCompleted_.load(std::memory_order_acquire)) {
+        finishPreparation(session);
+        hostSnapshot = host_.snapshot();
     }
 
-    if (!playbackSession_.prepare(
-            defaultAppPlaybackSampleRate,
-            defaultAppPlaybackChannelCount,
-            defaultAppPlaybackMaxBlockFrames)) {
-        return false;
+    if (status_.state == AppPlaybackState::Playing
+        && hostSnapshot.realtime.state == RealtimePlaybackState::Stopped) {
+        status_.state = AppPlaybackState::Stopped;
+        status_.failureReason = AppPlaybackFailureReason::None;
+    } else if (status_.state == AppPlaybackState::Stopping
+        && !worker_.joinable()
+        && hostSnapshot.realtime.state == RealtimePlaybackState::Stopped) {
+        status_.state = AppPlaybackState::Stopped;
+        status_.failureReason = AppPlaybackFailureReason::None;
+        if (rewindAfterStop_) {
+            rewindAfterStop_ = false;
+            playbackStartSample_ = defaultAppPlaybackStartSample;
+            status_.projectSamplePosition = defaultAppPlaybackStartSample;
+            status_.renderedSampleCount = 0;
+            start(session.capturePlaybackSnapshot(), loopRange_);
+            hostSnapshot = host_.snapshot();
+        }
+    } else if ((status_.state == AppPlaybackState::Stopped
+            || status_.state == AppPlaybackState::Unavailable)
+        && hostSnapshot.realtime.state == RealtimePlaybackState::Stopped) {
+        status_.state = hostSnapshot.format.available
+            ? AppPlaybackState::Stopped
+            : AppPlaybackState::Unavailable;
+        if (!hostSnapshot.format.available) {
+            status_.failureReason = AppPlaybackFailureReason::NoAudioDevice;
+        }
+    }
+    updateStatusFromHost(hostSnapshot);
+}
+
+void AppPlaybackController::finishPreparation(const AppProjectSession& session)
+{
+    if (worker_.joinable()) {
+        worker_.join();
+    }
+    workerCompleted_.store(false, std::memory_order_release);
+    std::optional<CompletedPreparation> completed;
+    {
+        std::scoped_lock lock(mailboxMutex_);
+        completed = std::move(mailbox_);
+        mailbox_.reset();
+    }
+    if (!completed.has_value()) {
+        status_.state = AppPlaybackState::Faulted;
+        status_.failureReason = AppPlaybackFailureReason::PreparationFailed;
+        updateStatusText();
+        return;
+    }
+    if (status_.state == AppPlaybackState::Stopping) {
+        status_.state = AppPlaybackState::Stopped;
+        status_.failureReason = AppPlaybackFailureReason::PreparationCancelled;
+        updateStatusText();
+        return;
+    }
+    if (status_.state == AppPlaybackState::Faulted) {
+        status_.failureReason = AppPlaybackFailureReason::DeviceFault;
+        updateStatusText();
+        return;
     }
 
-    // 现阶段首屏尚未绑定真实音源或 MIDI 输出设备；先用空图建立稳定运行态边界。
-    return playbackSession_.rebuildAudioGraph(project, {})
-        && playbackSession_.rebuildMidiOutput(project, {});
-}
-
-bool AppPlaybackController::isPrepared() const
-{
-    return playbackSession_.isPrepared();
-}
-
-bool AppPlaybackController::isPlaying() const
-{
-    return transport_.isPlaying();
-}
-
-std::int64_t AppPlaybackController::currentSample() const
-{
-    return transport_.currentSample();
-}
-
-double AppPlaybackController::currentSeconds() const
-{
-    return transport_.currentSeconds();
-}
-
-void AppPlaybackController::start()
-{
-    // 起播后的第一帧需要 chase 已经持续中的 MIDI 音符；未准备时请求会失败，但 startAppPlayback 会先准备。
-    playbackSession_.requestMidiChaseOnNextBlock();
-    transport_.play();
-}
-
-bool AppPlaybackController::stop(const Project& project)
-{
-    StopPlaybackCommand command(defaultAppPlaybackReleaseSampleOffset);
-    return command.execute(playbackSession_, transport_, project).success;
-}
-
-bool AppPlaybackController::rewindToStart(const Project& project)
-{
-    SeekPlaybackCommand command(defaultAppPlaybackStartSample, defaultAppPlaybackReleaseSampleOffset);
-    return command.execute(playbackSession_, transport_, project).success;
-}
-
-bool AppPlaybackController::advanceOneUiBlock(const Project& project)
-{
-    if (!playbackSession_.isPrepared()) {
-        return false;
+    const auto format = host_.deviceFormatSnapshot();
+    const AppPlaybackPreparationKey currentKey {
+        session.projectEditGeneration(),
+        format.generation,
+        playbackStartSample_,
+        loopRange_
+    };
+    if (completed->key != currentKey || !format.available) {
+        status_.state = format.available
+            ? AppPlaybackState::Stopped
+            : AppPlaybackState::Unavailable;
+        status_.failureReason = format.available
+            ? AppPlaybackFailureReason::StalePreparation
+            : AppPlaybackFailureReason::NoAudioDevice;
+        updateStatusText();
+        return;
+    }
+    if (completed->result.failureReason != PreparedMidiPlaybackPlanBuildFailureReason::None
+        || completed->result.plan == nullptr) {
+        if (completed->result.failureReason == PreparedMidiPlaybackPlanBuildFailureReason::Cancelled) {
+            status_.state = AppPlaybackState::Stopped;
+            status_.failureReason = AppPlaybackFailureReason::PreparationCancelled;
+        } else {
+            status_.state = AppPlaybackState::Faulted;
+            status_.failureReason = AppPlaybackFailureReason::PreparationFailed;
+        }
+        updateStatusText();
+        return;
     }
 
-    const auto channelCount = playbackSession_.channelCount();
-    const auto frameCount = defaultAppPlaybackUiBlockFrames;
-    scratchAudioBuffer_.resize(static_cast<std::size_t>(channelCount * frameCount));
+    const auto installed = host_.installAndStart(std::move(completed->result.plan));
+    if (!installed.success) {
+        status_.state = AppPlaybackState::Faulted;
+        status_.failureReason = AppPlaybackFailureReason::HostRejected;
+        updateStatusText();
+        return;
+    }
+    status_.state = AppPlaybackState::Playing;
+    status_.failureReason = AppPlaybackFailureReason::None;
+    updateStatusFromHost(host_.snapshot());
+}
 
-    // UI tick 使用应用层持有的静音缓冲区推动已测试的核心播放会话。
-    // 它不会打开声卡；真实音频设备接入后应由设备回调提供 AudioBlock。
-    AudioBlock block(scratchAudioBuffer_.data(), channelCount, frameCount);
-    const auto result = playbackSession_.renderNextBlock(transport_, block, project);
-    return result.renderSucceeded;
+void AppPlaybackController::updateStatusFromHost(
+    const RealtimePlaybackHostSnapshot& hostSnapshot)
+{
+    status_.deviceAvailable = hostSnapshot.format.available;
+    status_.projectSamplePosition = hostSnapshot.realtime.projectSamplePosition;
+    status_.renderedSampleCount = hostSnapshot.realtime.renderedSampleCount;
+    status_.projectSeconds = hostSnapshot.format.sampleRate > 0.0
+        ? static_cast<double>(status_.projectSamplePosition) / hostSnapshot.format.sampleRate
+        : 0.0;
+    status_.canStart = status_.state == AppPlaybackState::Stopped
+        && hostSnapshot.format.available
+        && hostSnapshot.realtime.state == RealtimePlaybackState::Stopped
+        && !worker_.joinable();
+    updateStatusText();
+}
+
+void AppPlaybackController::updateStatusText()
+{
+    status_.stateLabel = stateLabel(status_.state);
+    status_.summary = "播放状态：" + status_.stateLabel
+        + "，位置 " + std::to_string(status_.projectSamplePosition)
+        + " samples，约 " + secondsText(status_.projectSeconds) + " 秒。";
+}
+
+AppPlaybackStatus AppPlaybackController::status() const
+{
+    return status_;
+}
+
+bool AppPlaybackController::isPlaying() const noexcept
+{
+    return status_.state == AppPlaybackState::Playing;
+}
+
+std::int64_t AppPlaybackController::currentSample() const noexcept
+{
+    return status_.projectSamplePosition;
+}
+
+double AppPlaybackController::currentSeconds() const noexcept
+{
+    return status_.projectSeconds;
 }
 
 AppPlaybackActionFeedback startAppPlayback(
     AppPlaybackController& playback,
-    const Project& project)
+    const AppProjectSession& session,
+    std::optional<PlaybackLoopRange> loopRange)
 {
-    if (!playback.ensurePrepared(project)) {
-        return failureFeedback(
-            AppPlaybackActionFeedbackKind::PrepareFailed,
-            "无法开始播放：播放运行态准备失败。");
-    }
-
-    playback.start();
-    return successFeedback("已开始播放。");
+    return playback.start(session.capturePlaybackSnapshot(), loopRange);
 }
 
-AppPlaybackActionFeedback stopAppPlayback(
-    AppPlaybackController& playback,
-    const Project& project)
+AppPlaybackActionFeedback stopAppPlayback(AppPlaybackController& playback)
 {
-    if (!playback.ensurePrepared(project)) {
-        return failureFeedback(
-            AppPlaybackActionFeedbackKind::PrepareFailed,
-            "无法停止播放：播放运行态准备失败。");
-    }
-
-    if (!playback.stop(project)) {
-        return failureFeedback(
-            AppPlaybackActionFeedbackKind::StopFailed,
-            "无法停止播放：安全停止命令被拒绝。");
-    }
-
-    return successFeedback("已停止播放。");
+    return playback.stop();
 }
 
 AppPlaybackActionFeedback toggleAppPlayback(
     AppPlaybackController& playback,
-    const Project& project)
+    const AppProjectSession& session)
 {
-    // 已经在播放时必须走标准停止入口，因为停止入口会复用核心安全命令。
-    if (playback.isPlaying()) {
-        return stopAppPlayback(playback, project);
+    const auto state = playback.status().state;
+    if (state == AppPlaybackState::Preparing
+        || state == AppPlaybackState::Playing) {
+        return stopAppPlayback(playback);
     }
-
-    // 停止态必须走标准开始入口，确保 prepare、Transport 和反馈消息保持一致。
-    return startAppPlayback(playback, project);
+    return startAppPlayback(playback, session);
 }
 
-AppPlaybackActionFeedback rewindAppPlaybackToStart(
-    AppPlaybackController& playback,
-    const Project& project)
+AppPlaybackActionFeedback rewindAppPlaybackToStart(AppPlaybackController& playback)
 {
-    if (!playback.ensurePrepared(project)) {
-        return failureFeedback(
-            AppPlaybackActionFeedbackKind::PrepareFailed,
-            "无法回到开头：播放运行态准备失败。");
-    }
-
-    if (!playback.rewindToStart(project)) {
-        return failureFeedback(
-            AppPlaybackActionFeedbackKind::SeekFailed,
-            "无法回到开头：安全跳转命令被拒绝。");
-    }
-
-    return successFeedback("已回到开头。");
-}
-
-AppPlaybackActionFeedback advanceAppPlaybackForUiTick(
-    AppPlaybackController& playback,
-    const Project& project)
-{
-    if (!playback.isPlaying()) {
-        return noOpFeedback("播放未运行，本次界面刷新不推进播放位置。");
-    }
-
-    if (!playback.ensurePrepared(project)) {
-        return failureFeedback(
-            AppPlaybackActionFeedbackKind::PrepareFailed,
-            "无法推进播放：播放运行态准备失败。");
-    }
-
-    if (!playback.advanceOneUiBlock(project)) {
-        return failureFeedback(
-            AppPlaybackActionFeedbackKind::RenderFailed,
-            "无法推进播放：播放 block 渲染失败。");
-    }
-
-    return successFeedback("播放位置已推进。");
+    return playback.rewindToStart();
 }
 
 AppPlaybackStatus describeAppPlayback(const AppPlaybackController& playback)
 {
-    AppPlaybackStatus status;
-    status.prepared = playback.isPrepared();
-    status.playing = playback.isPlaying();
-    status.currentSample = playback.currentSample();
-    status.currentSeconds = playback.currentSeconds();
-    status.stateLabel = status.playing ? "播放中" : "已停止";
-    status.summary = "播放状态：" + status.stateLabel
-        + "，位置 " + std::to_string(status.currentSample)
-        + " samples，约 " + secondsText(status.currentSeconds) + " 秒。";
-    return status;
+    return playback.status();
 }
 
 }
