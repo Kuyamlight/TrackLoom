@@ -81,6 +81,13 @@ if(TARGET trackloom_juce)
             trackloom_juce
     )
 
+    if(WIN32)
+        target_link_libraries(trackloom_audio_hardware_smoke_tests
+            PRIVATE
+                ole32
+        )
+    endif()
+
     target_link_libraries(trackloom_app_juce_tests
         PRIVATE
             trackloom_app_juce_support
@@ -88,6 +95,7 @@ if(TARGET trackloom_juce)
 
     if(MSVC)
         target_compile_options(trackloom_app_juce_tests PRIVATE /utf-8)
+        target_compile_options(trackloom_audio_hardware_smoke_tests PRIVATE /utf-8)
     endif()
 
     add_test(NAME trackloom_app_juce_tests COMMAND trackloom_app_juce_tests)

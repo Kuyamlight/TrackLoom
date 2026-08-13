@@ -2,11 +2,18 @@
 
 - Evidence commit:
 - Windows version:
+- COM status/result (`S_OK`, `S_FALSE`, or existing apartment via `RPC_E_CHANGED_MODE`):
 - Output device display name:
 - Output device id:
 - Driver/version:
 - Requested format: 48000 Hz, 256 frames, stereo, channel mask 3
-- Actual format from `openOutput`:
+- Actual format from `openOutput` (sample rate, block frames, output channels, channel mask):
+- Sample-rate difference (requested / actual / differs):
+- Block-frame difference (requested / actual / differs):
+- Output-channel-count difference (requested / actual / differs):
+- Output-channel-mask difference (requested / actual / differs):
+- `TRACKLOOM_ACCEPT_AUDIO_FORMAT_DEVIATION` value:
+- Operator confirmation of the negotiated deviation (required when any field differs):
 - Plan build ms (10 values):
 - Requested duration: 600 seconds
 - Observed duration:
@@ -16,5 +23,5 @@
 - Oversized block count:
 - Voice steal count:
 - Stale Note Off count:
-- Manual listening conclusion (audible C4/E4/G4/C5 loop, no clicks/dropouts):
+- Manual listening conclusion (fill only after listening; audible C4/E4/G4/C5 loop, no clicks/dropouts):
 - Operator:
