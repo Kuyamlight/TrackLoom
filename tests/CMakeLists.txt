@@ -8,6 +8,13 @@ target_link_libraries(trackloom_core_tests
 )
 
 add_test(NAME trackloom_core_tests COMMAND trackloom_core_tests)
+set_tests_properties(trackloom_core_tests PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+
+add_test(NAME trackloom_audio_fixture_hash_tests
+    COMMAND ${CMAKE_COMMAND}
+        -DFIXTURE_DIR=${CMAKE_SOURCE_DIR}/tests/fixtures/audio/minimum-audible-midi
+        -P ${CMAKE_SOURCE_DIR}/tests/verify_audio_fixture_hashes.cmake)
 
 add_executable(trackloom_app_support_tests
     app_support_tests.cpp
@@ -44,6 +51,10 @@ if(TARGET trackloom_juce)
         juce_midi_hardware_smoke_tests.cpp
     )
 
+    add_executable(trackloom_audio_hardware_smoke_tests
+        juce_audio_hardware_smoke_tests.cpp
+    )
+
     target_link_libraries(trackloom_juce_audio_tests
         PRIVATE
             trackloom_juce
@@ -55,6 +66,11 @@ if(TARGET trackloom_juce)
     )
 
     target_link_libraries(trackloom_midi_hardware_smoke_tests
+        PRIVATE
+            trackloom_juce
+    )
+
+    target_link_libraries(trackloom_audio_hardware_smoke_tests
         PRIVATE
             trackloom_juce
     )
@@ -78,5 +94,13 @@ if(TARGET trackloom_juce)
         PROPERTIES
             LABELS "manual;hardware"
             SKIP_RETURN_CODE 77
+    )
+    add_test(NAME trackloom_audio_hardware_smoke_tests COMMAND trackloom_audio_hardware_smoke_tests)
+    set_tests_properties(trackloom_audio_hardware_smoke_tests
+        PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            LABELS "manual;hardware"
+            SKIP_RETURN_CODE 77
+            TIMEOUT 720
     )
 endif()

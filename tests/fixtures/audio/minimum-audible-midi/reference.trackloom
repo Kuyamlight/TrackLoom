@@ -1,0 +1,13 @@
+trackloom_project 10
+name Minimum Audible MIDI Reference
+tempo tempo-1 0 120
+time_signature meter-1 0 4 4
+track track-1 Instrument Unity Gain Instrument
+track_playback_state track-1 muted=0 soloed=0 disabled=0
+track_mix_state track-1 gain=1 pan=0
+track_view_state track-1 hidden=0 collapsed=0
+clip clip-1 track-1 Midi 0 3840 Minimum Audible MIDI
+midi_note clip-1 note-1 0 480 60 96 1
+midi_note clip-1 note-2 960 480 64 96 1
+midi_note clip-1 note-3 1920 480 67 96 1
+midi_note clip-1 note-4 2880 480 72 96 1

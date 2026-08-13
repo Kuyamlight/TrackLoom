@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -1798,6 +1799,164 @@ void preparedMidiPlanBuildsDeterministicNonLoopSnapshot()
     require(plan.events[3].eventOrdinal == 5, "hidden-track note should keep its stable ordinal");
     require(plan.events[4].noteInstanceId == 2, "hidden-track note off should reuse its note instance id");
     require(plan.events[4].eventOrdinal == 4, "hidden-track note off should keep its stable ordinal");
+}
+
+void audibleReferenceFixtureBuildsExpectedLoop()
+{
+    struct ExpectedEvent {
+        std::int64_t samplePosition = 0;
+        std::string type;
+        std::uint32_t noteInstanceId = 0;
+        std::uint32_t eventOrdinal = 0;
+        std::uint32_t instrumentSlot = 0;
+        int channel = 0;
+        int note = 0;
+        int velocity = 0;
+    };
+    const auto fixtureDirectory = std::filesystem::path(
+        "tests/fixtures/audio/minimum-audible-midi");
+    const auto loaded = trackloom::loadProjectFromFile(
+        fixtureDirectory / "reference.trackloom");
+    require(loaded.project.has_value(), "reference fixture should load: " + loaded.error);
+
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.projectSnapshot = *loaded.project;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    request.playbackStartSample = 0;
+    request.loopRange = trackloom::PlaybackLoopRange {0, 3840};
+    const auto built = trackloom::buildPreparedMidiPlaybackPlan(std::move(request));
+
+    require(built.plan != nullptr, "reference fixture should build");
+    require(built.plan->events.size() == 8,
+        "four reference notes should create eight events");
+    require(built.plan->loop.has_value()
+            && built.plan->loop->loopLengthSamples == 96000,
+        "reference loop should last exactly 96000 samples at 48 kHz");
+
+    std::ifstream expectedEventsFile(fixtureDirectory / "expected-events.tsv");
+    require(expectedEventsFile.is_open(), "reference expected-events fixture should load");
+    std::string line;
+    std::getline(expectedEventsFile, line);
+    require(line == "table\tsample_position\ttype\tnote_instance_id\tevent_ordinal\tinstrument_slot\tchannel\tnote\tvelocity",
+        "reference expected-events header should be stable");
+    std::vector<ExpectedEvent> expectedEvents;
+    while (std::getline(expectedEventsFile, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        std::replace(line.begin(), line.end(), '\t', ' ');
+        std::istringstream input(line);
+        std::string table;
+        ExpectedEvent event;
+        require(input >> table >> event.samplePosition >> event.type >> event.noteInstanceId
+                >> event.eventOrdinal >> event.instrumentSlot >> event.channel >> event.note
+                >> event.velocity && table == "events",
+            "reference expected-events row should parse");
+        expectedEvents.push_back(event);
+    }
+    require(expectedEvents.size() == built.plan->events.size(),
+        "reference events should match fixture row count");
+    for (std::size_t index = 0; index < expectedEvents.size(); ++index) {
+        const auto& expected = expectedEvents[index];
+        const auto& actual = built.plan->events[index];
+        require(std::llabs(actual.samplePosition - expected.samplePosition) <= 1,
+            "reference sample position should match fixture row " + std::to_string(index));
+        require((actual.type == trackloom::PreparedMidiEventType::NoteOn ? "note_on" : "note_off") == expected.type,
+            "reference event type should match fixture row " + std::to_string(index));
+        require(actual.noteInstanceId == expected.noteInstanceId,
+            "reference note instance should match fixture row " + std::to_string(index));
+        require(actual.eventOrdinal == expected.eventOrdinal,
+            "reference event ordinal should match fixture row " + std::to_string(index)
+                + ": actual=" + std::to_string(actual.eventOrdinal));
+        require(actual.instrumentSlotIndex == expected.instrumentSlot,
+            "reference instrument slot should match fixture row " + std::to_string(index));
+        require(actual.channel == expected.channel && actual.noteNumber == expected.note
+                && actual.velocity == expected.velocity,
+            "reference MIDI payload should match fixture row " + std::to_string(index));
+    }
+    require(built.plan->loop->boundaryNoteOffEvents.empty()
+            && built.plan->initialChaseNoteOnEvents.empty()
+            && built.plan->loop->startChaseNoteOnEvents.empty(),
+        "reference fixture should not require chase or boundary tables");
+
+    for (int iteration = 0; iteration < 10; ++iteration) {
+        trackloom::PreparedMidiPlaybackPlanBuildRequest timedRequest;
+        timedRequest.projectSnapshot = *loaded.project;
+        timedRequest.sampleRate = 48000.0;
+        timedRequest.maximumBlockFrames = 256;
+        timedRequest.outputChannelCount = 2;
+        timedRequest.outputChannelMask = 3;
+        timedRequest.playbackStartSample = 0;
+        timedRequest.loopRange = trackloom::PlaybackLoopRange {0, 3840};
+        const auto started = std::chrono::steady_clock::now();
+        const auto timedBuild = trackloom::buildPreparedMidiPlaybackPlan(std::move(timedRequest));
+        const auto milliseconds = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - started).count();
+        require(timedBuild.plan != nullptr,
+            "reference performance plan should build on every timed iteration");
+        require(milliseconds <= 250.0,
+            "reference performance plan should build within 250 ms");
+        std::cout << "reference_plan_build_ms[" << iteration + 1 << "]=" << milliseconds << '\n';
+    }
+
+    std::ifstream propertiesFile(fixtureDirectory / "expected-audio.properties");
+    require(propertiesFile.is_open(), "reference expected-audio fixture should load");
+    std::map<std::string, double> properties;
+    while (std::getline(propertiesFile, line)) {
+        const auto separator = line.find('=');
+        require(separator != std::string::npos, "reference audio property should contain equals");
+        const auto rawValue = line.substr(separator + 1);
+        properties.emplace(line.substr(0, separator), rawValue == "true" ? 1.0 : std::stod(rawValue));
+    }
+    const auto property = [&properties](const std::string& key) {
+        const auto found = properties.find(key);
+        require(found != properties.end(), "reference audio property should exist");
+        return found->second;
+    };
+    const auto renderFrames = static_cast<int>(property("render_frames"));
+    const auto blockFrames = static_cast<int>(property("render_block_frames"));
+    require(renderFrames == 96000 && blockFrames == 256,
+        "reference audio dimensions should be independently fixed");
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(built.plan.get()) && runtime.start(),
+        "reference plan should install into offline runtime");
+    std::vector<float> left(static_cast<std::size_t>(renderFrames));
+    std::vector<float> right(static_cast<std::size_t>(renderFrames));
+    for (int frame = 0; frame < renderFrames; frame += blockFrames) {
+        float* outputs[] {left.data() + frame, right.data() + frame};
+        runtime.processBlock(outputs, 2, std::min(blockFrames, renderFrames - frame));
+    }
+    double squaredSum = 0.0;
+    float peak = 0.0f;
+    bool nonSilent = false;
+    for (const auto sample : left) {
+        squaredSum += static_cast<double>(sample) * sample;
+        peak = std::max(peak, std::fabs(sample));
+        nonSilent = nonSilent || std::fabs(sample) > 0.000001f;
+    }
+    const double rms = std::sqrt(squaredSum / left.size());
+    require(nonSilent == (property("non_silent") != 0.0),
+        "reference audio should satisfy non-silent property");
+    require(rms >= property("rms_min"), "reference audio RMS should meet fixture minimum");
+    require(peak <= property("peak_max"), "reference audio peak should meet fixture maximum");
+    const auto windowStart = static_cast<std::size_t>(property("frequency_window_start_sample"));
+    const auto windowEnd = static_cast<std::size_t>(property("frequency_window_end_sample"));
+    std::vector<double> crossings;
+    for (std::size_t frame = windowStart + 1; frame < windowEnd; ++frame) {
+        if (left[frame - 1] <= 0.0f && left[frame] > 0.0f) {
+            crossings.push_back(static_cast<double>(frame - 1)
+                - left[frame - 1] / (left[frame] - left[frame - 1]));
+        }
+    }
+    require(crossings.size() >= 2, "reference frequency window should contain upward crossings");
+    const double frequency = (crossings.size() - 1) * 48000.0
+        / (crossings.back() - crossings.front());
+    require(std::fabs(frequency - property("frequency_reference_hz"))
+            <= property("frequency_tolerance_hz"),
+        "reference C4 frequency should match fixed zero-crossing tolerance");
 }
 
 void preparedMidiPlanSeparatesLoopBoundaryReleaseFromStartChase()
@@ -10097,6 +10256,7 @@ int main()
         midiPlaybackSortsEventsDeterministically();
         preparedMidiPlanOrdersNoteOffBeforeNoteOn();
         preparedMidiPlanBuildsDeterministicNonLoopSnapshot();
+        audibleReferenceFixtureBuildsExpectedLoop();
         preparedMidiPlanSeparatesLoopBoundaryReleaseFromStartChase();
         preparedMidiPlanChasesNoteHeldAtNonZeroLoopStart();
         preparedMidiPlanNormalizesLoopStartAndKeepsInitialChaseSeparate();
