@@ -1529,6 +1529,7 @@ endif()
 
 **文件：**
 
+- 修改 `src/core/RealtimePlaybackHost.h`
 - 修改 `src/platform/juce/JuceAudioHost.h`
 - 修改 `src/platform/juce/JuceAudioHost.cpp`
 - 修改 `src/app/AppPlaybackActions.h`
@@ -1542,7 +1543,7 @@ endif()
 
 **RED：** 在 `tests/juce_audio_tests.cpp` 增加连续 device-list notifications 的用例：listener 只使公开单调 `deviceListRevision` 增长，未调用 `scanForDevices`、`stop`、`close` 或 `createDevice`；消息线程 service 后只针对新 revision 枚举一次。在 fake 移除当前设备后，断言 snapshot 仍为 `Faulted`/`DeviceError`、旧计划失效且设置枚举/选择/应用不被禁用；重新提供或选择另一 fake device 后，成功 `openOutput` 才清除 fault 并增长 format generation。于 `tests/app_juce_audio_tests.cpp` 增加 controller 级回归：设备移除使 Play 保持禁用和稳定原因；设置成功应用后，controller poll 确认 host `Stopped`、available 且此前 failureReason 为 `DeviceFault`，恢复 `AppPlaybackState::Stopped` 与 `canStart=true`，不重用旧 plan，也不在恢复时重建计划。
 
-**GREEN：** 在 `JuceAudioHost` snapshot 中发布不可回绕的 `deviceListRevision`，listener 只原子递增；非实时 host service 幂等消费内部工作，多个消息线程 Timer 可以串行调用它，但不得在 30 Hz 每帧扫描设备。删除或不再匹配当前输出时关闭旧实例、硬重置 runtime、保留 `Faulted`/`DeviceError` 诊断与失效 generation；不能用一个会被多个 Timer 清掉的 boolean 作为 UI 通知。`AudioSettingsComponent` 持久记住最后已观察的 revision，即使 `TrackLoomMainComponent` 先 service host，也会在比较到新 revision 后恰好刷新一次并保留尚可匹配的候选，fault 时仍启用选择和 Apply；不要求主界面持有设置窗口指针或重构为单一 Timer。为 `AppPlaybackController` 加入恢复边界：成功 `openOutput` 后，poll 确认 host 为 `Stopped` 且 available、此前 failureReason 为 `DeviceFault` 时恢复 `AppPlaybackState::Stopped` 与 `canStart=true`；清除旧异步构建结果，用户下一次点 Play 才按新 format generation 重建，旧异步结果仍丢弃。
+**GREEN：** 在 `RealtimePlaybackHostSnapshot` 中以单调递增的 `uint64_t deviceListRevision` 发布 `JuceAudioHost` 的设备列表变化，按实用运行期不回绕处理；listener 只原子递增。非实时 host service 幂等消费内部工作，多个消息线程 Timer 可以串行调用它，但不得在 30 Hz 每帧扫描设备。删除或不再匹配当前输出时关闭旧实例、硬重置 runtime、保留 `Faulted`/`DeviceError` 诊断与失效 generation；不能用一个会被多个 Timer 清掉的 boolean 作为 UI 通知。`AudioSettingsComponent` 持久记住最后已观察的 revision，即使 `TrackLoomMainComponent` 先 service host，也会在比较到新 revision 后恰好刷新一次并保留尚可匹配的候选，fault 时仍启用选择和 Apply；不要求主界面持有设置窗口指针或重构为单一 Timer。为 `AppPlaybackController` 加入恢复边界：成功 `openOutput` 后，poll 确认 host 为 `Stopped` 且 available、此前 failureReason 为 `DeviceFault` 时恢复 `AppPlaybackState::Stopped` 与 `canStart=true`；清除旧异步构建结果，用户下一次点 Play 才按新 format generation 重建，旧异步结果仍丢弃。
 
 **验证：** 先运行新增 RED 所在的 `trackloom_juce_audio_tests` 与 `trackloom_app_juce_tests`，GREEN 后运行 `CORE_TEST`、`APP_TEST`、`JUCE_TEST`、完整 CTest 和 `git diff --check`；复核 fake 的 scan/create/open/stop/close 记录证明通知线程没有副作用。建议提交：`fix: recover audio controls after device loss`。
 
