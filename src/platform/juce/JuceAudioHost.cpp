@@ -95,7 +95,8 @@ struct JuceAudioHost::Impl {
     std::atomic<std::uint64_t> startBlockFrames {0};
     std::atomic<std::uint64_t> startOutputChannelCount {0};
     std::atomic<std::uint64_t> startOutputChannelMask {0};
-    std::atomic<std::uint32_t> deviceListRefreshPending {0};
+    std::atomic<std::uint64_t> publishedDeviceListRevision {0};
+    std::uint64_t servicedDeviceListRevision = 0;
     std::atomic<std::uint32_t> deviceErrorPending {0};
 };
 
@@ -119,6 +120,8 @@ JuceAudioHost::~JuceAudioHost()
 
 std::vector<JuceAudioOutputDeviceInfo> JuceAudioHost::refreshOutputDevices()
 {
+    const auto revisionToService =
+        impl_->publishedDeviceListRevision.load(std::memory_order_acquire);
     if (impl_->deviceType == nullptr && impl_->factory) {
         impl_->deviceType = impl_->factory();
         if (impl_->deviceType != nullptr) {
@@ -127,6 +130,7 @@ std::vector<JuceAudioOutputDeviceInfo> JuceAudioHost::refreshOutputDevices()
     }
     impl_->devices.clear();
     if (impl_->deviceType == nullptr) {
+        impl_->servicedDeviceListRevision = revisionToService;
         return impl_->devices;
     }
 
@@ -151,6 +155,21 @@ std::vector<JuceAudioOutputDeviceInfo> JuceAudioHost::refreshOutputDevices()
         }
         impl_->devices.push_back(std::move(info));
     }
+    if (impl_->device != nullptr) {
+        const auto currentStillExists = std::any_of(
+            impl_->devices.begin(), impl_->devices.end(), [&](const auto& info) {
+                return info.name == impl_->format.deviceName;
+            });
+        if (!currentStillExists) {
+            invalidateCurrentOutput(RealtimeAudioError::DeviceError);
+        }
+    }
+    impl_->servicedDeviceListRevision = revisionToService;
+    return impl_->devices;
+}
+
+std::vector<JuceAudioOutputDeviceInfo> JuceAudioHost::outputDevicesSnapshot() const
+{
     return impl_->devices;
 }
 
@@ -450,35 +469,14 @@ void JuceAudioHost::serviceNonRealtime()
     if (impl_->device != nullptr) {
         impl_->xRunCount = impl_->device->getXRunCount();
     }
-    if (impl_->deviceListRefreshPending.exchange(0, std::memory_order_acq_rel) != 0) {
+    const auto publishedRevision =
+        impl_->publishedDeviceListRevision.load(std::memory_order_acquire);
+    if (publishedRevision != impl_->servicedDeviceListRevision) {
         refreshOutputDevices();
-        if (impl_->device != nullptr) {
-            const auto currentStillExists = std::any_of(
-                impl_->devices.begin(), impl_->devices.end(), [&](const auto& info) {
-                    return info.name == impl_->format.deviceName;
-                });
-            if (!currentStillExists) {
-                impl_->device->stop();
-                impl_->runtime.hardReset(RealtimeAudioError::DeviceError);
-                impl_->device->close();
-                impl_->plan.reset();
-                impl_->device.reset();
-                ++impl_->format.generation;
-                impl_->format.available = false;
-                impl_->formatMismatch.store(0, std::memory_order_release);
-            }
-        }
     }
     if (impl_->deviceErrorPending.exchange(0, std::memory_order_acq_rel) != 0
         && impl_->device != nullptr) {
-        impl_->device->stop();
-        impl_->runtime.hardReset(RealtimeAudioError::DeviceError);
-        impl_->device->close();
-        impl_->plan.reset();
-        impl_->device.reset();
-        ++impl_->format.generation;
-        impl_->format.available = false;
-        impl_->formatMismatch.store(0, std::memory_order_release);
+        invalidateCurrentOutput(RealtimeAudioError::DeviceError);
     }
     if (impl_->device != nullptr) {
         const auto realtime = impl_->runtime.snapshot();
@@ -530,9 +528,26 @@ RealtimePlaybackHostSnapshot JuceAudioHost::snapshot() const
     result.format = impl_->format;
     result.realtime = impl_->runtime.snapshot();
     result.xRunCount = impl_->xRunCount;
+    result.deviceListRevision =
+        impl_->publishedDeviceListRevision.load(std::memory_order_acquire);
     result.deviceListRefreshPending =
-        impl_->deviceListRefreshPending.load(std::memory_order_acquire) != 0;
+        result.deviceListRevision != impl_->servicedDeviceListRevision;
     return result;
+}
+
+void JuceAudioHost::invalidateCurrentOutput(RealtimeAudioError error) noexcept
+{
+    if (impl_->device == nullptr) {
+        return;
+    }
+    impl_->device->stop();
+    impl_->runtime.hardReset(error);
+    impl_->device->close();
+    impl_->plan.reset();
+    impl_->device.reset();
+    ++impl_->format.generation;
+    impl_->format.available = false;
+    impl_->formatMismatch.store(0, std::memory_order_release);
 }
 
 void JuceAudioHost::audioDeviceIOCallbackWithContext(
@@ -614,7 +629,7 @@ void JuceAudioHost::audioDeviceError(const juce::String&)
 
 void JuceAudioHost::audioDeviceListChanged()
 {
-    impl_->deviceListRefreshPending.store(1, std::memory_order_release);
+    impl_->publishedDeviceListRevision.fetch_add(1, std::memory_order_release);
 }
 
 }

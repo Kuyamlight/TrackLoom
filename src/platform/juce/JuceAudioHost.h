@@ -67,6 +67,7 @@ public:
         JuceRealtimeBlockOperation blockOperation = nullptr);
     ~JuceAudioHost() override;
     std::vector<JuceAudioOutputDeviceInfo> refreshOutputDevices();
+    std::vector<JuceAudioOutputDeviceInfo> outputDevicesSnapshot() const;
     JuceAudioHostResult openOutput(const JuceAudioOpenRequest& request);
     void close() noexcept;
     JuceAudioHostResult playTestTone();
@@ -90,6 +91,7 @@ private:
     void audioDeviceStopped() override;
     void audioDeviceError(const juce::String& error) override;
     void audioDeviceListChanged() override;
+    void invalidateCurrentOutput(RealtimeAudioError error) noexcept;
 
     struct Impl;
     std::unique_ptr<Impl> impl_;

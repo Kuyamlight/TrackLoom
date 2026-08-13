@@ -535,6 +535,143 @@ void trackLoomMainComponentPollsDeviceRemovalWhileIdle()
         "the always-running UI timer must disable Play after idle device removal");
 }
 
+void trackLoomMainAndOpenSettingsRecoverAfterTheAppliedDeviceIsRemoved()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    trackloom::JuceAudioHost* observedHost = nullptr;
+    std::unique_ptr<trackloom::AudioSettingsComponent> presented;
+    int buildCalls = 0;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = std::make_unique<trackloom::JuceAudioHost>(
+        [&]() -> std::unique_ptr<juce::AudioIODeviceType> {
+            auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+            type->setOutputDevices({"TP35 Pro", "Speakers"});
+            observedType = type.get();
+            return type;
+        });
+    observedHost = dependencies.audioHost.get();
+    dependencies.buildOperation = [&buildCalls](
+        trackloom::PreparedMidiPlaybackPlanBuildRequest request,
+        std::stop_token stopToken) {
+        ++buildCalls;
+        return trackloom::buildPreparedMidiPlaybackPlan(std::move(request), stopToken);
+    };
+    dependencies.presentAudioSettings = [&](auto component) {
+        presented = std::move(component);
+    };
+    trackloom::TrackLoomMainComponent component(std::move(dependencies));
+    require(observedHost->deviceFormatSnapshot().deviceName == "TP35 Pro",
+        "device-loss UI regression must begin with TP35 Pro applied");
+    require(component.dispatchCommand(1303).executed && presented != nullptr,
+        "device-loss UI regression must keep the settings component open");
+    auto* device = dynamic_cast<juce::ComboBox*>(
+        presented->findChildWithID(trackloom::audioDeviceSelectorComponentId));
+    auto* sampleRate = dynamic_cast<juce::ComboBox*>(
+        presented->findChildWithID(trackloom::audioSampleRateSelectorComponentId));
+    auto* buffer = dynamic_cast<juce::ComboBox*>(
+        presented->findChildWithID(trackloom::audioBufferSelectorComponentId));
+    auto* channels = dynamic_cast<juce::ComboBox*>(
+        presented->findChildWithID(trackloom::audioChannelsSelectorComponentId));
+    auto* apply = dynamic_cast<juce::TextButton*>(
+        presented->findChildWithID(trackloom::audioApplyButtonComponentId));
+    auto* tone = dynamic_cast<juce::TextButton*>(
+        presented->findChildWithID(trackloom::audioTestToneButtonComponentId));
+    auto* settingsStatus = dynamic_cast<juce::Label*>(
+        presented->findChildWithID(trackloom::audioApplyStatusComponentId));
+    auto* play = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(component, trackloom::mainPlayButtonComponentId));
+    auto* playbackStatus = dynamic_cast<juce::Label*>(
+        findDescendantWithId(component, trackloom::mainPlaybackStatusComponentId));
+    require(device != nullptr && sampleRate != nullptr && buffer != nullptr
+            && channels != nullptr && apply != nullptr && tone != nullptr
+            && settingsStatus != nullptr && play != nullptr && playbackStatus != nullptr,
+        "device-loss UI regression requires every real settings and playback control");
+    observedType->clearCalls();
+    observedType->setOutputDevices({"Speakers"});
+    observedType->notifyDeviceListChanged();
+
+    component.serviceUiTimer();
+    require(!play->isEnabled() && playbackStatus->getText().contains(utf8(u8"故障")),
+        "Main must disable Play and retain its fault presentation after TP35 Pro removal");
+    pumpGuiMessagesOnce(100);
+
+    require(std::count(observedType->calls().begin(), observedType->calls().end(), "scan") == 1,
+        "Main and Settings timers must share one host scan for the same revision");
+    require(device->getNumItems() == 1 && device->getItemText(0).contains("Speakers")
+            && !device->getItemText(0).contains("TP35 Pro"),
+        "Settings must rebuild its selector from the cached revision even after Main services first");
+    require(device->isEnabled() && sampleRate->isEnabled() && buffer->isEnabled()
+            && channels->isEnabled() && apply->isEnabled() && !tone->isEnabled(),
+        "Faulted settings must permit selecting and applying Speakers but prohibit test tone");
+    require(settingsStatus->getText() == utf8(u8"待应用"),
+        "the replacement Speakers candidate must visibly require Apply");
+
+    observedType->clearCalls();
+    require(presented->applySelectedSettings(),
+        "applying Speakers must recover the output from the retained DeviceError fault");
+    const auto recoveredHost = observedHost->snapshot();
+    require(recoveredHost.format.available
+            && recoveredHost.format.deviceName == "Speakers"
+            && recoveredHost.realtime.state == trackloom::RealtimePlaybackState::Stopped,
+        "successful Apply must leave Speakers available with the runtime stopped");
+    require(buildCalls == 0
+            && std::find(observedType->calls().begin(), observedType->calls().end(), "start")
+                == observedType->calls().end(),
+        "device recovery must not rebuild, install, or start a project playback plan");
+
+    component.serviceUiTimer();
+    require(play->isEnabled(),
+        "controller poll must re-enable Play only after DeviceFault host recovery");
+    require(tone->isEnabled(),
+        "test tone must become available after Speakers is successfully applied");
+    observedType->clearCalls();
+    require(presented->triggerTestTone()
+            && observedType->activeDevice() != nullptr
+            && observedType->activeDevice()->getName() == "Speakers"
+            && std::count(observedType->calls().begin(), observedType->calls().end(), "start") == 1,
+        "the first recovered test tone must start on Speakers only when requested by the user");
+}
+
+void appPlaybackControllerDoesNotClearANonDevicePreparationFault()
+{
+    trackloom::JuceAudioHost host([]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        return std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+    });
+    require(host.openOutput({}).success,
+        "non-device-fault isolation test requires an available stopped host");
+    std::latch buildFinished {1};
+    trackloom::AppPlaybackController controller(
+        host,
+        [&buildFinished](trackloom::PreparedMidiPlaybackPlanBuildRequest, std::stop_token) {
+            buildFinished.count_down();
+            return trackloom::PreparedMidiPlaybackPlanBuildResult {
+                trackloom::PreparedMidiPlaybackPlanBuildFailureReason::InvalidOutputFormat,
+                nullptr
+            };
+        });
+    trackloom::AppProjectSession session;
+    require(controller.start(session.capturePlaybackSnapshot()).success,
+        "non-device-fault isolation test must start its failing preparation worker");
+    buildFinished.wait();
+    controller.poll(session);
+    const auto failed = controller.status();
+    require(failed.state == trackloom::AppPlaybackState::Faulted
+            && failed.failureReason == trackloom::AppPlaybackFailureReason::PreparationFailed,
+        "a failed plan build must publish PreparationFailed before testing recovery isolation");
+    require(host.snapshot().format.available
+            && host.snapshot().realtime.state == trackloom::RealtimePlaybackState::Stopped,
+        "the isolation host must remain stopped and available after preparation failure");
+
+    controller.poll(session);
+
+    const auto afterPoll = controller.status();
+    require(afterPoll.state == trackloom::AppPlaybackState::Faulted
+            && afterPoll.failureReason == trackloom::AppPlaybackFailureReason::PreparationFailed
+            && !afterPoll.canStart,
+        "a stopped available host must not auto-clear non-DeviceFault controller failures");
+}
+
 void trackLoomMainComponentFallsBackAfterInvalidSettingsWithAChineseWarning()
 {
     juce::ScopedJuceInitialiser_GUI initialiseGui;
@@ -820,6 +957,8 @@ int main()
         trackLoomMainComponentTimerRefreshesOnlyPlaybackPresentation();
         trackLoomMainComponentEnablesPlayWhenStartupOutputOpens();
         trackLoomMainComponentPollsDeviceRemovalWhileIdle();
+        trackLoomMainAndOpenSettingsRecoverAfterTheAppliedDeviceIsRemoved();
+        appPlaybackControllerDoesNotClearANonDevicePreparationFault();
         audioSettingsComponentTracksHostStateWithoutManualRefresh();
         audioSettingsComponentRecoversAfterTestToneStops();
         trackLoomMainComponentFallsBackAfterInvalidSettingsWithAChineseWarning();

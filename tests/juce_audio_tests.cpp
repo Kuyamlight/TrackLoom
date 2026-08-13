@@ -835,6 +835,89 @@ void juceAudioHostDefersDeviceListScanningToNonRealtimeService()
         "a refresh that still finds the current output must preserve availability");
 }
 
+void juceAudioHostPublishesEveryDeviceListRevisionAndServicesEachObservedRevisionOnce()
+{
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    trackloom::JuceAudioHost host([&]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+        type->setOutputDevices({"TP35 Pro", "Speakers"}, 1);
+        observedType = type.get();
+        return type;
+    });
+    require(host.refreshOutputDevices().size() == 2,
+        "revision test must begin with both fake outputs cached");
+    const auto revisionBefore = host.snapshot().deviceListRevision;
+    observedType->clearCalls();
+
+    observedType->notifyDeviceListChanged();
+    observedType->notifyDeviceListChanged();
+    observedType->notifyDeviceListChanged();
+
+    const auto afterNotifications = host.snapshot();
+    require(afterNotifications.deviceListRevision == revisionBefore + 3,
+        "three device-list notifications must publish three monotonic revisions");
+    require(afterNotifications.deviceListRefreshPending,
+        "an unserviced revision must retain the compatibility pending state");
+    require(observedType->calls().empty(),
+        "device-list listeners must not scan, create, open, start, stop, or close devices");
+
+    host.serviceNonRealtime();
+
+    require(std::count(observedType->calls().begin(), observedType->calls().end(), "scan") == 1,
+        "one service call must scan exactly once for the latest observed revision");
+    const auto cached = host.outputDevicesSnapshot();
+    require(cached.size() == 2 && cached[0].name == "TP35 Pro"
+            && cached[1].name == "Speakers",
+        "service must publish the refreshed output list through the cached snapshot");
+    require(!host.snapshot().deviceListRefreshPending,
+        "servicing the latest observed revision must clear the derived pending state");
+    observedType->clearCalls();
+
+    host.serviceNonRealtime();
+
+    require(observedType->calls().empty(),
+        "servicing an already-consumed revision must be an idempotent no-op");
+}
+
+void juceAudioHostDoesNotLoseANotificationPublishedDuringDeviceScanning()
+{
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    trackloom::JuceAudioHost host([&]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+        observedType = type.get();
+        return type;
+    });
+    require(host.refreshOutputDevices().size() == 1,
+        "scan-race test must initialise the fake device cache");
+    bool publishDuringScan = true;
+    observedType->setScanObserver([&] {
+        if (publishDuringScan) {
+            publishDuringScan = false;
+            observedType->notifyDeviceListChanged();
+        }
+    });
+    observedType->clearCalls();
+    observedType->notifyDeviceListChanged();
+
+    host.serviceNonRealtime();
+
+    require(std::count(observedType->calls().begin(), observedType->calls().end(), "scan") == 1,
+        "one service call must not loop when another revision arrives during its scan");
+    require(host.snapshot().deviceListRefreshPending,
+        "a revision published during scan must remain pending for the next service call");
+    observedType->clearCalls();
+
+    host.serviceNonRealtime();
+
+    require(std::count(observedType->calls().begin(), observedType->calls().end(), "scan") == 1
+            && !host.snapshot().deviceListRefreshPending,
+        "the next service call must consume the revision that arrived during scanning");
+    observedType->clearCalls();
+    host.serviceNonRealtime();
+    require(observedType->calls().empty(),
+        "the scan-race revision must also become idempotent after one service");
+}
+
 void juceAudioHostInvalidatesPlaybackWhenTheCurrentOutputDisappears()
 {
     trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
@@ -879,6 +962,76 @@ void juceAudioHostInvalidatesPlaybackWhenTheCurrentOutputDisappears()
         "the retained device type should permit recovery when output returns");
     require(host.installAndStart(makePlan(host.deviceFormatSnapshot())).success,
         "removed-device cleanup must not retain an unusable old plan");
+}
+
+void juceAudioHostRecoversSettingsAfterTheAppliedOutputIsRemoved()
+{
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    trackloom::JuceAudioHost host([&]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+        type->setOutputDevices({"TP35 Pro", "Speakers"});
+        observedType = type.get();
+        return type;
+    });
+    const auto opened = host.openOutput({"TP35 Pro", 48000.0, 256, 2});
+    require(opened.success, "device-removal recovery test must open TP35 Pro");
+    require(host.installAndStart(makePlan(opened.actualFormat)).success,
+        "device-removal recovery test must install a plan on TP35 Pro");
+    const auto generationBeforeRemoval = opened.actualFormat.generation;
+    observedType->setOutputDevices({"Speakers"});
+    observedType->clearCalls();
+
+    observedType->notifyDeviceListChanged();
+    host.serviceNonRealtime();
+    const auto removed = host.snapshot();
+
+    require(std::count(observedType->calls().begin(), observedType->calls().end(), "stop") == 1
+            && std::count(observedType->calls().begin(), observedType->calls().end(), "close") == 1,
+        "removing TP35 Pro must stop and close its old device instance exactly once");
+    require(removed.format.generation == generationBeforeRemoval + 1
+            && !removed.format.available,
+        "removed TP35 Pro must invalidate its format generation exactly once");
+    require(removed.realtime.state == trackloom::RealtimePlaybackState::Faulted
+            && removed.realtime.lastError == trackloom::RealtimeAudioError::DeviceError,
+        "removed TP35 Pro must retain the DeviceError fault until another output opens");
+    const auto cached = host.outputDevicesSnapshot();
+    require(cached.size() == 1 && cached.front().name == "Speakers",
+        "the cached settings list must contain only Speakers after TP35 Pro disappears");
+    require(!host.playTestTone().success,
+        "the invalidated TP35 Pro plan must not remain usable for a test tone");
+}
+
+void juceAudioHostExplicitRefreshAlsoInvalidatesARemovedCurrentOutput()
+{
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    trackloom::JuceAudioHost host([&]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+        type->setOutputDevices({"TP35 Pro", "Speakers"});
+        observedType = type.get();
+        return type;
+    });
+    const auto opened = host.openOutput({"TP35 Pro", 48000.0, 256, 2});
+    require(opened.success, "explicit-refresh regression must open TP35 Pro");
+    require(host.installAndStart(makePlan(opened.actualFormat)).success,
+        "explicit-refresh regression must install a plan on TP35 Pro");
+    observedType->setOutputDevices({"Speakers"});
+    observedType->clearCalls();
+
+    const auto devices = host.refreshOutputDevices();
+    const auto afterRefresh = host.snapshot();
+
+    require(devices.size() == 1 && devices.front().name == "Speakers",
+        "explicit refresh must return the newly visible Speakers output");
+    require(std::count(observedType->calls().begin(), observedType->calls().end(), "stop") == 1
+            && std::count(observedType->calls().begin(), observedType->calls().end(), "close") == 1,
+        "explicit refresh must tear down a current output that vanished without notification");
+    require(afterRefresh.format.generation == opened.actualFormat.generation + 1
+            && !afterRefresh.format.available
+            && afterRefresh.realtime.state == trackloom::RealtimePlaybackState::Faulted
+            && afterRefresh.realtime.lastError == trackloom::RealtimeAudioError::DeviceError,
+        "explicit refresh must invalidate the old format and retain DeviceError");
+    require(!host.playTestTone().success,
+        "explicit refresh must prevent a tone from reaching the removed TP35 Pro instance");
 }
 
 void juceAudioHostDefersDeviceErrorsAndSilencesUntilServiceCleanup()
@@ -1214,7 +1367,11 @@ int main()
         juceAudioHostContainsRealtimeBlockExceptionsAndSilencesTheWholeBlock();
         juceAudioHostCountsCallbackTimeEqualToTheRealtimeDeadline();
         juceAudioHostDefersDeviceListScanningToNonRealtimeService();
+        juceAudioHostPublishesEveryDeviceListRevisionAndServicesEachObservedRevisionOnce();
+        juceAudioHostDoesNotLoseANotificationPublishedDuringDeviceScanning();
         juceAudioHostInvalidatesPlaybackWhenTheCurrentOutputDisappears();
+        juceAudioHostRecoversSettingsAfterTheAppliedOutputIsRemoved();
+        juceAudioHostExplicitRefreshAlsoInvalidatesARemovedCurrentOutput();
         juceAudioHostDefersDeviceErrorsAndSilencesUntilServiceCleanup();
         juceAudioHostCoalescesSimultaneousRemovalAndDeviceErrorCleanup();
         juceAudioHostServicesStoppingOnlyAfterTheRuntimeFinishesItsTail();

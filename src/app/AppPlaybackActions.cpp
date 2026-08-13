@@ -233,6 +233,21 @@ void AppPlaybackController::poll(const AppProjectSession& session)
         hostSnapshot = host_.snapshot();
     }
 
+    if (status_.state == AppPlaybackState::Faulted
+        && status_.failureReason == AppPlaybackFailureReason::DeviceFault
+        && hostSnapshot.format.available
+        && hostSnapshot.realtime.state == RealtimePlaybackState::Stopped
+        && !worker_.joinable()) {
+        activePreparationKey_.reset();
+        {
+            std::scoped_lock lock(completionState_->mailboxMutex);
+            completionState_->mailbox.reset();
+        }
+        completionState_->completionPublished.store(false, std::memory_order_release);
+        status_.state = AppPlaybackState::Stopped;
+        status_.failureReason = AppPlaybackFailureReason::None;
+    }
+
     if (status_.state == AppPlaybackState::Playing
         && hostSnapshot.realtime.state == RealtimePlaybackState::Stopped) {
         status_.state = AppPlaybackState::Stopped;

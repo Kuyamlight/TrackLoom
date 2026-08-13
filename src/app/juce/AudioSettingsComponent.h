@@ -42,6 +42,7 @@ public:
 
 private:
     void timerCallback() override;
+    void rebuildDevicesFromCache();
     void rebuildFormatSelectors();
     void refreshEnabledState();
     bool candidateMatchesAppliedFormat() const;
@@ -59,6 +60,7 @@ private:
     juce::TextButton testToneButton_;
     juce::Label applyStatus_;
     juce::String statusOverride_;
+    std::uint64_t lastObservedDeviceListRevision_ = 0;
 };
 
 }

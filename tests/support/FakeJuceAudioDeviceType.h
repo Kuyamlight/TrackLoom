@@ -89,6 +89,9 @@ public:
     void scanForDevices() override
     {
         calls_.push_back("scan");
+        if (scanObserver_) {
+            scanObserver_();
+        }
     }
 
     juce::StringArray getDeviceNames(bool wantInputNames) const override
@@ -269,6 +272,11 @@ public:
         startObserver_ = std::move(observer);
     }
 
+    void setScanObserver(std::function<void()> observer)
+    {
+        scanObserver_ = std::move(observer);
+    }
+
     void setCallbackFramesDuringStart(int frames)
     {
         callbackFramesDuringStart_ = std::max(0, frames);
@@ -312,6 +320,7 @@ private:
     std::optional<int> startOutputChannels_;
     std::optional<std::uint64_t> startOutputMask_;
     std::function<void()> startObserver_;
+    std::function<void()> scanObserver_;
     int callbackFramesDuringStart_ = 0;
     int pendingCallbackFramesOnStop_ = 0;
     int lastOpenInputChannelCount_ = -1;

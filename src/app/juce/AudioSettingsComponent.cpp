@@ -119,10 +119,18 @@ AudioSettingsComponent::~AudioSettingsComponent()
 
 void AudioSettingsComponent::refreshFromHost()
 {
+    host_.refreshOutputDevices();
+    rebuildDevicesFromCache();
+    lastObservedDeviceListRevision_ = host_.snapshot().deviceListRevision;
+}
+
+void AudioSettingsComponent::rebuildDevicesFromCache()
+{
     const auto previousName = selectedSettings().outputDeviceName;
-    devices_ = host_.refreshOutputDevices();
+    devices_ = host_.outputDevicesSnapshot();
     deviceSelector_.clear(juce::dontSendNotification);
     int selectedIndex = -1;
+    bool retainedPrevious = false;
     for (std::size_t index = 0; index < devices_.size(); ++index) {
         const auto& device = devices_[index];
         if (device.id.rfind("Windows Audio/", 0) != 0) {
@@ -134,12 +142,16 @@ void AudioSettingsComponent::refreshFromHost()
         if ((!previousName.empty() && device.name == previousName)
             || (selectedIndex < 0 && device.isDefault)) {
             selectedIndex = deviceSelector_.getNumItems() - 1;
+            retainedPrevious = !previousName.empty() && device.name == previousName;
         }
     }
     if (selectedIndex < 0 && deviceSelector_.getNumItems() > 0) {
         selectedIndex = 0;
     }
     deviceSelector_.setSelectedItemIndex(selectedIndex, juce::dontSendNotification);
+    if (!retainedPrevious && !previousName.empty()) {
+        statusOverride_.clear();
+    }
     rebuildFormatSelectors();
 }
 
@@ -236,6 +248,11 @@ void AudioSettingsComponent::resized()
 void AudioSettingsComponent::timerCallback()
 {
     host_.serviceNonRealtime();
+    const auto deviceListRevision = host_.snapshot().deviceListRevision;
+    if (deviceListRevision != lastObservedDeviceListRevision_) {
+        rebuildDevicesFromCache();
+        lastObservedDeviceListRevision_ = deviceListRevision;
+    }
     refreshEnabledState();
 }
 
@@ -306,15 +323,17 @@ void AudioSettingsComponent::refreshEnabledState()
 {
     const auto state = host_.snapshot().realtime.state;
     const auto stopped = state == RealtimePlaybackState::Stopped;
+    const auto canConfigure = state != RealtimePlaybackState::Playing
+        && state != RealtimePlaybackState::Stopping;
     const auto hasDevice = selectedDeviceInfo() != nullptr;
-    applyButton_.setEnabled(stopped && hasDevice);
+    applyButton_.setEnabled(canConfigure && hasDevice);
     const auto candidateApplied = candidateMatchesAppliedFormat();
     testToneButton_.setEnabled(
         stopped && host_.deviceFormatSnapshot().available && candidateApplied);
-    deviceSelector_.setEnabled(stopped);
-    sampleRateSelector_.setEnabled(stopped);
-    bufferSelector_.setEnabled(stopped);
-    channelsSelector_.setEnabled(stopped);
+    deviceSelector_.setEnabled(canConfigure);
+    sampleRateSelector_.setEnabled(canConfigure);
+    bufferSelector_.setEnabled(canConfigure);
+    channelsSelector_.setEnabled(canConfigure);
     if (statusOverride_.isNotEmpty()) {
         applyStatus_.setText(statusOverride_, juce::dontSendNotification);
     } else if (!candidateApplied) {
