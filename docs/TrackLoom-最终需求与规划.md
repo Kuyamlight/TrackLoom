@@ -1,7 +1,7 @@
 # TrackLoom｜织音 最终需求与规划
 
 - 文档状态：唯一需求与规划基线
-- 最后整理日期：2026-08-08
+- 最后整理日期：2026-08-13
 - 适用范围：产品需求、架构边界、阶段路线、验收标准、未定决策
 - 维护规则：后续所有需求与规划变更只改本文档；`AGENTS.md` 只记录协作约定、工程原则和经验证实的长期教训；本文档纳入 Git 版本控制。
 
@@ -429,23 +429,23 @@ MIDI 规则：
 
 #### 16.4.3 设备设置、状态和故障降级
 
-1. 首期只承诺 Windows x64 上的 WASAPI 共享模式。默认请求 0 路输入、2 路输出、48 kHz、256 samples 和立体声；允许用户选择 1–2 路输出。正式入口只允许 JUCE 设备类型 `Windows Audio`，必须隐藏或拒绝 DirectSound、`Windows Audio (Exclusive Mode)`、低延迟实验模式和 ASIO，避免把未验收后端误展示为已支持。驱动不支持默认配置时可以接受协商结果，但必须显示并在证据中记录实际设备、驱动、采样率、block 大小、声道数和偏差理由。ASIO 保留为后续适配器，不是本里程碑前置条件。
-2. “工具 → 音频设置…”打开专用 WASAPI 共享输出设置界面，使用 JUCE 控件展示该 device type 的输出设备、采样率、buffer 大小和声道选项，并提供低音量测试音。该界面不使用会暴露其他后端的通用 `AudioDeviceSelectorComponent`。测试音只在工程播放停止时可用，只验证当前输出，不修改工程、播放头或命令历史。
-3. 音频设备状态是本机运行配置，保存到用户应用数据目录，不写入 `.trackloom` 工程。设置恢复失败时回退到可用默认设备并显示警告，不得阻止用户打开和编辑工程。
-4. 无设备或初始化失败时，应用继续提供工程编辑和保存，播放入口禁用并显示稳定原因；设备断开或重启时立即静音、停止播放并使当前计划失效；采样率变化后必须重新生成计划才能播放。
+1. 首期只承诺 Windows x64 上的 WASAPI 共享模式。首次或缺失本机设置时默认请求 0 路输入、2 路输出、48 kHz、256 samples 和立体声；允许用户选择 1–2 路输出。正式入口只允许 JUCE 设备类型 `Windows Audio`，必须隐藏或拒绝 DirectSound、`Windows Audio (Exclusive Mode)`、低延迟实验模式和 ASIO，避免把未验收后端误展示为已支持。驱动不支持请求格式时可以接受 JUCE/驱动协商的实际格式，但必须显示并在证据中记录请求、实际设备、驱动、采样率、block 大小、声道数和偏差理由；不得伪造 256 samples 或把单一可用 buffer 选项当成错误。ASIO 保留为后续适配器，不是本里程碑前置条件。
+2. “工具 → 音频设置…”打开专用 WASAPI 共享输出设置界面，使用 JUCE 控件展示该 device type 的输出设备、采样率、buffer 大小和声道选项，并提供低音量测试音。该界面不使用会暴露其他后端的通用 `AudioDeviceSelectorComponent`。下拉框只编辑候选配置：选择设备或格式绝不自动关闭、打开或改写 Windows 默认路由；只有用户按“应用”才允许切换输出。候选与当前已打开的设备或实际格式不一致时，界面必须明确显示“待应用”，并禁用测试音；测试音只在工程播放停止、没有待应用候选且当前输出可用时可用，只验证当前实际输出，不修改工程、播放头或命令历史。
+3. 音频设备状态是本机运行配置，保存到用户应用数据目录，不写入 `.trackloom` 工程。本机设置必须分别保留上次成功应用的请求与 host `actualFormat`（设备稳定标识/显示名、采样率、block、声道和声道 mask）；成功“应用”后，以 host 返回的实际格式更新界面和本机设置，不能把候选值冒充实际值。设置恢复失败时回退到可用默认设备并显示警告，不得阻止用户打开和编辑工程。
+4. 无设备或初始化失败时，应用继续提供工程编辑和保存，播放入口禁用并显示稳定原因；设备断开、移除或重启时立即静音、停止播放并使当前计划失效。`Faulted`/`DeviceError` 诊断必须保留到一次成功的 `openOutput` 替换设备实例后才清除；故障状态下设置界面仍必须允许在非实时线程枚举、选择和“应用”新设备恢复。采样率变化后必须重新生成计划才能播放。
 5. callback 收到超过已准备上限的 block 时整块静音并计数，由消息线程重新准备；输出指针为空、声道数量变化或其他格式异常时只处理有效指针，不越界、不保留旧缓冲内容。
 6. callback 不构造诊断字符串，只发布稳定错误枚举和原子数字。UI 至少展示当前设备、实际采样率、block 大小、输出声道数、callback 次数、callback 超时次数、超大 block 次数、xrun/underrun（后端可用时）、voice stealing 次数和 stale Note Off 次数。
 7. callback 执行时间达到或超过当前 block 对应的实时期限时递增超时计数；xrun/underrun 查询应在非实时线程读取后端状态。诊断失败本身不得阻塞或终止音频线程。
-8. JUCE 的 `audioDeviceError(const String&)` 可能从任意线程调用；该入口只发布稳定设备错误标志，不复制或格式化错误字符串。消息线程随后读取设备错误并生成用户反馈。设备列表变化通知同样只能请求消息线程刷新，不能在通知线程直接关闭、打开或替换设备。
+8. JUCE 的 `audioDeviceError(const String&)` 可能从任意线程调用；该入口只发布稳定设备错误标志，不复制或格式化错误字符串。消息线程随后读取设备错误并生成用户反馈。设备列表变化通知同样只能递增单调 device-list revision/generation 并请求消息线程刷新，不能在通知线程直接扫描、关闭、打开或替换设备。设置 UI 只消费该 revision 的最新值进行一次刷新；不得以 30 Hz 轮询扫描设备，也不得让多个 `Timer` 竞争消费一个可丢失的 pending 标志。
 
 #### 16.4.4 自动测试、实机证据和完成门槛
 
 1. 核心计划测试覆盖 tick 到 sample 换算、tempo 变化、事件稳定排序、轨道增益和声像快照、静音/独奏/禁用、隐藏不影响声音、重叠同音高、非法输入、总事件和单 callback 密度上限、半开窗口、循环尾/头 block 切分、恰好结束于右边界、单 block 多次回绕、边界 Note Off、循环起点 chase、连续 block 不重复 chase、`loopIteration` 实例隔离，以及单调 `renderedSampleCount` 与回绕 `projectSamplePosition`。合法事件位置与预期偏差不得超过 1 sample。
 2. 合成器离线测试覆盖 44.1/48/96 kHz、64/256/512 samples block、Note On 精确起点、跨 block 连续性、Note Off 与 release、同音高和跨循环实例释放、16 voice、空闲 voice 最低 index、同 sample 稳定事件顺序、按 `voiceStartSerial` 窃取、并列防御规则、被窃取实例的迟到 Note Off 忽略、正常停止最多 30 ms release 后全零、设备错误硬重置和峰值上限。A4 稳态频率应在预先固定的容差内接近 440 Hz；设计理论同相峰值不超过 0.72，固定清单的验收峰值上限为 0.8。
 3. callback 和 fake backend 测试覆盖未播放清零、正常非零输出、实际 `numSamples` 推进、`Playing → Stopping → Stopped`、设备 `stop()` 清空 pending callback 后才允许替换计划、设备启动/停止/重启、采样率变化、空输出指针、单/双声道、超大 block、事件密度超限整块静音、初始化失败和 callback 异常隔离。完成预热后，受测 callback 自有路径的堆分配次数必须为 0，并通过代码审查确认没有锁等待和实时禁用操作。
-4. 应用层与 JUCE 测试覆盖音频设置菜单、命令分发、设备状态、设置恢复、测试音、播放禁用、`Preparing` 期间消息线程继续响应、取消构建、过期 `projectEditGeneration` 或设备格式结果被丢弃、中文反馈和 UI Timer 不再推进播放头；桌面应用继续通过隐藏启动和关闭烟测。
+4. 应用层与 JUCE 测试覆盖音频设置菜单、命令分发、设备状态、设置恢复、测试音、播放禁用、`Preparing` 期间消息线程继续响应、取消构建、过期 `projectEditGeneration` 或设备格式结果被丢弃、中文反馈和 UI Timer 不再推进播放头；还必须覆盖候选选择不改当前输出、候选与实际格式不一致时“待应用”与测试音禁用、成功应用后保存/显示 host `actualFormat`、UTF-8 中文按钮文本、单一 buffer 的有效展示、revision 驱动的一次设备列表刷新、设备移除后的 `Faulted`/`DeviceError` 保留以及从设置和 controller 两条路径恢复。桌面应用继续通过隐藏启动和关闭烟测。
 5. 固定 MIDI 参考工程、预期事件及音频属性清单和内容签名放入版本控制；建议目录为 `tests/fixtures/audio/minimum-audible-midi/`。在答辩基准机上记录至少 10 次参考工程计划构建耗时，单次目标不超过 250 ms；未达标时必须保留 worker 隔离和可取消 UI，不得改回消息线程同步排序。每次实机证据至少记录 commit、Windows 版本、设备、驱动、采样率、block、声道、计划构建耗时、持续时间、xrun/超时计数和人工监听结论，建议保存到 `tests/evidence/audio/`。
-6. 2026-10-31 里程碑只有在固定 MIDI 工程通过内置合成器实际发声、输出设备可选择、所有相关自动测试通过，并在 48 kHz、256 samples、立体声下连续循环 10 分钟且应用无崩溃、xrun/underrun 为 0（后端不提供时 callback 超时为 0）、无可复现爆音、悬挂音符或循环边界丢拍时才可标为完成。设备不支持默认配置时必须按第 16.2 节记录偏差，不能省略证据。
+6. 2026-10-31 里程碑只有在固定 MIDI 工程通过内置合成器实际发声、输出设备可选择、所有相关自动测试通过，并以 48 kHz、256 samples、立体声作为默认请求连续循环 10 分钟且应用无崩溃、xrun/underrun 为 0（后端不提供时 callback 超时为 0）、无可复现爆音、悬挂音符或循环边界丢拍时才可标为完成。若设备不支持默认请求，则以 JUCE/驱动返回的实际格式完成同一时长运行，并按第 16.2 节记录请求、实际值和偏差；不得因未能取得 256 而伪造格式或省略证据。
 7. 本里程碑的 10 分钟证据不能替代 2027-05-31 候选版的 30 分钟音频验收；WAV 导入播放、离线 WAV 渲染和对应参考 PCM 验收继续按 2027-02-28 里程碑完成。
 
 #### 16.4.5 可执行实施计划
@@ -1453,9 +1453,9 @@ addAndMakeVisible(testToneButton_);
 
 1. 先加 fixture 驱动 RED：核心测试从磁盘打开 reference，按 README 的精确请求构建 plan，逐字段比较 `expected-events.tsv`；再把同一计划通过 `PreparedMidiPlaybackRuntime` 离线渲染 96000 frames，测量非零样本、RMS、绝对峰值和第一段 C4 稳态过零频率并逐项比较 properties 容差。在文件尚不存在时记录 RED。`tests/CMakeLists.txt` 给该测试设置 `${CMAKE_SOURCE_DIR}` 工作目录，避免从 build 目录解析相对路径。
 2. 创建上述固定内容，使用 `Get-FileHash -Algorithm SHA256` 生成签名。`verify_audio_fixture_hashes.cmake` 用 CMake `file(SHA256 ...)` 逐项核对 `SHA256SUMS` 中的 reference、expected-events、expected-audio 和 README；在 `tests/CMakeLists.txt` 注册独立 `trackloom_audio_fixture_hash_tests`，不得为了校验 fixture 在 core 引入新的加密库。再运行 `CORE_TEST` 和该 hash CTest 取得 GREEN。
-3. 新建 `trackloom_audio_hardware_smoke_tests`。未设置 `TRACKLOOM_AUDIO_HARDWARE_SMOKE=1` 时返回 77；启用时读取 `TRACKLOOM_AUDIO_OUTPUT_NAME`（空则默认设备）和 `TRACKLOOM_AUDIO_SMOKE_SECONDS`（默认 600），打开 reference、按实际设备格式重建同一 tick loop，并在退出时打印实际格式、10 次计划构建耗时、持续时间和全部诊断计数。若后端 xrun 值不为 `-1`，xrun 必须为 0；若为 `-1`，callback timeout 必须为 0；两种情况都要求 oversized block、callback exception、voice stealing 和 stale Note Off 为 0，否则测试返回非零。CTest 设置 `${CMAKE_SOURCE_DIR}` 工作目录，标记 `LABELS "manual;hardware"`、`SKIP_RETURN_CODE 77` 和 `TIMEOUT 720`。
+3. 新建 `trackloom_audio_hardware_smoke_tests`。runner 在构造 `JuceAudioHost` 前于 console 线程调用 `CoInitializeEx(nullptr, COINIT_MULTITHREADED)`，并在成功初始化时以 RAII 对称 `CoUninitialize()`；`RPC_E_CHANGED_MODE` 必须作为可诊断的启动失败而不是继续创建 host。未设置 `TRACKLOOM_AUDIO_HARDWARE_SMOKE=1` 时返回 77；启用时读取 `TRACKLOOM_AUDIO_OUTPUT_NAME`（空则默认设备）和 `TRACKLOOM_AUDIO_SMOKE_SECONDS`（默认 600），打开 reference、按实际设备格式重建同一 tick loop，并在退出时同时打印默认请求（48 kHz、256 frames、2 channels）和实际格式、偏差说明、10 次计划构建耗时、持续时间和全部诊断计数。设备不支持默认请求时，只要 `openOutput` 成功且实际格式可用于重建计划，该偏差是待记录证据而不是 runner 失败；不得要求或伪造单一 256-frame buffer。若后端 xrun 值不为 `-1`，xrun 必须为 0；若为 `-1`，callback timeout 必须为 0；两种情况都要求 oversized block、callback exception、voice stealing 和 stale Note Off 为 0，否则测试返回非零。CTest 设置 `${CMAKE_SOURCE_DIR}` 工作目录，标记 `LABELS "manual;hardware"`、`SKIP_RETURN_CODE 77` 和 `TIMEOUT 720`。
 4. 自动门槛：fresh 配置后构建全部 target；完整 CTest 必须 0 failure，只有 MIDI/audio hardware smoke 可按 77 跳过；隐藏 app 烟测正常退出；`git diff --check` 通过。用固定 reference 连续构建计划至少 10 次，逐次记录耗时并校验单次不超过 250 ms。
-5. 实机门槛需要用户协助选择并监听目标输出设备。明确选择 48 kHz、256 samples、stereo 后执行：
+5. 实机门槛需要用户协助选择并监听目标输出设备。以 48 kHz、256 samples、stereo 作为请求而非强制实际格式后执行：
 
    ```powershell
    $env:TRACKLOOM_AUDIO_HARDWARE_SMOKE = '1'
@@ -1466,7 +1466,7 @@ addAndMakeVisible(testToneButton_);
    cmd.exe /d /s /c 'call "E:\Android\VS\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64 && "E:\Android\VS\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe" --test-dir build -R "^trackloom_audio_hardware_smoke_tests$" -V'
    ```
 
-6. 把 `run-template.md` 复制为带绝对日期的证据文件，填写 commit、Windows、设备、驱动、请求与实际格式、10 次构建耗时、600 秒持续时间、xrun/timeout/oversized/voice-steal/stale-NoteOff 和人工监听结论。没有实机 GREEN 与完整字段时，不得把 2026-10-31 里程碑标成完成。
+6. 把 `run-template.md` 复制为带绝对日期的证据文件，填写 commit、Windows、设备、驱动、请求与实际格式、每项偏差理由、10 次构建耗时、600 秒持续时间、xrun/timeout/oversized/voice-steal/stale-NoteOff 和人工监听结论。没有实机 GREEN 与完整字段时，不得把 2026-10-31 里程碑标成完成。
 7. 运行完整构建、完整 CTest、隐藏 app 烟测、硬件烟测和 `git diff --check`；提交 fixture/runner/template：`test: add audible MIDI playback acceptance fixture`。实际机器证据在验证完成后单独提交：`test: record WASAPI playback evidence`。
 
 **可直接粘贴的首个 RED：** 在任何 fixture 文件创建前注册此测试；首次运行必须以 `reference fixture should load` 失败，而不是静默生成 fixture。
@@ -1502,7 +1502,65 @@ if(NOT actual_hash STREQUAL expected_hash)
 endif()
 ```
 
-**最终复审门槛：** Task 9 自动与实机证据完成后，使用独立 reviewer 对照第 16.4.1–16.4.4 节逐项检查；任何 Critical/Important 必须先补可复现 RED 并用独立 follow-up commit 修复。最终只在 fresh 全量构建、自动 CTest、隐藏应用烟测、10 分钟实机播放和 `git diff --check` 全部有当前 commit 证据时，才能更新第 16.2 节的 2026-10-31 里程碑状态。
+##### Task 10：设备设置候选、故障恢复与实际格式证据
+
+**目标：** 将 Task 8 的专用设置界面和 Task 9 的实机 runner 收紧为“候选选择不产生副作用、显式应用才切换、使用 host 实际格式保存和取证”的单一路径；设备被移除后仍可由用户选择并应用新设备恢复，且不会把通知线程、UI Timer 或默认 Windows 路由放入切换流程。
+
+**全局约束：** 所有新增中文源文本均以 UTF-8 保存并由 MSVC `/utf-8` 编译；`JuceAudioHost` 的 callback、`audioDeviceError` 和 device-list listener 不得执行扫描、格式化、设置持久化或设备开关。`Faulted`/`DeviceError` 只可由一次成功的替换设备 `openOutput` 清除。每个子项都先取得指定 RED，再写最小 GREEN；不得因真实硬件缺失把 manual runner 的 77 跳过记为硬件通过。
+
+###### Task 10A：中文设置 UI、待应用状态与实际格式保存
+
+**文件：**
+
+- 修改 `src/app/AppAudioSettings.h`
+- 修改 `src/app/AppAudioSettings.cpp`
+- 修改 `src/app/juce/AudioSettingsComponent.h`
+- 修改 `src/app/juce/AudioSettingsComponent.cpp`
+- 修改 `src/app/juce/TrackLoomMainComponent.cpp`
+- 修改 `tests/app_juce_audio_tests.cpp`
+
+**RED：** 在 `tests/app_juce_audio_tests.cpp` 新增 `audioSettingsCandidateRequiresApplyAndPersistsActualFormat`。使用 Task 5 fake device 打开 `Fake Speakers` 后，将 UI 选择改为不同设备或不同采样率/buffer/声道；断言 `host.deviceFormatSnapshot()` 未变、状态文字为准确 UTF-8 的“待应用”、`audioTestToneButtonComponentId` 对应按钮禁用，且 `getButtonText().toUTF8()` 分别为“应用”和“测试音”。再令 fake 对 48 kHz/256/stereo 请求协商为另一合法格式，按“应用”，断言 callback 收到的 `AppAudioSettings` 与磁盘保存结果同时保留请求值和 `actualFormat` 的设备、采样率、block、声道、mask，显示也改为该实际格式而非候选值；只公布一个 buffer size 的 fake 必须能正常显示与应用。
+
+**GREEN：** 扩展 `AppAudioSettings` 为明确的请求字段和上次成功实际格式字段，保持缺失设置仍请求 48 kHz/256/stereo。`AudioSettingsComponent` 分别保存已应用快照与可编辑候选；ComboBox `onChange` 只更新候选和“待应用”显示，不调用 `openOutput`。只有 `applySelectedSettings()` 调用 `host_.openOutput()`；成功时从 `JuceAudioHostResult::actualFormat` 生成并回调要持久化的 settings，刷新所有实际格式显示。候选与已打开实际格式不等或 host 不可用时禁用测试音；应用失败保留已应用输出和候选，给出中文失败反馈。`TrackLoomMainComponent` 仅在成功 callback 后保存该实际快照，不改默认 Windows 路由。
+
+**验证：** 先构建并运行 `trackloom_app_juce_tests`，再运行 `trackloom_app_support_tests`、`trackloom_juce_audio_tests`、隐藏应用烟测和 `ctest --test-dir build --output-on-failure`；最后执行 `git diff --check`。建议提交：`app: persist applied WASAPI audio format`。
+
+###### Task 10B：device-list revision、Faulted 诊断与 controller 恢复
+
+**文件：**
+
+- 修改 `src/platform/juce/JuceAudioHost.h`
+- 修改 `src/platform/juce/JuceAudioHost.cpp`
+- 修改 `src/app/AppPlaybackActions.h`
+- 修改 `src/app/AppPlaybackActions.cpp`
+- 修改 `src/app/juce/AudioSettingsComponent.h`
+- 修改 `src/app/juce/AudioSettingsComponent.cpp`
+- 修改 `src/app/juce/TrackLoomMainComponent.cpp`
+- 修改 `tests/support/FakeJuceAudioDeviceType.h`
+- 修改 `tests/juce_audio_tests.cpp`
+- 修改 `tests/app_juce_audio_tests.cpp`
+
+**RED：** 在 `tests/juce_audio_tests.cpp` 增加连续 device-list notifications 的用例：listener 只使公开单调 `deviceListRevision` 增长，未调用 `scanForDevices`、`stop`、`close` 或 `createDevice`；消息线程 service 后只针对新 revision 枚举一次。在 fake 移除当前设备后，断言 snapshot 仍为 `Faulted`/`DeviceError`、旧计划失效且设置枚举/选择/应用不被禁用；重新提供或选择另一 fake device 后，成功 `openOutput` 才清除 fault 并增长 format generation。于 `tests/app_juce_audio_tests.cpp` 增加 controller 级回归：设备移除使 Play 保持禁用和稳定原因，设置成功应用后 controller 丢弃旧 generation、重新准备并恢复可播放，不重用旧 plan。
+
+**GREEN：** 在 `JuceAudioHost` snapshot 中发布不可回绕的 `deviceListRevision`，listener 只原子递增；唯一的非实时 service 路径比较“已消费 revision”后扫描并更新列表。删除或不再匹配当前输出时关闭旧实例、硬重置 runtime、保留 `Faulted`/`DeviceError` 诊断与失效 generation；不能用一个会被多个 Timer 清掉的 boolean 作为 UI 通知。`AudioSettingsComponent` 记住最后已消费 revision，只在变化时刷新并保留尚可匹配的候选，fault 时仍启用选择和 Apply；`TrackLoomMainComponent` 的单一 UI service 调用该刷新路径。为 `AppPlaybackController` 加入应用新 host format 后的恢复边界：清除旧异步构建结果，按新的 format generation 重新构建，只有成功安装新计划才恢复 Play 可用。
+
+**验证：** 先运行新增 RED 所在的 `trackloom_juce_audio_tests` 与 `trackloom_app_juce_tests`，GREEN 后运行 `CORE_TEST`、`APP_TEST`、`JUCE_TEST`、完整 CTest 和 `git diff --check`；复核 fake 的 scan/create/open/stop/close 记录证明通知线程没有副作用。建议提交：`fix: recover audio controls after device loss`。
+
+###### Task 10C：runner COM 初始化与协商格式偏差证据
+
+**文件：**
+
+- 修改 `tests/juce_audio_hardware_smoke_tests.cpp`
+- 修改 `tests/CMakeLists.txt`
+- 修改 `tests/evidence/audio/run-template.md`
+
+**RED：** 在 runner 的 `TRACKLOOM_AUDIO_HARDWARE_SMOKE_SELF_TEST=1` 路径增加独立的格式判定测试：请求 48 kHz/256/stereo、fake/注入结果返回另一合法 shared WASAPI 实际格式时，结论必须为“可运行且须记录偏差”，而不是失败；actual 无效、`openOutput` 失败或诊断门槛失败才拒绝。新增可注入 COM 初始化结果的 console-thread helper 测试，断言 host 构造发生在成功 `CoInitializeEx` 之后，成功初始化恰好配对一次 `CoUninitialize`，`RPC_E_CHANGED_MODE` 不创建 host 并打印稳定诊断。
+
+**GREEN：** 在 `main()` 的任何 `JuceAudioHost` 自动对象之前建立 Windows COM MTA RAII guard；将 hardware self-test 与实际运行共用相同 guard 和结果报告。保留请求常量 48 kHz/256/stereo，打开后总是用 `open.actualFormat` 构建计划，打印 request、actual 与逐字段偏差；删除要求 actual 必须等于 48 kHz/256/stereo 的断言。`tests/CMakeLists.txt` 显式链接 Windows 所需 COM 库并保留 hardware test 的 `SKIP_RETURN_CODE 77`；证据模板将请求、实际、偏差理由和 COM 初始化结果列为必填字段。
+
+**验证：** 运行 `trackloom_audio_hardware_smoke_completion_tests` 验证无需硬件的 RED/GREEN 路径；未设置 `TRACKLOOM_AUDIO_HARDWARE_SMOKE=1` 时运行 hardware target 必须以 77 跳过。得到用户授权的设备名与监听结果后，才设置 `TRACKLOOM_AUDIO_HARDWARE_SMOKE=1` 并运行 600 秒 runner，保存完整 console 输出到带绝对日期的 evidence；随后 fresh 全量构建、完整 CTest、隐藏 app 烟测和 `git diff --check`。建议提交：`test: record negotiated WASAPI hardware format`。
+
+**最终复审门槛：** Task 9 与 Task 10 的自动与实机证据完成后，使用独立 reviewer 对照第 16.4.1–16.4.4 节逐项检查；任何 Critical/Important 必须先补可复现 RED 并用独立 follow-up commit 修复。最终只在 fresh 全量构建、自动 CTest、隐藏应用烟测、10 分钟实机播放和 `git diff --check` 全部有当前 commit 证据时，才能更新第 16.2 节的 2026-10-31 里程碑状态。
 
 ### 16.5 毕业后范围
 
