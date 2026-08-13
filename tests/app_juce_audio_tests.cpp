@@ -43,6 +43,11 @@ void require(bool condition, const std::string& message)
     }
 }
 
+juce::String utf8(const char8_t* text)
+{
+    return juce::String::fromUTF8(reinterpret_cast<const char*>(text));
+}
+
 void pumpGuiMessagesOnce(int milliseconds = 100)
 {
     juce::Timer::callAfterDelay(milliseconds, [] {
@@ -252,6 +257,167 @@ void audioSettingsComponentTestToneTouchesOnlyTheHost()
             && session.canUndoProjectEdit() == canUndoBefore
             && playback.currentSample() == playbackStartBefore,
         "test tone must not change project generation, dirty, history, or playback start");
+}
+
+void audioSettingsCandidateRequiresApplyAndPersistsActualFormat()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    trackloom::JuceAudioHost host([&]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+        type->setOutputDevices({"TP35 Pro", "Speakers"});
+        type->setAvailableFormats({48000.0}, {256}, 256);
+        type->setNegotiatedFormat(44100.0, 512, 2);
+        observedType = type.get();
+        return type;
+    });
+    require(host.openOutput({"TP35 Pro", 48000.0, 256, 2}).success,
+        "candidate/apply test must begin on TP35 Pro");
+
+    int appliedCalls = 0;
+    trackloom::AppAudioSettings appliedSettings;
+    trackloom::AudioSettingsComponent component(
+        host,
+        {"TP35 Pro", 192000.0, 1920, 2},
+        {{[&](const trackloom::AppAudioSettings& settings) {
+             ++appliedCalls;
+             appliedSettings = settings;
+         }}, {}});
+    component.setSize(520, 230);
+
+    auto* device = dynamic_cast<juce::ComboBox*>(
+        component.findChildWithID(trackloom::audioDeviceSelectorComponentId));
+    auto* sampleRate = dynamic_cast<juce::ComboBox*>(
+        component.findChildWithID(trackloom::audioSampleRateSelectorComponentId));
+    auto* buffer = dynamic_cast<juce::ComboBox*>(
+        component.findChildWithID(trackloom::audioBufferSelectorComponentId));
+    auto* channels = dynamic_cast<juce::ComboBox*>(
+        component.findChildWithID(trackloom::audioChannelsSelectorComponentId));
+    auto* apply = dynamic_cast<juce::TextButton*>(
+        component.findChildWithID(trackloom::audioApplyButtonComponentId));
+    auto* tone = dynamic_cast<juce::TextButton*>(
+        component.findChildWithID(trackloom::audioTestToneButtonComponentId));
+    auto* status = dynamic_cast<juce::Label*>(
+        component.findChildWithID(trackloom::audioApplyStatusComponentId));
+    require(device != nullptr && sampleRate != nullptr && buffer != nullptr
+            && channels != nullptr && apply != nullptr && tone != nullptr,
+        "candidate/apply test requires all real audio settings controls");
+    require(apply->getButtonText() == utf8(u8"应用")
+            && tone->getButtonText() == utf8(u8"测试音"),
+        "audio settings buttons must expose exact UTF-8 Chinese text");
+    require(status != nullptr,
+        "audio settings must expose a visible status Label with a stable component id");
+    require(sampleRate->getText() == "44100" && buffer->getText() == "512"
+            && channels->getText() == "2" && tone->isEnabled(),
+        "opening settings for the active named device must merge and select host actual values");
+
+    observedType->clearCalls();
+    device->setSelectedItemIndex(1, juce::sendNotificationSync);
+    require(host.deviceFormatSnapshot().deviceName == "TP35 Pro"
+            && observedType->calls().empty(),
+        "changing the candidate output must not open, close, or change the active host output");
+    require(status->getText() == utf8(u8"待应用") && !tone->isEnabled(),
+        "a candidate different from the active output must show 待应用 and disable test tone");
+    require(!component.triggerTestTone(),
+        "direct test-tone calls must reject a pending candidate");
+
+    observedType->setOpenShouldFail(true);
+    require(!component.applySelectedSettings(), "configured fake Apply must fail");
+    require(host.deviceFormatSnapshot().deviceName == "TP35 Pro",
+        "failed Apply must retain the active TP35 Pro output");
+    require(component.selectedSettings().outputDeviceName == "Speakers",
+        "failed Apply must retain the Speakers candidate");
+    require(appliedCalls == 0, "failed Apply must not persist settings");
+    require(status->getText().contains(utf8(u8"失败")),
+        "failed Apply must show Chinese failure feedback");
+
+    observedType->setOpenShouldFail(false);
+    require(component.applySelectedSettings(),
+        "a subsequent successful Apply must switch to Speakers");
+    require(host.deviceFormatSnapshot().deviceName == "Speakers"
+            && appliedCalls == 1
+            && appliedSettings.outputDeviceName == "Speakers"
+            && status->getText().contains(utf8(u8"已应用"))
+            && tone->isEnabled(),
+        "successful Apply must publish the actual Speakers format and enable test tone");
+    observedType->clearCalls();
+    require(component.triggerTestTone()
+            && observedType->activeDevice() != nullptr
+            && observedType->activeDevice()->getName() == "Speakers",
+        "test tone after Apply must use only the newly applied Speakers device");
+
+    for (int callback = 0;
+         callback < 128
+             && host.snapshot().realtime.state != trackloom::RealtimePlaybackState::Stopped;
+         ++callback) {
+        observedType->activeDevice()->runCallback(256);
+        host.serviceNonRealtime();
+    }
+    require(host.snapshot().realtime.state == trackloom::RealtimePlaybackState::Stopped,
+        "test tone after applying Speakers must stop within the fake callback bound");
+}
+
+void audioSettingsApplyUsesNegotiatedActualFormatAndMergesARealSingleBuffer()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    trackloom::JuceAudioHost host([&]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+        type->setOutputDevices({"Speakers"});
+        type->setAvailableFormats({48000.0}, {256}, 256);
+        type->setNegotiatedFormat(44100.0, 512, 1);
+        observedType = type.get();
+        return type;
+    });
+    trackloom::AppAudioSettings appliedSettings;
+    int appliedCalls = 0;
+    trackloom::AudioSettingsComponent component(
+        host,
+        {"Speakers", 48000.0, 256, 2},
+        {{[&](const trackloom::AppAudioSettings& settings) {
+             ++appliedCalls;
+             appliedSettings = settings;
+         }}, {}});
+
+    auto* sampleRate = dynamic_cast<juce::ComboBox*>(
+        component.findChildWithID(trackloom::audioSampleRateSelectorComponentId));
+    auto* buffer = dynamic_cast<juce::ComboBox*>(
+        component.findChildWithID(trackloom::audioBufferSelectorComponentId));
+    auto* channels = dynamic_cast<juce::ComboBox*>(
+        component.findChildWithID(trackloom::audioChannelsSelectorComponentId));
+    auto* status = dynamic_cast<juce::Label*>(
+        component.findChildWithID(trackloom::audioApplyStatusComponentId));
+    require(sampleRate != nullptr && buffer != nullptr && channels != nullptr,
+        "negotiated-format test requires all format selectors");
+    require(buffer->getNumItems() == 1 && buffer->getItemText(0) == "256",
+        "one shared-WASAPI buffer option must remain a valid, unmodified choice");
+    require(component.applySelectedSettings(),
+        "one-buffer shared output must apply successfully");
+    require(appliedCalls == 1
+            && appliedSettings.outputDeviceName == "Speakers"
+            && appliedSettings.requestedSampleRate == 44100.0
+            && appliedSettings.requestedBufferFrames == 512
+            && appliedSettings.requestedOutputChannels == 1,
+        "settingsApplied must receive the negotiated actual format, never the request");
+    require(host.deviceFormatSnapshot().sampleRate == 44100.0
+            && host.deviceFormatSnapshot().maximumBlockFrames == 512
+            && host.deviceFormatSnapshot().outputChannelCount == 1,
+        "host fake must expose the negotiated actual format used by the assertion");
+    require(sampleRate->getText() == "44100"
+            && buffer->getText() == "512"
+            && channels->getText() == "1",
+        "controls must merge and select actual values missing from probe lists");
+    require(status != nullptr
+            && status->getText().contains(utf8(u8"已应用"))
+            && status->getText().contains("48000 Hz / 256 / 2")
+            && status->getText().contains("44100 Hz / 512 / 1")
+            && status->getText().contains("->"),
+        "negotiated Apply must visibly describe the request -> actual deviation");
+    require(observedType->openCalls().size() == 1
+            && observedType->openCalls().front().sampleRate == 48000.0
+            && observedType->openCalls().front().bufferFrames == 256
+            && observedType->openCalls().front().outputChannelCount == 2,
+        "the fake must prove the requested format differed from the persisted actual format");
 }
 
 std::unique_ptr<trackloom::JuceAudioHost> makeFakeHost(
@@ -564,14 +730,15 @@ void trackLoomMainComponentSavesAppliedSettingsOnlyAfterHostSuccess()
     require(!presented->applySelectedSettings() && saveCalls == 0,
         "failed host Apply must not save audio settings");
     observedType->setOpenShouldFail(false);
+    observedType->setNegotiatedFormat(44100.0, 512, 1);
     require(presented->applySelectedSettings(),
         "successful host Apply should accept the selected shared format");
     require(saveCalls == 1 && savedPath == expectedPath
             && savedSettings.outputDeviceName == "Fake Speakers"
-            && savedSettings.requestedSampleRate == 48000.0
-            && savedSettings.requestedBufferFrames == 256
-            && savedSettings.requestedOutputChannels == 2,
-        "successful Apply must save the selected settings once to the injected path");
+            && savedSettings.requestedSampleRate == 44100.0
+            && savedSettings.requestedBufferFrames == 512
+            && savedSettings.requestedOutputChannels == 1,
+        "successful Apply must save the host actual format once to the injected path");
 }
 
 void trackLoomMainComponentCancelsPreparationBeforeDestroyingTheHost()
@@ -646,6 +813,8 @@ int main()
         audioSettingsComponentDisablesApplyAndToneDuringPlayback();
         audioSettingsComponentDisablesApplyAndToneDuringStoppingTail();
         audioSettingsComponentTestToneTouchesOnlyTheHost();
+        audioSettingsCandidateRequiresApplyAndPersistsActualFormat();
+        audioSettingsApplyUsesNegotiatedActualFormatAndMergesARealSingleBuffer();
         trackLoomMainComponentRejectsANullAudioHost();
         trackLoomMainComponentRepairsEmptyOperationsAndShowsStableControlIds();
         trackLoomMainComponentTimerRefreshesOnlyPlaybackPresentation();

@@ -17,6 +17,7 @@ inline constexpr auto audioBufferSelectorComponentId = "trackloom-audio-buffer";
 inline constexpr auto audioChannelsSelectorComponentId = "trackloom-audio-channels";
 inline constexpr auto audioApplyButtonComponentId = "trackloom-audio-apply";
 inline constexpr auto audioTestToneButtonComponentId = "trackloom-audio-test-tone";
+inline constexpr auto audioApplyStatusComponentId = "trackloom-audio-apply-status";
 
 struct AudioSettingsComponentCallbacks {
     std::function<void(const AppAudioSettings&)> settingsApplied;
@@ -43,18 +44,21 @@ private:
     void timerCallback() override;
     void rebuildFormatSelectors();
     void refreshEnabledState();
+    bool candidateMatchesAppliedFormat() const;
     const JuceAudioOutputDeviceInfo* selectedDeviceInfo() const;
 
     JuceAudioHost& host_;
-    AppAudioSettings initialSettings_;
+    AppAudioSettings appliedSettings_;
     AudioSettingsComponentCallbacks callbacks_;
     std::vector<JuceAudioOutputDeviceInfo> devices_;
     juce::ComboBox deviceSelector_;
     juce::ComboBox sampleRateSelector_;
     juce::ComboBox bufferSelector_;
     juce::ComboBox channelsSelector_;
-    juce::TextButton applyButton_ { "应用" };
-    juce::TextButton testToneButton_ { "测试音" };
+    juce::TextButton applyButton_;
+    juce::TextButton testToneButton_;
+    juce::Label applyStatus_;
+    juce::String statusOverride_;
 };
 
 }

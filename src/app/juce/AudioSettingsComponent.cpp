@@ -7,6 +7,33 @@
 namespace trackloom {
 namespace {
 
+juce::String utf8(const char8_t* text)
+{
+    return juce::String::fromUTF8(reinterpret_cast<const char*>(text));
+}
+
+AppAudioSettings settingsFromActualFormat(const AudioDeviceFormatSnapshot& format)
+{
+    return {
+        format.deviceName,
+        format.sampleRate,
+        format.maximumBlockFrames,
+        format.outputChannelCount
+    };
+}
+
+bool sameSampleRate(double left, double right)
+{
+    return std::abs(left - right) < 0.001;
+}
+
+juce::String describeFormat(const AppAudioSettings& settings)
+{
+    return juce::String(settings.requestedSampleRate, 0)
+        + " Hz / " + juce::String(settings.requestedBufferFrames)
+        + " / " + juce::String(settings.requestedOutputChannels);
+}
+
 template <typename Value>
 void selectMatchingValue(juce::ComboBox& box, const Value& wanted)
 {
@@ -34,15 +61,26 @@ AudioSettingsComponent::AudioSettingsComponent(
     AppAudioSettings initialSettings,
     AudioSettingsComponentCallbacks callbacks)
     : host_(host),
-      initialSettings_(std::move(initialSettings)),
+      appliedSettings_(std::move(initialSettings)),
       callbacks_(std::move(callbacks))
 {
+    const auto actualFormat = host_.deviceFormatSnapshot();
+    if (actualFormat.available
+        && (appliedSettings_.outputDeviceName.empty()
+            || appliedSettings_.outputDeviceName == actualFormat.deviceName)) {
+        appliedSettings_ = settingsFromActualFormat(actualFormat);
+    }
+
     deviceSelector_.setComponentID(audioDeviceSelectorComponentId);
     sampleRateSelector_.setComponentID(audioSampleRateSelectorComponentId);
     bufferSelector_.setComponentID(audioBufferSelectorComponentId);
     channelsSelector_.setComponentID(audioChannelsSelectorComponentId);
     applyButton_.setComponentID(audioApplyButtonComponentId);
     testToneButton_.setComponentID(audioTestToneButtonComponentId);
+    applyStatus_.setComponentID(audioApplyStatusComponentId);
+    applyButton_.setButtonText(utf8(u8"应用"));
+    testToneButton_.setButtonText(utf8(u8"测试音"));
+    applyStatus_.setJustificationType(juce::Justification::centredLeft);
 
     addAndMakeVisible(deviceSelector_);
     addAndMakeVisible(sampleRateSelector_);
@@ -50,8 +88,24 @@ AudioSettingsComponent::AudioSettingsComponent(
     addAndMakeVisible(channelsSelector_);
     addAndMakeVisible(applyButton_);
     addAndMakeVisible(testToneButton_);
+    addAndMakeVisible(applyStatus_);
 
-    deviceSelector_.onChange = [this] { rebuildFormatSelectors(); };
+    deviceSelector_.onChange = [this] {
+        statusOverride_.clear();
+        rebuildFormatSelectors();
+    };
+    sampleRateSelector_.onChange = [this] {
+        statusOverride_.clear();
+        refreshEnabledState();
+    };
+    bufferSelector_.onChange = [this] {
+        statusOverride_.clear();
+        refreshEnabledState();
+    };
+    channelsSelector_.onChange = [this] {
+        statusOverride_.clear();
+        refreshEnabledState();
+    };
     applyButton_.onClick = [this] { applySelectedSettings(); };
     testToneButton_.onClick = [this] { triggerTestTone(); };
     refreshFromHost();
@@ -91,7 +145,7 @@ void AudioSettingsComponent::refreshFromHost()
 
 AppAudioSettings AudioSettingsComponent::selectedSettings() const
 {
-    AppAudioSettings settings = initialSettings_;
+    AppAudioSettings settings = appliedSettings_;
     if (const auto* device = selectedDeviceInfo()) {
         settings.outputDeviceName = device->name;
     }
@@ -123,15 +177,23 @@ bool AudioSettingsComponent::applySelectedSettings()
     if (callbacks_.feedback) {
         callbacks_.feedback(result.success
             ? (result.warning.empty() ? result.message : result.warning)
-            : result.message);
+            : "应用音频设置失败：" + result.message);
     }
     if (!result.success) {
+        statusOverride_ = utf8(u8"应用失败：")
+            + juce::String::fromUTF8(result.message.c_str());
         refreshEnabledState();
         return false;
     }
-    initialSettings_ = settings;
+    appliedSettings_ = settingsFromActualFormat(result.actualFormat);
+    statusOverride_ = describeFormat(settings) == describeFormat(appliedSettings_)
+            && settings.outputDeviceName == appliedSettings_.outputDeviceName
+        ? utf8(u8"已应用")
+        : utf8(u8"已应用（请求 ") + describeFormat(settings)
+            + utf8(u8" -> 实际 ") + describeFormat(appliedSettings_) + ")";
+    rebuildFormatSelectors();
     if (callbacks_.settingsApplied) {
-        callbacks_.settingsApplied(settings);
+        callbacks_.settingsApplied(appliedSettings_);
     }
     refreshEnabledState();
     return true;
@@ -167,6 +229,8 @@ void AudioSettingsComponent::resized()
     auto buttons = area.removeFromTop(rowHeight);
     applyButton_.setBounds(buttons.removeFromLeft(buttons.getWidth() / 2).reduced(2));
     testToneButton_.setBounds(buttons.reduced(2));
+    area.removeFromTop(gap);
+    applyStatus_.setBounds(area.removeFromTop(rowHeight));
 }
 
 void AudioSettingsComponent::timerCallback()
@@ -195,10 +259,46 @@ void AudioSettingsComponent::rebuildFormatSelectors()
         for (int channelCount = 1; channelCount <= channels; ++channelCount) {
             channelsSelector_.addItem(juce::String(channelCount), channelCount);
         }
+        const auto actual = host_.deviceFormatSnapshot();
+        if (actual.available && actual.deviceName == device->name) {
+            bool foundSampleRate = false;
+            for (int index = 0; index < sampleRateSelector_.getNumItems(); ++index) {
+                foundSampleRate = foundSampleRate || sameSampleRate(
+                    sampleRateSelector_.getItemText(index).getDoubleValue(),
+                    actual.sampleRate);
+            }
+            if (!foundSampleRate && actual.sampleRate > 0.0) {
+                sampleRateSelector_.addItem(
+                    juce::String(actual.sampleRate, 0),
+                    sampleRateSelector_.getNumItems() + 1);
+            }
+            bool foundBuffer = false;
+            for (int index = 0; index < bufferSelector_.getNumItems(); ++index) {
+                foundBuffer = foundBuffer
+                    || bufferSelector_.getItemText(index).getIntValue()
+                        == actual.maximumBlockFrames;
+            }
+            if (!foundBuffer && actual.maximumBlockFrames > 0) {
+                bufferSelector_.addItem(
+                    juce::String(actual.maximumBlockFrames),
+                    bufferSelector_.getNumItems() + 1);
+            }
+            bool foundChannels = false;
+            for (int index = 0; index < channelsSelector_.getNumItems(); ++index) {
+                foundChannels = foundChannels
+                    || channelsSelector_.getItemText(index).getIntValue()
+                        == actual.outputChannelCount;
+            }
+            if (!foundChannels && actual.outputChannelCount > 0) {
+                channelsSelector_.addItem(
+                    juce::String(actual.outputChannelCount),
+                    channelsSelector_.getNumItems() + 1);
+            }
+        }
     }
-    selectMatchingValue(sampleRateSelector_, initialSettings_.requestedSampleRate);
-    selectMatchingValue(bufferSelector_, initialSettings_.requestedBufferFrames);
-    selectMatchingValue(channelsSelector_, initialSettings_.requestedOutputChannels);
+    selectMatchingValue(sampleRateSelector_, appliedSettings_.requestedSampleRate);
+    selectMatchingValue(bufferSelector_, appliedSettings_.requestedBufferFrames);
+    selectMatchingValue(channelsSelector_, appliedSettings_.requestedOutputChannels);
     refreshEnabledState();
 }
 
@@ -208,11 +308,35 @@ void AudioSettingsComponent::refreshEnabledState()
     const auto stopped = state == RealtimePlaybackState::Stopped;
     const auto hasDevice = selectedDeviceInfo() != nullptr;
     applyButton_.setEnabled(stopped && hasDevice);
-    testToneButton_.setEnabled(stopped && host_.deviceFormatSnapshot().available);
+    const auto candidateApplied = candidateMatchesAppliedFormat();
+    testToneButton_.setEnabled(
+        stopped && host_.deviceFormatSnapshot().available && candidateApplied);
     deviceSelector_.setEnabled(stopped);
     sampleRateSelector_.setEnabled(stopped);
     bufferSelector_.setEnabled(stopped);
     channelsSelector_.setEnabled(stopped);
+    if (statusOverride_.isNotEmpty()) {
+        applyStatus_.setText(statusOverride_, juce::dontSendNotification);
+    } else if (!candidateApplied) {
+        applyStatus_.setText(utf8(u8"待应用"), juce::dontSendNotification);
+    } else if (host_.deviceFormatSnapshot().available) {
+        applyStatus_.setText(utf8(u8"已应用"), juce::dontSendNotification);
+    } else {
+        applyStatus_.setText(utf8(u8"未应用"), juce::dontSendNotification);
+    }
+}
+
+bool AudioSettingsComponent::candidateMatchesAppliedFormat() const
+{
+    const auto actual = host_.deviceFormatSnapshot();
+    if (!actual.available) {
+        return false;
+    }
+    const auto candidate = selectedSettings();
+    return candidate.outputDeviceName == actual.deviceName
+        && sameSampleRate(candidate.requestedSampleRate, actual.sampleRate)
+        && candidate.requestedBufferFrames == actual.maximumBlockFrames
+        && candidate.requestedOutputChannels == actual.outputChannelCount;
 }
 
 const JuceAudioOutputDeviceInfo* AudioSettingsComponent::selectedDeviceInfo() const
