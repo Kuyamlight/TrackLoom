@@ -28,6 +28,10 @@ if(TARGET trackloom_app)
 endif()
 
 if(TARGET trackloom_juce)
+    add_executable(trackloom_app_juce_tests
+        app_juce_audio_tests.cpp
+    )
+
     add_executable(trackloom_juce_audio_tests
         juce_audio_tests.cpp
     )
@@ -55,6 +59,17 @@ if(TARGET trackloom_juce)
             trackloom_juce
     )
 
+    target_link_libraries(trackloom_app_juce_tests
+        PRIVATE
+            trackloom_app_juce_support
+    )
+
+    if(MSVC)
+        target_compile_options(trackloom_app_juce_tests PRIVATE /utf-8)
+    endif()
+
+    add_test(NAME trackloom_app_juce_tests COMMAND trackloom_app_juce_tests)
+    set_tests_properties(trackloom_app_juce_tests PROPERTIES TIMEOUT 20)
     add_test(NAME trackloom_juce_audio_tests COMMAND trackloom_juce_audio_tests)
     add_test(NAME trackloom_juce_tests COMMAND trackloom_juce_tests)
     add_test(NAME trackloom_midi_hardware_smoke_tests COMMAND trackloom_midi_hardware_smoke_tests)
