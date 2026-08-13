@@ -16,6 +16,12 @@ add_test(NAME trackloom_audio_fixture_hash_tests
         -DFIXTURE_DIR=${CMAKE_SOURCE_DIR}/tests/fixtures/audio/minimum-audible-midi
         -P ${CMAKE_SOURCE_DIR}/tests/verify_audio_fixture_hashes.cmake)
 
+add_test(NAME trackloom_audio_fixture_manifest_tests
+    COMMAND ${CMAKE_COMMAND}
+        -DVERIFY_AUDIO_FIXTURE_HASHES_SELF_TEST=1
+        -DREFERENCE_FIXTURE_DIR=${CMAKE_SOURCE_DIR}/tests/fixtures/audio/minimum-audible-midi
+        -P ${CMAKE_SOURCE_DIR}/tests/verify_audio_fixture_hashes.cmake)
+
 add_executable(trackloom_app_support_tests
     app_support_tests.cpp
 )
@@ -102,5 +108,11 @@ if(TARGET trackloom_juce)
             LABELS "manual;hardware"
             SKIP_RETURN_CODE 77
             TIMEOUT 720
+    )
+    add_test(NAME trackloom_audio_hardware_smoke_completion_tests
+        COMMAND trackloom_audio_hardware_smoke_tests)
+    set_tests_properties(trackloom_audio_hardware_smoke_completion_tests
+        PROPERTIES
+            ENVIRONMENT "TRACKLOOM_AUDIO_HARDWARE_SMOKE_SELF_TEST=1"
     )
 endif()

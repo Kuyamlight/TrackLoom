@@ -112,10 +112,91 @@ void verifyDiagnostics(const trackloom::RealtimePlaybackHostSnapshot& snapshot)
     require(diagnostics.staleNoteOffCount == 0, "hardware smoke stale Note Off count should be zero");
 }
 
+void verifyCompletedRun(
+    const trackloom::RealtimePlaybackHostSnapshot& snapshot,
+    bool stopRequestSucceeded,
+    double requestedSeconds,
+    double observedSeconds)
+{
+    require(stopRequestSucceeded, "hardware smoke stop request should succeed");
+    require(snapshot.realtime.state == trackloom::RealtimePlaybackState::Stopped,
+        "hardware smoke should stop before completion is accepted");
+    require(snapshot.realtime.lastError == trackloom::RealtimeAudioError::None,
+        "hardware smoke should finish without a realtime error");
+    require(observedSeconds >= requestedSeconds - 0.1,
+        "hardware smoke observed duration should cover the requested duration");
+    require(snapshot.realtime.callbackCount > 0,
+        "hardware smoke should receive at least one audio callback");
+    require(snapshot.realtime.renderedSampleCount > 0,
+        "hardware smoke should render at least one sample");
+    require(snapshot.format.sampleRate > 0.0,
+        "hardware smoke final format should contain a sample rate");
+    const auto minimumExpectedSamples = snapshot.format.sampleRate * observedSeconds * 0.8;
+    require(static_cast<double>(snapshot.realtime.renderedSampleCount) >= minimumExpectedSamples,
+        "hardware smoke rendered samples should cover at least 80 percent of wall duration");
+    verifyDiagnostics(snapshot);
+}
+
+bool completionIsRejected(
+    const trackloom::RealtimePlaybackHostSnapshot& snapshot,
+    bool stopRequestSucceeded,
+    double requestedSeconds,
+    double observedSeconds)
+{
+    try {
+        verifyCompletedRun(snapshot, stopRequestSucceeded, requestedSeconds, observedSeconds);
+        return false;
+    } catch (const std::exception&) {
+        return true;
+    }
+}
+
+void runCompletionSelfTest()
+{
+    trackloom::RealtimePlaybackHostSnapshot healthy;
+    healthy.format.sampleRate = 48000.0;
+    healthy.realtime.state = trackloom::RealtimePlaybackState::Stopped;
+    healthy.realtime.lastError = trackloom::RealtimeAudioError::None;
+    healthy.realtime.callbackCount = 100;
+    healthy.realtime.renderedSampleCount = 48000;
+    require(!completionIsRejected(healthy, true, 1.0, 1.0),
+        "healthy hardware completion should be accepted");
+
+    auto zeroCallback = healthy;
+    zeroCallback.realtime.callbackCount = 0;
+    zeroCallback.realtime.renderedSampleCount = 0;
+    require(completionIsRejected(zeroCallback, true, 1.0, 1.0),
+        "zero callback hardware completion should be rejected");
+
+    auto deviceError = healthy;
+    deviceError.realtime.lastError = trackloom::RealtimeAudioError::DeviceError;
+    require(completionIsRejected(deviceError, true, 1.0, 1.0),
+        "realtime device error hardware completion should be rejected");
+
+    auto stopping = healthy;
+    stopping.realtime.state = trackloom::RealtimePlaybackState::Stopping;
+    require(completionIsRejected(stopping, true, 1.0, 1.0),
+        "stop timeout hardware completion should be rejected");
+
+    require(completionIsRejected(healthy, false, 1.0, 1.0),
+        "failed stop request hardware completion should be rejected");
+}
+
 }
 
 int main()
 {
+    if (const auto* selfTest = envValue("TRACKLOOM_AUDIO_HARDWARE_SMOKE_SELF_TEST");
+        selfTest != nullptr && std::string(selfTest) == "1") {
+        try {
+            runCompletionSelfTest();
+        } catch (const std::exception& error) {
+            std::cerr << "Hardware audio smoke completion self-test failed: " << error.what() << '\n';
+            return 1;
+        }
+        std::cout << "Hardware audio smoke completion self-test passed\n";
+        return 0;
+    }
     trackloom::JuceAudioHost host;
     try {
         const auto devices = host.refreshOutputDevices();
@@ -167,12 +248,14 @@ int main()
         const auto installed = host.installAndStart(std::move(installedPlan));
         require(installed.success, "hardware smoke should install and start reference plan: " + installed.message);
 
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(smokeSeconds());
+        const auto requestedSeconds = static_cast<double>(smokeSeconds());
+        const auto playbackStarted = std::chrono::steady_clock::now();
+        const auto deadline = playbackStarted + std::chrono::duration<double>(requestedSeconds);
         while (std::chrono::steady_clock::now() < deadline) {
             host.serviceNonRealtime();
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
-        host.requestStop();
+        const auto stopRequested = host.requestStop();
         for (int attempt = 0; attempt < 100; ++attempt) {
             host.serviceNonRealtime();
             if (host.snapshot().realtime.state == trackloom::RealtimePlaybackState::Stopped) {
@@ -181,8 +264,14 @@ int main()
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         const auto snapshot = host.snapshot();
+        const auto observedSeconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - playbackStarted).count();
+        std::cout << "duration requested_seconds=" << requestedSeconds
+                  << " observed_seconds=" << observedSeconds
+                  << " final_state=" << static_cast<unsigned int>(snapshot.realtime.state)
+                  << " final_error=" << static_cast<unsigned int>(snapshot.realtime.lastError) << '\n';
         printSnapshot(snapshot);
-        verifyDiagnostics(snapshot);
+        verifyCompletedRun(snapshot, stopRequested, requestedSeconds, observedSeconds);
         host.hardStopAndReset();
         host.close();
     } catch (const std::exception& error) {
