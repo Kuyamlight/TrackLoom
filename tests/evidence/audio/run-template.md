@@ -12,6 +12,7 @@
 - Block-frame difference (requested / actual / differs):
 - Output-channel-count difference (requested / actual / differs):
 - Output-channel-mask difference (requested / actual / differs):
+- Negotiated-format deviation reason / acceptance basis (required when any field differs):
 - `TRACKLOOM_ACCEPT_AUDIO_FORMAT_DEVIATION` value:
 - Operator confirmation of the negotiated deviation (required when any field differs):
 - Plan build ms (10 values):
