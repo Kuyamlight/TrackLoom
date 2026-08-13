@@ -1001,6 +1001,55 @@ void juceAudioHostRecoversSettingsAfterTheAppliedOutputIsRemoved()
         "the invalidated TP35 Pro plan must not remain usable for a test tone");
 }
 
+void juceAudioHostPreservesDeviceErrorUntilAnotherOutputOpensSuccessfully()
+{
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    trackloom::JuceAudioHost host([&]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+        type->setOutputDevices({"TP35 Pro", "Speakers"});
+        observedType = type.get();
+        return type;
+    });
+    const auto opened = host.openOutput({"TP35 Pro", 48000.0, 256, 2});
+    require(opened.success, "DeviceError lifetime test must open TP35 Pro");
+    require(host.installAndStart(makePlan(opened.actualFormat)).success,
+        "DeviceError lifetime test must install one plan before removal");
+    observedType->setOutputDevices({"Speakers"});
+    observedType->notifyDeviceListChanged();
+    host.serviceNonRealtime();
+
+    const auto removed = host.snapshot();
+    require(removed.realtime.state == trackloom::RealtimePlaybackState::Faulted
+            && removed.realtime.lastError == trackloom::RealtimeAudioError::DeviceError,
+        "device removal must publish Faulted/DeviceError before recovery attempts");
+    host.hardStopAndReset();
+    const auto afterReset = host.snapshot();
+    require(afterReset.realtime.state == trackloom::RealtimePlaybackState::Faulted
+            && afterReset.realtime.lastError == trackloom::RealtimeAudioError::DeviceError,
+        "hardStopAndReset must retain an already-published DeviceError");
+
+    const auto invalidOpen = host.openOutput({"Speakers", 0.0, 256, 2});
+    require(!invalidOpen.success
+            && host.snapshot().realtime.state == trackloom::RealtimePlaybackState::Faulted
+            && host.snapshot().realtime.lastError == trackloom::RealtimeAudioError::DeviceError,
+        "an invalid recovery open must retain the existing DeviceError");
+    observedType->setOpenShouldFail(true);
+    const auto failedOpen = host.openOutput({"Speakers", 48000.0, 256, 2});
+    require(!failedOpen.success
+            && host.snapshot().realtime.state == trackloom::RealtimePlaybackState::Faulted
+            && host.snapshot().realtime.lastError == trackloom::RealtimeAudioError::DeviceError,
+        "a backend recovery open failure must retain the existing DeviceError");
+
+    observedType->setOpenShouldFail(false);
+    const auto recovered = host.openOutput({"Speakers", 48000.0, 256, 2});
+    require(recovered.success
+            && host.snapshot().realtime.state == trackloom::RealtimePlaybackState::Stopped
+            && host.snapshot().realtime.lastError == trackloom::RealtimeAudioError::None,
+        "only a successful Speakers open may clear DeviceError and leave the runtime stopped");
+    require(host.installAndStart(makePlan(recovered.actualFormat)).success,
+        "successful recovery must not retain the removed-device playback plan");
+}
+
 void juceAudioHostExplicitRefreshAlsoInvalidatesARemovedCurrentOutput()
 {
     trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
@@ -1371,6 +1420,7 @@ int main()
         juceAudioHostDoesNotLoseANotificationPublishedDuringDeviceScanning();
         juceAudioHostInvalidatesPlaybackWhenTheCurrentOutputDisappears();
         juceAudioHostRecoversSettingsAfterTheAppliedOutputIsRemoved();
+        juceAudioHostPreservesDeviceErrorUntilAnotherOutputOpensSuccessfully();
         juceAudioHostExplicitRefreshAlsoInvalidatesARemovedCurrentOutput();
         juceAudioHostDefersDeviceErrorsAndSilencesUntilServiceCleanup();
         juceAudioHostCoalescesSimultaneousRemovalAndDeviceErrorCleanup();

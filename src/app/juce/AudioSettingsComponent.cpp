@@ -27,11 +27,24 @@ bool sameSampleRate(double left, double right)
     return std::abs(left - right) < 0.001;
 }
 
+juce::String describeSampleRate(double sampleRate)
+{
+    return juce::String(sampleRate, 3).trimCharactersAtEnd("0").trimCharactersAtEnd(".");
+}
+
 juce::String describeFormat(const AppAudioSettings& settings)
 {
-    return juce::String(settings.requestedSampleRate, 0)
+    return describeSampleRate(settings.requestedSampleRate)
         + " Hz / " + juce::String(settings.requestedBufferFrames)
         + " / " + juce::String(settings.requestedOutputChannels);
+}
+
+bool formatsMatch(const AppAudioSettings& requested, const AppAudioSettings& actual)
+{
+    return requested.outputDeviceName == actual.outputDeviceName
+        && requested.requestedSampleRate == actual.requestedSampleRate
+        && requested.requestedBufferFrames == actual.requestedBufferFrames
+        && requested.requestedOutputChannels == actual.requestedOutputChannels;
 }
 
 template <typename Value>
@@ -198,8 +211,7 @@ bool AudioSettingsComponent::applySelectedSettings()
         return false;
     }
     appliedSettings_ = settingsFromActualFormat(result.actualFormat);
-    statusOverride_ = describeFormat(settings) == describeFormat(appliedSettings_)
-            && settings.outputDeviceName == appliedSettings_.outputDeviceName
+    statusOverride_ = formatsMatch(settings, appliedSettings_)
         ? utf8(u8"已应用")
         : utf8(u8"已应用（请求 ") + describeFormat(settings)
             + utf8(u8" -> 实际 ") + describeFormat(appliedSettings_) + ")";
@@ -248,10 +260,11 @@ void AudioSettingsComponent::resized()
 void AudioSettingsComponent::timerCallback()
 {
     host_.serviceNonRealtime();
-    const auto deviceListRevision = host_.snapshot().deviceListRevision;
-    if (deviceListRevision != lastObservedDeviceListRevision_) {
+    const auto hostSnapshot = host_.snapshot();
+    if (!hostSnapshot.deviceListRefreshPending
+        && hostSnapshot.deviceListRevision != lastObservedDeviceListRevision_) {
         rebuildDevicesFromCache();
-        lastObservedDeviceListRevision_ = deviceListRevision;
+        lastObservedDeviceListRevision_ = hostSnapshot.deviceListRevision;
     }
     refreshEnabledState();
 }
@@ -286,7 +299,7 @@ void AudioSettingsComponent::rebuildFormatSelectors()
             }
             if (!foundSampleRate && actual.sampleRate > 0.0) {
                 sampleRateSelector_.addItem(
-                    juce::String(actual.sampleRate, 0),
+                    describeSampleRate(actual.sampleRate),
                     sampleRateSelector_.getNumItems() + 1);
             }
             bool foundBuffer = false;

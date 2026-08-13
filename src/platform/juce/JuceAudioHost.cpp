@@ -51,6 +51,15 @@ void processRealtimeBlock(
     runtime.processBlock(outputs, channels, frames);
 }
 
+RealtimeAudioError resetErrorForCurrentFault(
+    const RealtimeAudioDiagnosticsSnapshot& realtime,
+    bool deviceErrorPending) noexcept
+{
+    return realtime.lastError == RealtimeAudioError::DeviceError || deviceErrorPending
+        ? RealtimeAudioError::DeviceError
+        : RealtimeAudioError::None;
+}
+
 std::int64_t readHighResolutionTicks() noexcept
 {
     return juce::Time::getHighResolutionTicks();
@@ -303,7 +312,9 @@ void JuceAudioHost::close() noexcept
         return;
     }
     impl_->device->stop();
-    impl_->runtime.hardReset();
+    impl_->runtime.hardReset(resetErrorForCurrentFault(
+        impl_->runtime.snapshot(),
+        impl_->deviceErrorPending.load(std::memory_order_acquire) != 0));
     impl_->device->close();
     impl_->plan.reset();
     impl_->device.reset();
@@ -518,7 +529,9 @@ void JuceAudioHost::hardStopAndReset() noexcept
     if (impl_->device != nullptr) {
         impl_->device->stop();
     }
-    impl_->runtime.hardReset();
+    impl_->runtime.hardReset(resetErrorForCurrentFault(
+        impl_->runtime.snapshot(),
+        impl_->deviceErrorPending.load(std::memory_order_acquire) != 0));
     impl_->plan.reset();
 }
 

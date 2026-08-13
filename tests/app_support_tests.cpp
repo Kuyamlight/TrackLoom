@@ -4828,6 +4828,54 @@ void playbackHostFaultDuringPreparationDiscardsCompletedPlan()
         "completed preparation after a host fault must not install a plan");
 }
 
+void playbackDeviceFaultDoesNotRecoverUntilItsPreparationWorkerJoins()
+{
+    FakeRealtimePlaybackHost host;
+    trackloom::AppProjectSession session;
+    std::latch entered(1);
+    std::latch release(1);
+    trackloom::AppPlaybackController playback(
+        host,
+        [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+            entered.count_down();
+            release.wait();
+            return makeFakePreparedPlan(request);
+        });
+    require(playback.start(session.capturePlaybackSnapshot()).success,
+        "joinable-worker recovery test must start one blocked preparation");
+    entered.wait();
+    host.setRealtimeState(trackloom::RealtimePlaybackState::Faulted);
+    playback.poll(session);
+    require(playback.status().state == trackloom::AppPlaybackState::Faulted
+            && playback.status().failureReason == trackloom::AppPlaybackFailureReason::DeviceFault,
+        "a host fault while preparation is blocked must expose DeviceFault");
+
+    host.setRealtimeState(trackloom::RealtimePlaybackState::Stopped);
+    host.setDeviceAvailable(true);
+    playback.poll(session);
+    const auto beforeJoin = playback.status();
+    if (beforeJoin.state != trackloom::AppPlaybackState::Faulted
+        || beforeJoin.failureReason != trackloom::AppPlaybackFailureReason::DeviceFault) {
+        release.count_down();
+        throw std::runtime_error(
+            "DeviceFault must remain while the recovered host still has a joinable preparation worker");
+    }
+
+    release.count_down();
+    for (int attempt = 0;
+         attempt < 10000
+             && playback.status().state == trackloom::AppPlaybackState::Faulted;
+         ++attempt) {
+        playback.poll(session);
+        std::this_thread::yield();
+    }
+    require(playback.status().state == trackloom::AppPlaybackState::Stopped
+            && playback.status().failureReason == trackloom::AppPlaybackFailureReason::None,
+        "DeviceFault may recover only after the released worker has been joined and discarded");
+    require(host.installCallCount == 0,
+        "a preparation released after DeviceFault must never install its stale plan");
+}
+
 void playbackTestToneAndActivePreparationDisableSecondStart()
 {
     trackloom::AppProjectSession session;
@@ -10616,6 +10664,7 @@ int main()
     playbackDropsStaleProjectAndDevicePreparationWithoutInstalling();
     playbackPreparationAndHostFailuresUseStableReasons();
     playbackHostFaultDuringPreparationDiscardsCompletedPlan();
+    playbackDeviceFaultDoesNotRecoverUntilItsPreparationWorkerJoins();
     playbackTestToneAndActivePreparationDisableSecondStart();
     playbackKeepsInstalledPlanDuringEditsAndRebuildsAfterStop();
     playbackRewindStopsThenPreparesAgainFromZero();

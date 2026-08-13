@@ -364,7 +364,7 @@ void audioSettingsApplyUsesNegotiatedActualFormatAndMergesARealSingleBuffer()
     trackloom::JuceAudioHost host([&]() -> std::unique_ptr<juce::AudioIODeviceType> {
         auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
         type->setOutputDevices({"Speakers"});
-        type->setAvailableFormats({48000.0}, {256}, 256);
+        type->setAvailableFormats({48000.0}, {1920}, 1920);
         type->setNegotiatedFormat(44100.0, 512, 1);
         observedType = type.get();
         return type;
@@ -373,7 +373,7 @@ void audioSettingsApplyUsesNegotiatedActualFormatAndMergesARealSingleBuffer()
     int appliedCalls = 0;
     trackloom::AudioSettingsComponent component(
         host,
-        {"Speakers", 48000.0, 256, 2},
+        {"Speakers", 48000.0, 1920, 2},
         {{[&](const trackloom::AppAudioSettings& settings) {
              ++appliedCalls;
              appliedSettings = settings;
@@ -389,7 +389,7 @@ void audioSettingsApplyUsesNegotiatedActualFormatAndMergesARealSingleBuffer()
         component.findChildWithID(trackloom::audioApplyStatusComponentId));
     require(sampleRate != nullptr && buffer != nullptr && channels != nullptr,
         "negotiated-format test requires all format selectors");
-    require(buffer->getNumItems() == 1 && buffer->getItemText(0) == "256",
+    require(buffer->getNumItems() == 1 && buffer->getItemText(0) == "1920",
         "one shared-WASAPI buffer option must remain a valid, unmodified choice");
     require(component.applySelectedSettings(),
         "one-buffer shared output must apply successfully");
@@ -409,15 +409,105 @@ void audioSettingsApplyUsesNegotiatedActualFormatAndMergesARealSingleBuffer()
         "controls must merge and select actual values missing from probe lists");
     require(status != nullptr
             && status->getText().contains(utf8(u8"已应用"))
-            && status->getText().contains("48000 Hz / 256 / 2")
+            && status->getText().contains("48000 Hz / 1920 / 2")
             && status->getText().contains("44100 Hz / 512 / 1")
             && status->getText().contains("->"),
         "negotiated Apply must visibly describe the request -> actual deviation");
     require(observedType->openCalls().size() == 1
             && observedType->openCalls().front().sampleRate == 48000.0
-            && observedType->openCalls().front().bufferFrames == 256
+            && observedType->openCalls().front().bufferFrames == 1920
             && observedType->openCalls().front().outputChannelCount == 2,
         "the fake must prove the requested format differed from the persisted actual format");
+}
+
+void audioSettingsRetainsARevisionPublishedDuringItsDeviceScan()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    trackloom::JuceAudioHost host([&]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+        type->setOutputDevices({"TP35 Pro"});
+        observedType = type.get();
+        return type;
+    });
+    trackloom::AudioSettingsComponent component(
+        host, {"TP35 Pro", 48000.0, 256, 2});
+    auto* device = dynamic_cast<juce::ComboBox*>(
+        component.findChildWithID(trackloom::audioDeviceSelectorComponentId));
+    require(device != nullptr && device->getNumItems() == 1
+            && device->getItemText(0).contains("TP35 Pro"),
+        "revision-race test must begin with TP35 Pro cached in the open settings selector");
+
+    bool publishDuringScan = true;
+    observedType->setScanObserver([&] {
+        if (publishDuringScan) {
+            publishDuringScan = false;
+            observedType->notifyDeviceListChanged();
+        }
+    });
+    observedType->clearCalls();
+    observedType->notifyDeviceListChanged();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    juce::Timer::callPendingTimersSynchronously();
+
+    require(host.snapshot().deviceListRefreshPending,
+        "a revision published during the settings scan must remain pending after the first timer");
+    require(std::count(observedType->calls().begin(), observedType->calls().end(), "scan") == 1,
+        "the first settings timer must scan the first published revision exactly once");
+
+    observedType->setOutputDevices({"Speakers"});
+    observedType->clearCalls();
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    juce::Timer::callPendingTimersSynchronously();
+
+    require(!host.snapshot().deviceListRefreshPending
+            && std::count(observedType->calls().begin(), observedType->calls().end(), "scan") == 1,
+        "the second settings timer must consume the revision published during the first scan once");
+    require(device->getNumItems() == 1 && device->getItemText(0).contains("Speakers")
+            && !device->getItemText(0).contains("TP35 Pro"),
+        "settings must rebuild from the second revision cache instead of treating it as observed early");
+
+    observedType->clearCalls();
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    juce::Timer::callPendingTimersSynchronously();
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    juce::Timer::callPendingTimersSynchronously();
+    require(observedType->calls().empty(),
+        "30 Hz settings timers without another notification must not scan again");
+}
+
+void audioSettingsShowsASubHertzRequestToActualDeviation()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::JuceAudioHost host([]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+        type->setOutputDevices({"Speakers"});
+        type->setAvailableFormats({48000.0}, {256}, 256);
+        type->setNegotiatedFormat(48000.4, 256, 2);
+        return type;
+    });
+    trackloom::AudioSettingsComponent component(
+        host, {"Speakers", 48000.0, 256, 2});
+    auto* sampleRate = dynamic_cast<juce::ComboBox*>(
+        component.findChildWithID(trackloom::audioSampleRateSelectorComponentId));
+    auto* tone = dynamic_cast<juce::TextButton*>(
+        component.findChildWithID(trackloom::audioTestToneButtonComponentId));
+    auto* status = dynamic_cast<juce::Label*>(
+        component.findChildWithID(trackloom::audioApplyStatusComponentId));
+
+    require(component.applySelectedSettings(),
+        "sub-Hz negotiated output must still apply successfully");
+    require(status != nullptr
+            && status->getText().contains(utf8(u8"已应用（请求"))
+            && status->getText().contains("->")
+            && status->getText().contains("48000 Hz / 256 / 2")
+            && status->getText().contains("48000.4 Hz / 256 / 2"),
+        "a 48000.0 -> 48000.4 negotiation must display distinct request and actual values");
+    require(sampleRate != nullptr && sampleRate->getText() == "48000.4"
+            && component.selectedSettings().requestedSampleRate == 48000.4
+            && tone != nullptr && tone->isEnabled(),
+        "the actual sub-Hz rate must remain selectable and keep the applied candidate tone-enabled");
 }
 
 std::unique_ptr<trackloom::JuceAudioHost> makeFakeHost(
@@ -952,6 +1042,8 @@ int main()
         audioSettingsComponentTestToneTouchesOnlyTheHost();
         audioSettingsCandidateRequiresApplyAndPersistsActualFormat();
         audioSettingsApplyUsesNegotiatedActualFormatAndMergesARealSingleBuffer();
+        audioSettingsRetainsARevisionPublishedDuringItsDeviceScan();
+        audioSettingsShowsASubHertzRequestToActualDeviation();
         trackLoomMainComponentRejectsANullAudioHost();
         trackLoomMainComponentRepairsEmptyOperationsAndShowsStableControlIds();
         trackLoomMainComponentTimerRefreshesOnlyPlaybackPresentation();
