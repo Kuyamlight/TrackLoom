@@ -348,6 +348,27 @@ void trackLoomMainComponentEnablesPlayWhenStartupOutputOpens()
         "Play must be enabled immediately when startup opens a shared output");
 }
 
+void trackLoomMainComponentPollsDeviceRemovalWhileIdle()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeFakeHost(
+        [&](trackloom::test::FakeJuceAudioDeviceType& type) { observedType = &type; });
+    trackloom::TrackLoomMainComponent component(std::move(dependencies));
+    auto* playButton = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(component, trackloom::mainPlayButtonComponentId));
+    require(playButton != nullptr && playButton->isEnabled(),
+        "idle device-removal test requires an initially available output");
+
+    observedType->setOutputDevices({});
+    observedType->notifyDeviceListChanged();
+    pumpGuiMessagesOnce(100);
+
+    require(!playButton->isEnabled(),
+        "the always-running UI timer must disable Play after idle device removal");
+}
+
 void trackLoomMainComponentFallsBackAfterInvalidSettingsWithAChineseWarning()
 {
     juce::ScopedJuceInitialiser_GUI initialiseGui;
@@ -629,6 +650,7 @@ int main()
         trackLoomMainComponentRepairsEmptyOperationsAndShowsStableControlIds();
         trackLoomMainComponentTimerRefreshesOnlyPlaybackPresentation();
         trackLoomMainComponentEnablesPlayWhenStartupOutputOpens();
+        trackLoomMainComponentPollsDeviceRemovalWhileIdle();
         audioSettingsComponentTracksHostStateWithoutManualRefresh();
         audioSettingsComponentRecoversAfterTestToneStops();
         trackLoomMainComponentFallsBackAfterInvalidSettingsWithAChineseWarning();

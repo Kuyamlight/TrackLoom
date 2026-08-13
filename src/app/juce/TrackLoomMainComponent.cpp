@@ -599,6 +599,7 @@ public:
         initialiseAudioOutput();
         playback_.poll(session_);
         refreshFromSession();
+        startTimerHz(30);
         setSize(1040, 920);
     }
 
