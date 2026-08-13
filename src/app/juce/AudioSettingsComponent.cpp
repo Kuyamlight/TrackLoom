@@ -133,8 +133,11 @@ AudioSettingsComponent::~AudioSettingsComponent()
 void AudioSettingsComponent::refreshFromHost()
 {
     host_.refreshOutputDevices();
-    rebuildDevicesFromCache();
-    lastObservedDeviceListRevision_ = host_.snapshot().deviceListRevision;
+    const auto hostSnapshot = host_.snapshot();
+    if (!hostSnapshot.deviceListRefreshPending) {
+        rebuildDevicesFromCache();
+        lastObservedDeviceListRevision_ = hostSnapshot.deviceListRevision;
+    }
 }
 
 void AudioSettingsComponent::rebuildDevicesFromCache()

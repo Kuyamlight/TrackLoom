@@ -477,6 +477,56 @@ void audioSettingsRetainsARevisionPublishedDuringItsDeviceScan()
         "30 Hz settings timers without another notification must not scan again");
 }
 
+void audioSettingsConstructorDoesNotConsumeARevisionPublishedDuringItsInitialScan()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    int scanCount = 0;
+    trackloom::JuceAudioHost host([&]() -> std::unique_ptr<juce::AudioIODeviceType> {
+        auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+        observedType = type.get();
+        type->setOutputDevices({"Bootstrap Output"});
+        type->setScanObserver([&] {
+            ++scanCount;
+            if (scanCount == 1) {
+                observedType->setOutputDevices({"TP35 Pro"});
+                observedType->notifyDeviceListChanged();
+            } else if (scanCount == 2) {
+                observedType->setOutputDevices({"Speakers"});
+            }
+        });
+        return type;
+    });
+    trackloom::AudioSettingsComponent component(
+        host, {"TP35 Pro", 48000.0, 256, 2});
+    auto* device = dynamic_cast<juce::ComboBox*>(
+        component.findChildWithID(trackloom::audioDeviceSelectorComponentId));
+    require(device != nullptr && scanCount == 1
+            && host.snapshot().deviceListRefreshPending,
+        "constructor race test must publish a second revision during its initial scan");
+    observedType->clearCalls();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    juce::Timer::callPendingTimersSynchronously();
+
+    require(scanCount == 2
+            && std::count(observedType->calls().begin(), observedType->calls().end(), "scan") == 1
+            && !host.snapshot().deviceListRefreshPending,
+        "the first real settings timer must service the revision published during construction once");
+    const auto cached = host.outputDevicesSnapshot();
+    require(cached.size() == 1 && cached.front().name == "Speakers",
+        "the second constructor-race scan must publish Speakers to the host cache");
+    require(device->getNumItems() == 1 && device->getItemText(0).contains("Speakers")
+            && !device->getItemText(0).contains("TP35 Pro"),
+        "settings construction must not mark an in-flight revision observed and retain stale TP35 Pro");
+
+    observedType->clearCalls();
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    juce::Timer::callPendingTimersSynchronously();
+    require(observedType->calls().empty(),
+        "the constructor-race revision must not scan again after it is consumed");
+}
+
 void audioSettingsShowsASubHertzRequestToActualDeviation()
 {
     juce::ScopedJuceInitialiser_GUI initialiseGui;
@@ -1043,6 +1093,7 @@ int main()
         audioSettingsCandidateRequiresApplyAndPersistsActualFormat();
         audioSettingsApplyUsesNegotiatedActualFormatAndMergesARealSingleBuffer();
         audioSettingsRetainsARevisionPublishedDuringItsDeviceScan();
+        audioSettingsConstructorDoesNotConsumeARevisionPublishedDuringItsInitialScan();
         audioSettingsShowsASubHertzRequestToActualDeviation();
         trackLoomMainComponentRejectsANullAudioHost();
         trackLoomMainComponentRepairsEmptyOperationsAndShowsStableControlIds();
