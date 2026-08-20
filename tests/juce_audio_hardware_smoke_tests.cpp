@@ -37,6 +37,9 @@ using ComUninitializeOperation = std::function<void()>;
 using HostConstructionOperation = std::function<int()>;
 using AcceptedFormatOperation = std::function<int(
     const trackloom::AudioDeviceFormatSnapshot&)>;
+#if defined(_WIN32)
+using WideEnvironmentLookupOperation = std::function<const wchar_t*(const wchar_t*)>;
+#endif
 
 int runWithComApartment(
     const ComInitializeOperation& initialize,
@@ -60,6 +63,11 @@ int runAfterAudioOpenCheck(
     std::ostream& output,
     std::ostream& error,
     const AcceptedFormatOperation& continueWithActualFormat);
+
+#if defined(_WIN32)
+std::string requestedOutputNameFromWideEnvironment(
+    const WideEnvironmentLookupOperation& lookup);
+#endif
 
 class ScopedComApartment final {
 public:
@@ -236,6 +244,15 @@ const char* envValue(const char* name)
     return std::getenv(name);
 }
 
+#if defined(_WIN32)
+std::string requestedOutputNameFromWideEnvironment(
+    const WideEnvironmentLookupOperation& lookup)
+{
+    const auto* name = lookup(L"TRACKLOOM_AUDIO_OUTPUT_NAME");
+    return name == nullptr ? std::string{} : juce::String(name).toStdString();
+}
+#endif
+
 bool hardwareSmokeEnabled()
 {
     const auto* enabled = envValue("TRACKLOOM_AUDIO_HARDWARE_SMOKE");
@@ -244,8 +261,13 @@ bool hardwareSmokeEnabled()
 
 std::string requestedOutputName()
 {
+#if defined(_WIN32)
+    return requestedOutputNameFromWideEnvironment(
+        [](const wchar_t* name) { return _wgetenv(name); });
+#else
     const auto* name = envValue("TRACKLOOM_AUDIO_OUTPUT_NAME");
     return name == nullptr ? std::string{} : std::string{name};
+#endif
 }
 
 std::string_view formatDeviationAcceptance()
@@ -556,10 +578,35 @@ void runNegotiatedFormatSelfTest()
         "an audio device open failure should retain the host diagnostic");
 }
 
+#if defined(_WIN32)
+void runUnicodeOutputNameSelfTest()
+{
+    bool lookupCalled = false;
+    const auto outputName = requestedOutputNameFromWideEnvironment(
+        [&](const wchar_t* variableName) -> const wchar_t* {
+            lookupCalled = true;
+            require(std::wstring(variableName) == L"TRACKLOOM_AUDIO_OUTPUT_NAME",
+                "Unicode output-name lookup must request the stable environment key");
+            return L"耳机 (TP35 Pro)";
+        });
+    require(lookupCalled
+            && outputName == juce::String(L"耳机 (TP35 Pro)").toStdString(),
+        "Windows output-device names must cross the environment boundary as UTF-8");
+
+    const auto missing = requestedOutputNameFromWideEnvironment(
+        [](const wchar_t*) -> const wchar_t* { return nullptr; });
+    require(missing.empty(),
+        "a missing Windows output-name environment variable must select the default device");
+}
+#endif
+
 void runCompletionSelfTest()
 {
     runComApartmentSelfTest();
     runNegotiatedFormatSelfTest();
+#if defined(_WIN32)
+    runUnicodeOutputNameSelfTest();
+#endif
     trackloom::RealtimePlaybackHostSnapshot healthy;
     healthy.format.sampleRate = 48000.0;
     healthy.realtime.state = trackloom::RealtimePlaybackState::Stopped;
