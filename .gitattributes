@@ -1,0 +1,5 @@
+/tests/fixtures/audio/minimum-audible-midi/*.trackloom text eol=lf
+/tests/fixtures/audio/minimum-audible-midi/*.tsv text eol=lf
+/tests/fixtures/audio/minimum-audible-midi/*.properties text eol=lf
+/tests/fixtures/audio/minimum-audible-midi/*.md text eol=lf
+/tests/fixtures/audio/minimum-audible-midi/SHA256SUMS text eol=lf
