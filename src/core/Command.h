@@ -48,6 +48,22 @@ private:
     std::vector<std::unique_ptr<Command>> redoStack_;
 };
 
+// SetProjectPlaybackLoopCommand 修改工程级循环范围，并保留首次执行前的状态供撤销使用。
+class SetProjectPlaybackLoopCommand final : public Command {
+public:
+    explicit SetProjectPlaybackLoopCommand(std::optional<PlaybackLoopRange> newRange);
+
+    std::string name() const override;
+    CommandResult validate(const Project& project) const override;
+    CommandResult execute(Project& project) override;
+    void undo(Project& project) override;
+
+private:
+    std::optional<PlaybackLoopRange> newRange_;
+    std::optional<PlaybackLoopRange> oldRange_;
+    bool oldRangeCaptured_ = false;
+};
+
 // AddTrackCommand 是第一条真实工程命令。
 // 它保存创建出的 Track，因此撤销后再重做时能恢复同一个稳定 ID。
 class AddTrackCommand final : public Command {

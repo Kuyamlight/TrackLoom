@@ -1,5 +1,7 @@
 #pragma once
 
+#include "LoopRange.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -132,6 +134,10 @@ public:
     int formatVersion() const;
     const std::string& name() const;
     void rename(std::string newName);
+    const std::optional<PlaybackLoopRange>& playbackLoopRange() const noexcept;
+
+    // setPlaybackLoopRange 保存工程级循环范围；无范围表示关闭，非法非空范围保持工程不变。
+    bool setPlaybackLoopRange(std::optional<PlaybackLoopRange> range);
 
     const std::vector<Track>& tracks() const;
     std::optional<Track> findTrackById(const std::string& id) const;
@@ -276,6 +282,7 @@ public:
 private:
     int formatVersion_ = currentFormatVersion;
     std::string name_;
+    std::optional<PlaybackLoopRange> playbackLoopRange_;
     std::vector<Track> tracks_;
     std::vector<TimelineClip> clips_;
     std::vector<TimelineMarker> markers_;

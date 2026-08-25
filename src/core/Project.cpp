@@ -118,6 +118,21 @@ void Project::rename(std::string newName)
     name_ = std::move(newName);
 }
 
+const std::optional<PlaybackLoopRange>& Project::playbackLoopRange() const noexcept
+{
+    return playbackLoopRange_;
+}
+
+bool Project::setPlaybackLoopRange(std::optional<PlaybackLoopRange> range)
+{
+    if (range.has_value() && !isValidPlaybackLoopRange(*range)) {
+        return false;
+    }
+
+    playbackLoopRange_ = std::move(range);
+    return true;
+}
+
 const std::vector<Track>& Project::tracks() const
 {
     return tracks_;

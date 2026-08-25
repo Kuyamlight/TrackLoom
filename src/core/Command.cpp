@@ -222,6 +222,56 @@ bool CommandStack::canRedo() const
     return !redoStack_.empty();
 }
 
+SetProjectPlaybackLoopCommand::SetProjectPlaybackLoopCommand(
+    std::optional<PlaybackLoopRange> newRange)
+    : newRange_(std::move(newRange))
+{
+}
+
+std::string SetProjectPlaybackLoopCommand::name() const
+{
+    return "SetProjectPlaybackLoop";
+}
+
+CommandResult SetProjectPlaybackLoopCommand::validate(const Project& project) const
+{
+    if (newRange_.has_value() && !isValidPlaybackLoopRange(*newRange_)) {
+        return CommandResult::fail("Playback loop range is invalid.");
+    }
+
+    if (project.playbackLoopRange() == newRange_) {
+        return CommandResult::fail("Playback loop range is already set to the requested value.");
+    }
+
+    return CommandResult::ok();
+}
+
+CommandResult SetProjectPlaybackLoopCommand::execute(Project& project)
+{
+    const auto validation = validate(project);
+    if (!validation.success) {
+        return validation;
+    }
+
+    if (!oldRangeCaptured_) {
+        oldRange_ = project.playbackLoopRange();
+        oldRangeCaptured_ = true;
+    }
+
+    if (!project.setPlaybackLoopRange(newRange_)) {
+        return CommandResult::fail("Playback loop range could not be changed.");
+    }
+
+    return CommandResult::ok();
+}
+
+void SetProjectPlaybackLoopCommand::undo(Project& project)
+{
+    if (oldRangeCaptured_) {
+        project.setPlaybackLoopRange(oldRange_);
+    }
+}
+
 AddTrackCommand::AddTrackCommand(std::string trackName, TrackType trackType)
     : trackName_(std::move(trackName))
     , trackType_(trackType)
