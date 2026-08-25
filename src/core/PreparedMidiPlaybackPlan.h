@@ -1,6 +1,6 @@
 #pragma once
 
-#include "PlaybackClock.h"
+#include "LoopRange.h"
 #include "Project.h"
 
 #include <cstdint>

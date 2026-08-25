@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LoopRange.h"
 #include "PlaybackClock.h"
 #include "Project.h"
 #include "Transport.h"

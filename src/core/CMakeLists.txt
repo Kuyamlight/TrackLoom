@@ -20,6 +20,7 @@ add_library(trackloom_core STATIC
     MidiTrackRouter.cpp
     PlaybackControl.cpp
     PlaybackClock.cpp
+    PlaybackTimeConversion.cpp
     Project.cpp
     ProjectMidiOutputGraph.cpp
     ProjectPlaybackSession.cpp

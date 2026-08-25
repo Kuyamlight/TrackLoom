@@ -86,11 +86,6 @@ int sampleOffsetForEvent(
     return static_cast<int>(clampedOffset);
 }
 
-bool isValidLoopRange(const PlaybackLoopRange& loopRange)
-{
-    return loopRange.startTick >= 0 && loopRange.endTick > loopRange.startTick;
-}
-
 double positiveModulo(double value, double divisor)
 {
     const auto result = std::fmod(value, divisor);
@@ -393,7 +388,7 @@ std::vector<LoopedPlaybackTickWindow> playbackTickWindowsForLoopedBlock(
     if (!transport.isPlaying()
         || frameCount <= 0
         || !isValidSampleRate(transport.sampleRate())
-        || !isValidLoopRange(loopRange)
+        || !isValidPlaybackLoopRange(loopRange)
         || transport.currentSample() < 0) {
         return {};
     }

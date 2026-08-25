@@ -22,11 +22,6 @@ bool isValidGain(float gain)
     return std::isfinite(gain) && gain >= 0.0f;
 }
 
-bool isValidLoopRange(const PlaybackLoopRange& loopRange)
-{
-    return loopRange.startTick >= 0 && loopRange.endTick > loopRange.startTick;
-}
-
 void copyScheduledEventsToRawEvents(AudioEngineRenderResult& result)
 {
     result.midiEvents.reserve(result.scheduledMidiEvents.size());
@@ -333,7 +328,7 @@ bool AudioEngine::renderNextBlockWithLoopedMidi(
     if (block.channelCount() != channelCount_ || block.frameCount() > maxBlockFrames_) {
         return false;
     }
-    if (!isValidLoopRange(loopRange)) {
+    if (!isValidPlaybackLoopRange(loopRange)) {
         return false;
     }
 

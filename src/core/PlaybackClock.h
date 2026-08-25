@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LoopRange.h"
 #include "MidiPlayback.h"
 #include "Project.h"
 #include "Transport.h"
@@ -26,15 +27,6 @@ struct ScheduledMidiPlaybackEvent {
     int sampleOffset = 0;
 
     bool operator==(const ScheduledMidiPlaybackEvent&) const = default;
-};
-
-// PlaybackLoopRange 使用音乐 tick 表达一个循环区间。
-// 区间仍是半开规则：[startTick, endTick)，避免循环右边界和回绕后的起点重复计算。
-struct PlaybackLoopRange {
-    std::int64_t startTick = 0;
-    std::int64_t endTick = 0;
-
-    bool operator==(const PlaybackLoopRange&) const = default;
 };
 
 // LoopedPlaybackTickWindow 是循环播放时，一个音频 block 内的子窗口。

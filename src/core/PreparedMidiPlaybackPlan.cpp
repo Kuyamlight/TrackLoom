@@ -1,5 +1,7 @@
 #include "PreparedMidiPlaybackPlan.h"
 
+#include "PlaybackTimeConversion.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -51,25 +53,6 @@ bool sourceSortsBefore(const EventWithSource& left, const EventWithSource& right
                left.event.type == PreparedMidiEventType::NoteOn)
         < std::tuple(right.source.track, right.source.clip, right.source.note,
                right.event.type == PreparedMidiEventType::NoteOn);
-}
-
-bool tryConvertTickToSample(
-    const Project& project,
-    std::int64_t tick,
-    double sampleRate,
-    std::int64_t& samplePosition)
-{
-    const auto seconds = project.tickToSeconds(tick);
-    const auto scaled = static_cast<double>(seconds * sampleRate);
-    const auto safeMinimum = static_cast<double>(std::numeric_limits<std::int64_t>::min());
-    const auto exclusiveMaximum = -safeMinimum;
-    if (!std::isfinite(seconds) || !std::isfinite(scaled)
-        || scaled < safeMinimum || scaled >= exclusiveMaximum) {
-        return false;
-    }
-
-    samplePosition = static_cast<std::int64_t>(std::llround(scaled));
-    return true;
 }
 
 bool tryAddTicks(std::int64_t left, std::int64_t right, std::int64_t& sum)
@@ -130,16 +113,15 @@ PreparedMidiPlaybackPlanBuildResult buildPreparedMidiPlaybackPlanWithLimits(
     plan->outputChannelMask = request.outputChannelMask;
     plan->playbackStartSample = request.playbackStartSample;
     if (request.loopRange) {
-        if (request.loopRange->startTick < 0
-            || request.loopRange->endTick <= request.loopRange->startTick) {
+        if (!isValidPlaybackLoopRange(*request.loopRange)) {
             return failure(PreparedMidiPlaybackPlanBuildFailureReason::InvalidLoopRange);
         }
 
         std::int64_t loopStartSample = 0;
         std::int64_t loopEndSample = 0;
-        if (!tryConvertTickToSample(request.projectSnapshot, request.loopRange->startTick,
+        if (!tryConvertPlaybackTickToSample(request.projectSnapshot, request.loopRange->startTick,
                 request.sampleRate, loopStartSample)
-            || !tryConvertTickToSample(request.projectSnapshot, request.loopRange->endTick,
+            || !tryConvertPlaybackTickToSample(request.projectSnapshot, request.loopRange->endTick,
                 request.sampleRate, loopEndSample)) {
             return failure(PreparedMidiPlaybackPlanBuildFailureReason::SamplePositionOverflow);
         }
@@ -213,8 +195,10 @@ PreparedMidiPlaybackPlanBuildResult buildPreparedMidiPlaybackPlanWithLimits(
                 }
                 std::int64_t onSample = 0;
                 std::int64_t offSample = 0;
-                if (!tryConvertTickToSample(request.projectSnapshot, noteStartTick, request.sampleRate, onSample)
-                    || !tryConvertTickToSample(request.projectSnapshot, noteEndTick, request.sampleRate, offSample)) {
+                if (!tryConvertPlaybackTickToSample(
+                        request.projectSnapshot, noteStartTick, request.sampleRate, onSample)
+                    || !tryConvertPlaybackTickToSample(
+                        request.projectSnapshot, noteEndTick, request.sampleRate, offSample)) {
                     return failure(PreparedMidiPlaybackPlanBuildFailureReason::SamplePositionOverflow);
                 }
                 if (!plan->loop && offSample < request.playbackStartSample) {
