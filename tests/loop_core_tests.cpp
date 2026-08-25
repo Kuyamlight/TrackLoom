@@ -139,6 +139,35 @@ void playbackLoopCommandModifiesRangeAndUndoRedoRestoresPriorRange()
         "redoing a loop range replacement should restore the replacement range");
 }
 
+void playbackLoopCommandUndoRetainsFirstCapturedRangeAfterExternalRangeChange()
+{
+    trackloom::Project project;
+    const trackloom::PlaybackLoopRange firstRange { 960, 3840 };
+    const trackloom::PlaybackLoopRange replacementRange { 1920, 7680 };
+    const trackloom::PlaybackLoopRange externalRange { 3840, 11520 };
+    trackloom::SetProjectPlaybackLoopCommand command(replacementRange);
+
+    require(project.setPlaybackLoopRange(firstRange),
+        "the first valid range should be installed before executing the loop command");
+    require(command.execute(project).success,
+        "the loop command should first replace the project range");
+    require(project.playbackLoopRange() == replacementRange,
+        "the first execution should store the replacement range");
+    command.undo(project);
+    require(project.playbackLoopRange() == firstRange,
+        "the first undo should restore the initially captured range");
+
+    require(project.setPlaybackLoopRange(externalRange),
+        "an external valid range change should be accepted between command executions");
+    require(command.execute(project).success,
+        "the same loop command should execute again after an external range change");
+    require(project.playbackLoopRange() == replacementRange,
+        "the second execution should restore the replacement range");
+    command.undo(project);
+    require(project.playbackLoopRange() == firstRange,
+        "the second undo must restore the first captured range rather than the external range");
+}
+
 void playbackLoopCommandClearsRangeAndUndoRedoRestoresPriorRange()
 {
     trackloom::Project project;
@@ -339,6 +368,7 @@ int main()
         projectPlaybackLoopRangeSetterRejectsInvalidRangeWithoutChangingExistingRange();
         playbackLoopCommandSetsRangeAndUndoRedoRestoresNoRange();
         playbackLoopCommandModifiesRangeAndUndoRedoRestoresPriorRange();
+        playbackLoopCommandUndoRetainsFirstCapturedRangeAfterExternalRangeChange();
         playbackLoopCommandClearsRangeAndUndoRedoRestoresPriorRange();
         rejectedPlaybackLoopCommandsPreserveProjectAndCommandHistory();
         playbackTickConversionConvertsDefault120BpmTicksToSamples();
