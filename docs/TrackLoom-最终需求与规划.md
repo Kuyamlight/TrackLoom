@@ -1649,12 +1649,746 @@ D1 明确不包含：
 10. JUCE 组件稳定 ID、片段点击选择、“设为循环”、循环带绘制、拖动预览、mouse-up 只提交一次、边界未变化时零命令、清除、撤销恢复和隐藏窗口启动。
 11. fake device 路径中的跨循环 MIDI、边界 Note Off、停止后活动音符归零、设备失败不修改工程范围。普通自动化测试不得依赖当前机器声卡。
 
-D1 阶段验收环境为 Windows 11 x64。除自动化测试外，还必须形成以下当前 commit 证据：
+D1 阶段验收环境为 Windows 11 x64。除自动化测试外，还必须形成以下最终代码提交证据；允许用只含证据与阶段状态文档的直接后继提交承载记录，但不得在记录之后静默改变生产代码：
 
 - 在包含至少 8 条乐器轨和 32 个 MIDI 片段的固定基准工程中，以 deterministic fake device 的 48 kHz、512 samples 配置累计推进 `28,800,000` frames，即 `56,250` 个 block、每个 block `512` frames，模拟 10 分钟音频时间；测试必须同步加速执行，CTest 设置 120 秒防挂死 timeout。在指定 Windows 11 x64 验收机的 Release 构建中，回调推进目标不超过 60 秒；Debug 和未标定 CI 环境仍执行完整功能断言并记录耗时，但不因超过 60 秒单独判定功能失败。所有环境都必须断言无崩溃、死锁、播放头异常、callback timeout、oversized block、xrun 诊断或悬挂音符。该自动化门槛不构成可听硬件证据，也不替代第 16.2 节最终候选版的 48 kHz、256 samples、30 分钟毕业验收。
 - 完成“打开工程 → 选中 MIDI 片段 → 设为循环 → 调整两侧边界 → 可听循环播放 → 关闭循环 → 停止并重新播放 → 确认恢复线性播放 → 撤销/重做 → 保存重开”的人工流程，并确认重开后范围恢复而会话开关默认关闭。
 - 由一名未参与实现的人按统一操作说明完成“选片段—设循环—调整边界—播放—关闭循环—停止重播并确认线性播放”，目标用时不超过 3 分钟；记录实际用时、失败步骤和提示需求。该 D1 可用性烟测不替代第 16.2 节最终 5 名初学者任务测试。
 - 最终运行 D1 定向测试、完整 CTest、隐藏应用冒烟测试以及 `git diff --check`/`git show --check`。真实 WASAPI 监听和硬件连续播放单独记录；未提供可用设备或未执行时必须标记为 skipped，且 D1 的“可听循环播放”验收保持未完成，不得因 fake-device 测试通过而判定整个 D1 完成。
+
+#### 16.5.7 可执行实施计划
+
+> **执行要求：** 实施代理必须先使用 `superpowers:using-git-worktrees` 建立隔离工作树，再使用 `superpowers:subagent-driven-development`（推荐）或 `superpowers:executing-plans` 逐任务执行。每个任务必须依次完成：与缺失能力一致的 RED、最小 GREEN、定向测试、相关回归、独立规格复审、独立代码质量复审、问题修复和 fresh 复验；不得把多个任务压成一次大提交。
+
+**目标：** 在不把 `Project`、应用会话、JUCE 组件或可变循环状态带入声卡 callback 的前提下，交付第 16.5.1–16.5.6 节已经确认的 D1 可视 MIDI 循环闭环：选中普通 MIDI 片段、设置和拖动工程循环范围、会话级开关、统一播放语义、撤销/重做、v11 保存重开、确定性 fake-device 长运行以及单独记录的真实 WASAPI 可听证据。
+
+**架构：** 核心层用 `LoopRange.h`、`Project`、`SetProjectPlaybackLoopCommand` 和 v11 serializer 保存唯一工程范围；纯应用层用 `AppTimelineCanvasStatus`、`AppLoopActions` 和播放/工程替换门禁生成可测试状态与动作；`TimelineLoopEditorComponent` 只绘制快照并保存缩放、滚动、hover 和拖动预览；`TrackLoomMainComponent` 继续作为 selected MIDI clip ID 和会话循环开关的唯一上层所有者；实时 callback 仍只消费不可变 `PreparedMidiPlaybackPlan`。
+
+**技术栈：** C++20、JUCE 8.0.14、CMake/Ninja、MSVC 19.44、CTest、Windows 11 x64、WASAPI shared。
+
+**基线与工作树：**
+
+- 必须先提交本节计划，再从“包含本节 16.5.7 且包含提交 `3590018`”的规划基线创建分支 `codex/visual-midi-loop-d1`；不得直接从不含本计划的 `3590018` 创建。创建前用 `git show HEAD:docs/TrackLoom-最终需求与规划.md | Select-String '16.5.7 可执行实施计划'` 证明当前 HEAD 含计划，再把 `(git rev-parse HEAD).Trim()` 作为 `git worktree add` 的起点。工作树建议放在 `E:/111daigaku/TrackLoom-worktrees/visual-midi-loop-d1`。
+- 主工作树当前已有用户修改的 `.gitignore` 和未跟踪的 `.superpowers/`；隔离工作树不得复制、暂存、覆盖或提交它们。
+- 新工作树配置命令：
+
+  ```powershell
+  cmd.exe /d /s /c 'call "E:/Android/VS/2022/BuildTools/Common7/Tools/VsDevCmd.bat" -arch=x64 && "E:/Android/VS/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DTRACKLOOM_JUCE_ROOT="E:/Android/DevTools/JUCE" -DBUILD_TESTING=ON'
+  ```
+
+**定向命令约定：**
+
+- `D1_CORE_TEST`：
+
+  ```powershell
+  cmd.exe /d /s /c 'call "E:/Android/VS/2022/BuildTools/Common7/Tools/VsDevCmd.bat" -arch=x64 && "E:/Android/VS/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" --build build --target trackloom_loop_core_tests --parallel && "E:/Android/VS/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/ctest.exe" --test-dir build -R "^trackloom_loop_core_tests$" --output-on-failure'
+  ```
+
+- `D1_APP_TIMELINE_TEST`、`D1_APP_ACTION_TEST`、`D1_APP_PLAYBACK_TEST` 和 `D1_APP_REPLACEMENT_TEST` 分别构建并运行 `trackloom_app_timeline_canvas_tests`、`trackloom_app_loop_actions_tests`、`trackloom_app_loop_playback_tests` 和 `trackloom_app_project_replacement_tests`；调用方式与 `D1_CORE_TEST` 相同，`ctest -R` 必须使用完整锚定名称。
+- `D1_JUCE_TEST` 构建并运行 `trackloom_d1_juce_loop_editor_tests`。
+- `D1_JUCE_HOST_TEST` 构建并运行 `trackloom_d1_juce_host_quiescence_tests`。
+- `D1_FAKE_ACCEPTANCE_TEST` 构建并运行 `trackloom_d1_loop_fake_audio_benchmark_tests`。
+- `CORE_TEST`、`APP_TEST` 和 `JUCE_TEST` 继续表示第 16.4.5 节已经给出的既有回归命令；修改对应生产模块后必须同时运行，不得只运行新的小测试。
+- `FULL_TEST`：
+
+  ```powershell
+  cmd.exe /d /s /c 'call "E:/Android/VS/2022/BuildTools/Common7/Tools/VsDevCmd.bat" -arch=x64 && "E:/Android/VS/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" --build build --parallel && "E:/Android/VS/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/ctest.exe" --test-dir build --output-on-failure'
+  ```
+
+新增 target 与 source/link/timeout 的固定映射如下；CTest 名称与 target 名称相同：
+
+| Target | Source | Link | Timeout |
+|---|---|---|---:|
+| `trackloom_loop_core_tests` | `tests/loop_core_tests.cpp` | `trackloom_core` | 20 s |
+| `trackloom_app_timeline_canvas_tests` | `tests/app_timeline_canvas_tests.cpp` | `trackloom_app_support` | 20 s |
+| `trackloom_app_loop_actions_tests` | `tests/app_loop_actions_tests.cpp` | `trackloom_app_support` | 20 s |
+| `trackloom_app_loop_playback_tests` | `tests/app_loop_playback_tests.cpp` | `trackloom_app_support` | 30 s |
+| `trackloom_app_project_replacement_tests` | `tests/app_project_replacement_tests.cpp` | `trackloom_app_support` | 30 s |
+| `trackloom_d1_juce_host_quiescence_tests` | `tests/d1_juce_host_quiescence_tests.cpp` | `trackloom_juce` | 30 s |
+| `trackloom_d1_juce_loop_editor_tests` | `tests/d1_juce_loop_editor_tests.cpp` | `trackloom_app_juce_support` | 30 s |
+| `trackloom_d1_loop_fake_audio_benchmark_tests` | `tests/d1_loop_fake_audio_benchmark_tests.cpp` | `trackloom_app_juce_support` | 120 s |
+
+**所有任务共同约束：**
+
+- 所有新增 MSVC target 显式保留 `/utf-8`。Task 1 新建 `tests/support/TestFailureOutput.h`，以 `trackloom::test::configureTestFailureOutput()` 内联封装现有 `_set_abort_behavior`、`_set_error_mode` 和 `_CrtSetReportMode` 规则（非 MSVC 为空操作）；本计划所有新测试入口都包含并调用它，红测必须快速失败并把原因写入 stderr。
+- 所有新增 CTest 都用 `set_tests_properties(... PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")` 固定仓库根目录，读取 fixture 时不得依赖调用者当前目录。
+- RED 必须先运行并记录失败点；只有失败确实来自当项缺失能力时才进入 GREEN。编译环境错误、路径错误或无关旧测试失败不算有效 RED。
+- 独立 reviewer 不得是该任务的实现代理。Critical 或 Important 问题必须先补最小复现测试，再修复并重新运行定向测试与受影响回归；Minor 也必须明确修复或记录不修理由。
+- 每个任务结束运行 `git diff --check`，只暂存该任务列出的文件，检查 `git diff --cached --name-only`，创建建议提交后运行 `git show --check --stat --oneline HEAD`。未经明确授权不得 push。
+- `tests/fixtures/audio/minimum-audible-midi/reference.trackloom` 及其 `SHA256SUMS` 必须保持原始字节不变；该 fixture 的 SHA-256 仍为 `aa6731a14c867facad7235ef5bad4656f9fc41497fb8e59a29627914ca4abafd`。
+
+##### Task 1：统一循环范围类型、tick 合法性与播放时间换算
+
+**文件：**
+
+- 新建 `src/core/LoopRange.h`
+- 新建 `src/core/PlaybackTimeConversion.h`
+- 新建 `src/core/PlaybackTimeConversion.cpp`
+- 修改 `src/core/PlaybackClock.h`
+- 修改 `src/core/PlaybackClock.cpp`
+- 修改 `src/core/AudioEngine.h`
+- 修改 `src/core/AudioEngine.cpp`
+- 修改 `src/core/PreparedMidiPlaybackPlan.h`
+- 修改 `src/core/PreparedMidiPlaybackPlan.cpp`
+- 修改 `src/core/CMakeLists.txt`
+- 新建 `tests/loop_core_tests.cpp`
+- 新建 `tests/support/TestFailureOutput.h`
+- 修改 `tests/CMakeLists.txt`
+
+**公开接口：**
+
+```cpp
+struct PlaybackLoopRange {
+    std::int64_t startTick = 0;
+    std::int64_t endTick = 0;
+    bool operator==(const PlaybackLoopRange&) const = default;
+};
+
+[[nodiscard]] constexpr bool isValidPlaybackLoopRange(
+    const PlaybackLoopRange& range) noexcept
+{
+    return range.startTick >= 0 && range.endTick > range.startTick;
+}
+
+[[nodiscard]] bool tryConvertPlaybackTickToSample(
+    const Project& project,
+    std::int64_t tick,
+    double sampleRate,
+    std::int64_t& samplePosition);
+```
+
+换算函数只接受有限且大于 0 的采样率；只有 `tickToSeconds(tick) * sampleRate` 为有限值并落在 `llround` 可表示的 int64 半开数值区间时才写 `samplePosition`，失败时返回 `false` 且保持输出参数不变。
+
+- [ ] 先创建并验证可编译的 `tests/support/TestFailureOutput.h`，再建立 `trackloom_loop_core_tests`；写入 `{0,1}`、`{0,INT64_MAX}`、`{INT64_MAX-1,INT64_MAX}` 和负起点、零长度、反向范围，以及 120 BPM 下正常换算、零值/负值/非有限采样率、非有限乘积、`llround` 上下边界与 int64 溢出用例。首次构建必须只因 `LoopRange.h`/公开换算 API 尚不存在而 RED，不能因测试 helper 缺失产生伪 RED。
+- [ ] 把 `PlaybackLoopRange` 从 `PlaybackClock.h` 移到新头文件；`PlaybackClock`、`AudioEngine` 和 `PreparedMidiPlaybackPlan` 都直接包含它，删除两个私有验证器和 plan builder 内联判断，统一调用公开函数。把 `PreparedMidiPlaybackPlan.cpp` 匿名命名空间里的 `tryConvertTickToSample` 原样抽成 `tryConvertPlaybackTickToSample`，由 plan builder 和 Task 6 的起播策略共同调用，禁止复制数值边界。
+- [ ] 保留 plan builder 的 tick→sample 非有限/溢出检查和“派生 sample 区间必须非零”检查；统一 tick 验证不能替代这些数值防线。
+- [ ] 运行 `D1_CORE_TEST`、`CORE_TEST` 和 `git diff --check`，完成双 reviewer 后提交 `refactor: centralize loop validation and playback time conversion`。
+
+##### Task 2：在工程模型和统一命令历史中保存循环范围
+
+**文件：**
+
+- 修改 `src/core/Project.h`
+- 修改 `src/core/Project.cpp`
+- 修改 `src/core/Command.h`
+- 修改 `src/core/Command.cpp`
+- 修改 `tests/loop_core_tests.cpp`
+
+**核心接口：**
+
+```cpp
+const std::optional<PlaybackLoopRange>& playbackLoopRange() const noexcept;
+bool setPlaybackLoopRange(std::optional<PlaybackLoopRange> range);
+
+class SetProjectPlaybackLoopCommand final : public Command {
+public:
+    explicit SetProjectPlaybackLoopCommand(
+        std::optional<PlaybackLoopRange> newRange);
+    std::string name() const override;
+    CommandResult validate(const Project&) const override;
+    CommandResult execute(Project&) override;
+    void undo(Project&) override;
+
+private:
+    std::optional<PlaybackLoopRange> newRange_;
+    std::optional<PlaybackLoopRange> oldRange_;
+    bool oldRangeCaptured_ = false;
+};
+```
+
+- [ ] 先写新工程默认无范围、setter 设置/修改/清除、非法输入保持旧值，以及命令设置/修改/清除的 undo/redo、相同范围/no-range clear no-op 不入栈用例；运行 `D1_CORE_TEST` 取得缺少 API 的 RED。
+- [ ] `Project::setPlaybackLoopRange` 对非空非法范围返回 `false` 并保持旧值；对合法值和 `nullopt` 赋值。setter 允许同值赋值，no-op 只由命令层拒绝，供 loader 和 undo 使用。
+- [ ] 命令 `validate()` 拒绝非法与同值；`execute()` 首次执行时独立记录“已捕获”标志和旧 `optional`，避免把“尚未捕获”与“旧值为 nullopt”混淆；redo 不覆盖原旧值。
+- [ ] 运行 `D1_CORE_TEST`、`CORE_TEST` 和 `git diff --check`，完成双 reviewer 后提交 `feat: add project playback loop command`。
+
+##### Task 3：升级 v11 工程格式并原子迁移旧工程
+
+**文件：**
+
+- 修改 `src/core/Project.h`
+- 修改 `src/core/ProjectSerializer.cpp`
+- 修改 `tests/loop_core_tests.cpp`
+- 修改 `tests/core_tests.cpp`
+
+**写出与读取规则：**
+
+```cpp
+if (const auto& loop = project.playbackLoopRange(); loop.has_value()) {
+    output << "playback_loop "
+           << loop->startTick << ' '
+           << loop->endTick << '\n';
+}
+```
+
+- [ ] 先写 v11 有/无范围往返、`time_signature < playback_loop < track` 顺序、v1–v10 默认无范围和拒绝未来字段，以及 v11 重复、缺字段、额外字段、非整数、int64 溢出、负起点、零长度和反向范围原子失败测试；运行 `D1_CORE_TEST` 取得 RED。
+- [ ] 将 `Project::currentFormatVersion` 改为 11；writer 只在范围存在时于拍号与轨道之间写一条记录。
+- [ ] loader 用 `line == "playback_loop" || startsWith(line, "playback_loop ")` 捕获缺字段；依次返回 `Playback loop requires project version 11.`、`Duplicate playback loop record.`、`Invalid playback loop record.`、`Invalid playback loop value.` 或 `Invalid playback loop range.`，并显式拒绝 trailing token。解析仍只修改临时 `Project`。
+- [ ] 只更新 `tests/core_tests.cpp` 中 10 处“当前格式”断言为 11，保留用于兼容测试的显式 v10 输入；固定 v10 音频 fixture 不改。加载该 fixture 后断言范围为空，再保存到内存时允许升级为 v11。
+- [ ] 运行 `D1_CORE_TEST`、`CORE_TEST`、`ctest -R "^trackloom_audio_fixture_(hash|manifest)_tests$"`、`git diff --exit-code -- tests/fixtures/audio/minimum-audible-midi/reference.trackloom tests/fixtures/audio/minimum-audible-midi/SHA256SUMS` 和 `git diff --check`；完成双 reviewer 后提交 `feat: persist playback loop in project v11`。
+
+##### Task 4：生成纯应用层时间线画布快照与小节边界
+
+**文件：**
+
+- 新建 `src/app/AppTimelineCanvasStatus.h`
+- 新建 `src/app/AppTimelineCanvasStatus.cpp`
+- 修改 `src/app/CMakeLists.txt`
+- 新建 `tests/app_timeline_canvas_tests.cpp`
+- 修改 `tests/CMakeLists.txt`
+
+**公开接口：**
+
+```cpp
+struct AppTimelineVisibleTickRange {
+    std::int64_t startTick = 0;
+    std::int64_t endTick = 0;
+    bool operator==(const AppTimelineVisibleTickRange&) const = default;
+};
+
+struct AppTimelineCanvasTrackRow {
+    std::string trackId;
+    TrackType type = TrackType::Instrument;
+    std::string name;
+};
+
+struct AppTimelineCanvasClipRow {
+    std::string clipId;
+    std::string trackId;
+    ClipType type = ClipType::Midi;
+    std::string name;
+    std::int64_t startTick = 0;
+    std::int64_t endTick = 0;
+};
+
+enum class AppTimelineCanvasFailureReason {
+    None,
+    InvalidVisibleRange,
+    InvalidCandidateTick,
+    ClipEndOverflow
+};
+
+struct AppTimelineMeasureBoundaryNeighbors {
+    std::optional<std::int64_t> atOrBeforeTick;
+    std::optional<std::int64_t> atOrAfterTick;
+};
+
+struct AppTimelineMeasureBoundarySearchResult {
+    bool success = false;
+    AppTimelineCanvasFailureReason failureReason =
+        AppTimelineCanvasFailureReason::InvalidCandidateTick;
+    AppTimelineMeasureBoundaryNeighbors neighbors;
+};
+
+struct AppTimelineCanvasStatus {
+    AppTimelineVisibleTickRange visibleRange;
+    std::vector<AppTimelineCanvasTrackRow> tracks;
+    std::vector<AppTimelineCanvasClipRow> clips;
+    std::optional<PlaybackLoopRange> playbackLoopRange;
+    std::vector<std::int64_t> measureBoundaryTicks;
+};
+
+struct AppTimelineCanvasBuildResult {
+    bool success = false;
+    AppTimelineCanvasFailureReason failureReason =
+        AppTimelineCanvasFailureReason::InvalidVisibleRange;
+    AppTimelineCanvasStatus status;
+    std::string message;
+};
+
+AppTimelineCanvasBuildResult buildAppTimelineCanvasStatus(
+    const Project& project,
+    AppTimelineVisibleTickRange visibleRange);
+AppTimelineMeasureBoundarySearchResult
+findAppTimelineMeasureBoundaryNeighbors(
+    const Project& project,
+    std::int64_t candidateTick);
+```
+
+- [ ] 先写 4/4 边界、非小节对齐的 3/4 变拍 tick 作为新原点、从小节中部开始的可见范围、稳定轨道/片段 ID 与类型、片段终点溢出和非法可见范围测试；另覆盖 candidate=-1、candidate 精确位于边界、最后一个可表示边界、接近 `INT64_MAX` 时下一边界加法溢出，以及画布边界与 neighbor 查询一致。运行 `D1_APP_TIMELINE_TEST` 取得 RED。
+- [ ] builder 与 neighbor 查询必须复用同一个按已排序拍号段定位、整除跳转和 checked 乘加的内部 primitive；每个拍号事件 tick 强制开启新小节。builder 输出闭合显示边界 `[visible.startTick, visible.endTick]` 内的标尺 tick；查询在 candidate 合法时返回最近的 `atOrBeforeTick`/`atOrAfterTick`，candidate 恰为边界时两者相同，下一边界不可表示时只返回 lower 并正常成功，绝不执行溢出加法。
+- [ ] clip end 使用检查过溢出的 `startTick + lengthTick`；任何失败返回空的失败结果，不交付部分画布。像素、颜色、缩放和滚动不得进入 `Project` 或快照 builder。
+- [ ] 运行 `D1_APP_TIMELINE_TEST`、`APP_TEST` 和 `git diff --check`，完成双 reviewer 后提交 `feat: describe loop timeline canvas`。
+
+##### Task 5：实现循环会话状态、应用动作与小节吸附
+
+**文件：**
+
+- 新建 `src/app/AppLoopActions.h`
+- 新建 `src/app/AppLoopActions.cpp`
+- 修改 `src/app/CMakeLists.txt`
+- 新建 `tests/app_loop_actions_tests.cpp`
+- 修改 `tests/CMakeLists.txt`
+
+**公开接口：**
+
+```cpp
+class AppLoopPlaybackState final {
+public:
+    bool enabled() const noexcept;
+    bool setEnabled(const Project& project, bool enabled) noexcept;
+    void reconcile(const Project& project) noexcept;
+    void resetForProjectReplacement() noexcept;
+
+private:
+    bool enabled_ = false;
+};
+
+enum class AppLoopBoundaryEdge { Start, End };
+
+enum class AppLoopActionFeedbackKind {
+    Success,
+    SessionOnlyEnabled,
+    NoOp,
+    MissingSelection,
+    MissingClip,
+    IncompatibleClipType,
+    ClipEndOverflow,
+    InvalidLoopRange,
+    MissingLoopRange,
+    CommandFailed
+};
+
+struct AppLoopActionFeedback {
+    bool success = false;
+    AppLoopActionFeedbackKind kind =
+        AppLoopActionFeedbackKind::CommandFailed;
+    std::string message;
+};
+
+struct AppLoopPreviewResult {
+    bool success = false;
+    AppLoopActionFeedbackKind kind =
+        AppLoopActionFeedbackKind::InvalidLoopRange;
+    std::optional<PlaybackLoopRange> range;
+    std::string message;
+};
+
+std::optional<PlaybackLoopRange> effectiveAppPlaybackLoopRange(
+    const Project& project,
+    const AppLoopPlaybackState& state) noexcept;
+AppLoopActionFeedback setAppPlaybackLoopFromSelectedMidiClip(
+    AppProjectSession& session,
+    std::string_view selectedMidiClipId,
+    AppLoopPlaybackState& state);
+AppLoopPreviewResult previewAppPlaybackLoopBoundaryDrag(
+    const Project& project,
+    AppLoopBoundaryEdge edge,
+    std::int64_t candidateTick);
+AppLoopActionFeedback commitAppPlaybackLoopRange(
+    AppProjectSession& session,
+    PlaybackLoopRange range,
+    AppLoopPlaybackState& state);
+AppLoopActionFeedback clearAppPlaybackLoopRange(
+    AppProjectSession& session,
+    AppLoopPlaybackState& state);
+AppLoopActionFeedback toggleAppLoopPlaybackEnabled(
+    const Project& project,
+    AppLoopPlaybackState& state);
+```
+
+- [ ] 先覆盖空选择、失效 ID、音频片段、非法片段、终点溢出、有效设置、同范围 session-only 启用、同范围已启用 no-op、无范围不能启用、拖动吸附等距取较小 tick、边界不能交叉及未变化零命令；吸附另覆盖 candidate=-1、`INT64_MAX` 附近最后可表示边界、下一边界不可表示和与 Task 4 neighbor 结果一致。Loop toggle 往返必须保持 dirty、generation 和 undo/redo 深度不变。运行 `D1_APP_ACTION_TEST` 取得 RED。
+- [ ] “设为循环”先检查片段类型和终点加法，再执行一次 `SetProjectPlaybackLoopCommand`；工程范围相同且会话关闭时只启用状态，不能触碰 dirty、generation 或历史。
+- [ ] 拖动预览只调用 Task 4 的 `findAppTimelineMeasureBoundaryNeighbors()`，不得再实现第二套拍号段/小节算术；在返回的可表示候选中等距选择较小 tick，并按固定另一端点排除交叉候选。负 candidate 或不存在合法候选时返回稳定失败且不产生预览；mouse-up 提交函数再次调用统一范围验证和核心命令。
+- [ ] `reconcile()` 只在工程无范围时强制关闭；有范围时保留当前值。完整测试“设为循环→undo→reconcile→redo→reconcile”和“清除→undo→reconcile→redo→reconcile”：Clear 后范围为空且关闭，Undo 恢复范围但仍关闭，Redo 再次清空且仍关闭。
+- [ ] 运行 `D1_APP_ACTION_TEST`、`D1_CORE_TEST`、`APP_TEST` 和 `git diff --check`，完成双 reviewer 后提交 `feat: add app loop actions`。
+
+##### Task 6：统一循环起播、Preparing 淘汰与最新范围重播
+
+**文件：**
+
+- 修改 `src/app/AppPlaybackActions.h`
+- 修改 `src/app/AppPlaybackActions.cpp`
+- 修改 `src/app/juce/TrackLoomMainComponent.cpp`，先加入默认关闭的 `loopState_` 并迁移现有 poll/Play/Space 调用
+- 新建 `tests/app_loop_playback_tests.cpp`
+- 修改 `tests/CMakeLists.txt`
+- 修改 `tests/app_support_tests.cpp`，只更新既有调用签名，不在其中增加 D1 行为覆盖
+- 修改 `tests/app_juce_audio_tests.cpp`，只更新既有调用签名，不在其中增加 D1 行为覆盖
+
+**新增接口与状态：**
+
+```cpp
+enum class AppPlaybackLoopIntentStatus {
+    None,
+    PreparationInvalidated,
+    PendingNextPlayback
+};
+
+enum class AppPlaybackStartPositionFailureReason {
+    None,
+    InvalidSampleRate,
+    InvalidLoopRange,
+    SamplePositionOverflow,
+    CollapsedLoop
+};
+
+struct AppPlaybackStartPositionResult {
+    bool success = false;
+    AppPlaybackStartPositionFailureReason failureReason =
+        AppPlaybackStartPositionFailureReason::InvalidLoopRange;
+    std::int64_t sample = 0;
+};
+
+AppPlaybackStartPositionResult resolveAppPlaybackStartSample(
+    const Project& project,
+    double sampleRate,
+    std::int64_t currentSample,
+    std::optional<PlaybackLoopRange> effectiveLoopRange);
+```
+
+在 `AppPlaybackStatus` 追加以下字段，并把高层入口改为显式接收同一份会话状态：
+
+```cpp
+AppPlaybackLoopIntentStatus loopIntentStatus =
+    AppPlaybackLoopIntentStatus::None;
+std::string loopIntentMessage;
+
+void AppPlaybackController::poll(
+    const AppProjectSession& session,
+    const AppLoopPlaybackState& loopState);
+AppPlaybackActionFeedback startAppPlayback(
+    AppPlaybackController& playback,
+    const AppProjectSession& session,
+    const AppLoopPlaybackState& loopState);
+AppPlaybackActionFeedback toggleAppPlayback(
+    AppPlaybackController& playback,
+    const AppProjectSession& session,
+    const AppLoopPlaybackState& loopState);
+
+// AppPlaybackController private state：
+std::optional<AppPlaybackPreparationKey> installedPreparationKey_;
+```
+
+不得保留会让 GUI 默认为线性播放的无参循环便利重载。底层测试仍可直接调用 `AppPlaybackController::start(snapshot, optionalRange)`。
+
+- [ ] 先写当前 sample 在循环内、左侧、右侧和等于右边界的起播测试；变速图、非法采样率、非有限/溢出和舍入后 sample 区间塌缩也必须 RED。
+- [ ] 再写 Play/Space 捕获相同 build request、Preparing 中工程范围变化和纯会话开关变化都取消旧 worker、旧结果不安装且不自动重播、Playing 中只显示 pending、把范围改回已安装值后 pending 消失、无关工程 generation 变化不产生循环 pending、停止重播使用新范围，以及 rewind 等待期间变更后使用最新范围的 RED。
+- [ ] 起播换算先把非有限或不大于 0 的采样率映射为 `InvalidSampleRate`，把非法 tick 范围映射为 `InvalidLoopRange`，再直接调用 Task 1 的 `tryConvertPlaybackTickToSample()`；合法 tick 范围的换算失败映射为 `SamplePositionOverflow`，两个边界样本相等或反向映射为 `CollapsedLoop`。有循环时只有 `loopStartSample <= currentSample < loopEndSample` 才保留当前位置，否则使用 loop start。低层 plan builder 的 floor-mod 保持防御规则。
+- [ ] `poll(session, loopState)` 在消费 completion 前按明确优先级判断：有效循环范围变化才设置 `PreparationInvalidated` 并显示“循环设置已变化，请重新播放”；范围相同但 project generation 变化继续使用 `StalePreparation`/工程已变化语义；format generation 或设备可用性变化继续使用设备失效语义。三类旧结果都不得安装或自动重启。
+- [ ] Playing 期间只比较 `installedPreparationKey.loopRange != effectiveAppPlaybackLoopRange(session.project(), loopState)` 来发布“停止并重新播放后生效”；不得用完整 key 或 generation 把普通重命名等工程修改误报为循环修改。
+- [ ] 只有 plan 安装且 host start 成功后才把对应 completion key 写入 `installedPreparationKey_`；install/start 失败不得留下它。开始新的 preparation、正常停止完成、hard reset、Faulted/Unavailable 收敛和成功工程替换时清空，下一次成功安装再写入。Playing 每次 poll 都由该字段的 `loopRange` 与当前 effective range 重新计算 intent，因此改回原值必须立即清除 pending，而不是保留粘滞布尔标志。
+- [ ] `rewindAfterStop_` 真正重播时重新从 `session` 和 `loopState` 取快照/范围；不得使用旧 `loopRange_`。停止后清 pending，下一次开始重新应用起播策略。
+- [ ] 在同一任务把 Main 的 timer/Play/Space 与既有 JUCE 测试迁移为显式传入默认关闭的 `loopState_`；此步骤只消除签名分叉，不提前加入可见循环控件。
+- [ ] 运行 `D1_APP_PLAYBACK_TEST`、`APP_TEST`、`CORE_TEST`、`trackloom_app_juce_tests`、隐藏启动烟测和 `git diff --check`，完成双 reviewer 后提交 `feat: apply loop intent to playback`。
+
+##### Task 7：建立工程替换的播放安全门禁
+
+**文件：**
+
+- 修改 `src/core/RealtimePlaybackHost.h`
+- 修改 `src/platform/juce/JuceAudioHost.cpp`
+- 新建 `src/app/AppProjectReplacementTypes.h`
+- 新建 `src/app/AppProjectReplacementActions.h`
+- 新建 `src/app/AppProjectReplacementActions.cpp`
+- 修改 `src/app/AppPlaybackActions.h`
+- 修改 `src/app/AppPlaybackActions.cpp`
+- 修改 `src/app/AppRecentProjects.h`
+- 修改 `src/app/AppRecentProjects.cpp`
+- 修改 `src/app/AppMainMenu.cpp`
+- 修改 `src/app/CMakeLists.txt`
+- 修改 `src/app/juce/TrackLoomMainComponent.cpp`，迁移最近工程调用到新门禁签名
+- 新建 `tests/app_project_replacement_tests.cpp`
+- 新建 `tests/d1_juce_host_quiescence_tests.cpp`
+- 修改 `tests/juce_audio_tests.cpp`，补现有 host snapshot 字段映射回归
+- 修改 `tests/CMakeLists.txt`
+- 修改 `tests/app_support_tests.cpp` 中既有 `FakeRealtimePlaybackHost` 的 snapshot 维护和最近工程调用签名
+
+**host 静止证据与应用接口：**
+
+```cpp
+// 在 RealtimePlaybackHostSnapshot 现有字段后追加：
+bool callbackRunning = false;
+bool planInstalled = false;
+
+enum class AppProjectReplacementFailureReason {
+    None,
+    DirtyProject,
+    PlaybackActive,
+    PreparationWorkerActive,
+    HostNotQuiescent,
+    HostResetFailed,
+    OpenFailed
+};
+
+struct AppProjectReplacementSafety {
+    bool safe = false;
+    AppProjectReplacementFailureReason failureReason =
+        AppProjectReplacementFailureReason::HostNotQuiescent;
+    std::string message;
+};
+
+struct AppProjectReplacementFeedback {
+    bool success = false;
+    AppProjectReplacementFailureReason failureReason =
+        AppProjectReplacementFailureReason::OpenFailed;
+    std::string message;
+};
+
+AppProjectReplacementSafety prepareAppProjectReplacement(
+    AppPlaybackController& playback);
+AppProjectReplacementFeedback createNewAppProjectIfSafe(
+    AppProjectSession& session,
+    AppPlaybackController& playback,
+    AppLoopPlaybackState& loopState,
+    std::string name);
+AppProjectReplacementFeedback openAppProjectIfSafe(
+    AppProjectSession& session,
+    AppPlaybackController& playback,
+    AppLoopPlaybackState& loopState,
+    const std::filesystem::path& path);
+```
+
+以上 enum/struct 全部放入无行为的 `AppProjectReplacementTypes.h`，由 `AppPlaybackActions.h` 和 `AppProjectReplacementActions.h` 共同包含，禁止两者互相包含形成环。`AppPlaybackController` 新增返回上述 safety 的 `prepareForProjectReplacement()` 和成功替换后调用的 `resetAfterProjectReplacement()`；`openAppRecentProjectByNumber()` 增加 `AppPlaybackController&` 与 `AppLoopPlaybackState&` 参数，并复用 `openAppProjectIfSafe()`。
+
+- [ ] 先写 Preparing/Playing/Stopping 拒绝、controller Stopped 但 host callback 仍运行时拒绝、Stopped 安全、Unavailable 无 callback/worker 安全、Faulted hard reset 后安全、reset 后仍有 callback/plan 失败、Faulted worker 未结束拒绝及异步打开二次检查测试；运行新 target，必须因门禁 API 和 snapshot 证据字段缺失而 RED。
+- [ ] 每条拒绝、reset 失败和 load 失败用例都对比工程、路径、dirty、history、`AppLoopPlaybackState`；打开带持久化范围的 v11 工程成功后范围存在但 `enabled=false`，最近工程排序只能在真正打开成功后变化。
+- [ ] 用独立 JUCE host 测试和既有 `trackloom_juce_audio_tests` 锁定 snapshot：install/start 后为 callback=true/plan=true；runtime 已 Stopped 但尚未 service 时仍为 true/true；service 后为 false/true；`hardStopAndReset()` 后为 false/false。Faulted 路径同样必须在 hard reset 后保留诊断但清除 callback/plan。
+- [ ] `JuceAudioHost::snapshot()` 从设备实际播放状态和拥有的 plan 填充两个证据字段。`prepareForProjectReplacement()` 始终先拒绝仍有 preparation worker 的状态；Preparing/Playing/Stopping 直接拒绝。Stopped/Unavailable 要求 callback=false；若仍为 true 则拒绝，若仅残留 plan=true，则在消息线程调用现有 `host_.hardStopAndReset()` 释放惰性旧 plan。Faulted 允许先在消息线程调用同一 hard reset 停止 callback 并释放 plan。每次 reset 后必须复读 snapshot，只有 callback=false 且 plan=false 才放行，否则返回 `HostResetFailed`。这样正常 service 后的 false/true 状态有确定的 false/false 收敛路径；loader 随后失败时旧工程/选择/循环仍保留，但旧音频计划已经安全释放。
+- [ ] 固定操作顺序为：dirty 只读检查 → 播放门禁及 host quiesce → `AppProjectSession` 原子替换 → 仅成功后 controller/loopState 展示状态 reset。`quiesceHostForProjectReplacement()` 与成功 load 后的 `resetAfterProjectReplacement()` 分离；加载失败不得误执行成功后的会话 reset。
+- [ ] 文件菜单可在明显的 Preparing/Playing/Stopping 状态禁用新建/打开/最近工程，但 handler 仍必须执行最终门禁。文件选择器启动前检查一次，异步回调在真正 load 前再检查一次。
+- [ ] 只有成功替换才调用 controller/session reset；JUCE 层之后才允许清选择和 drag preview。故障安全复位或无设备状态不得永久阻止基础工程操作。
+- [ ] 运行 `D1_APP_REPLACEMENT_TEST`、`D1_JUCE_HOST_TEST`、`D1_APP_PLAYBACK_TEST`、`APP_TEST`、`JUCE_TEST`、`trackloom_app_juce_tests`、隐藏启动烟测和 `git diff --check`，完成双 reviewer 后提交 `fix: guard project replacement during playback`。
+
+##### Task 8：实现独立可视时间线与循环拖动组件
+
+**文件：**
+
+- 新建 `src/app/juce/TimelineLoopEditorComponent.h`
+- 新建 `src/app/juce/TimelineLoopEditorComponent.cpp`
+- 修改 `src/app/CMakeLists.txt`
+- 新建 `tests/d1_juce_loop_editor_tests.cpp`
+- 修改 `tests/CMakeLists.txt`
+
+**JUCE 接口：**
+
+```cpp
+inline constexpr auto timelineLoopEditorComponentId =
+    "trackloom-timeline-loop-editor";
+
+struct TimelineLoopEditorCallbacks {
+    std::function<void(std::string)> midiClipSelected;
+    std::function<std::optional<PlaybackLoopRange>(
+        AppLoopBoundaryEdge, std::int64_t)> previewLoopBoundary;
+    std::function<void(PlaybackLoopRange)> commitLoopRange;
+    std::function<void(AppTimelineVisibleTickRange)> visibleRangeChanged;
+};
+
+class TimelineLoopEditorComponent final : public juce::Component {
+public:
+    explicit TimelineLoopEditorComponent(
+        TimelineLoopEditorCallbacks callbacks = {});
+    void setTimelineStatus(AppTimelineCanvasStatus status);
+    void setSelectedMidiClipId(std::string clipId);
+    void cancelLoopDrag() noexcept;
+    AppTimelineVisibleTickRange visibleTickRange() const noexcept;
+    std::optional<PlaybackLoopRange> previewLoopRange() const noexcept;
+    std::optional<juce::Rectangle<float>> clipBounds(
+        std::string_view clipId) const;
+    std::optional<juce::Rectangle<float>> loopHandleBounds(
+        AppLoopBoundaryEdge edge) const;
+    void paint(juce::Graphics&) override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+    void mouseCaptureLost() override;
+    void mouseWheelMove(
+        const juce::MouseEvent&,
+        const juce::MouseWheelDetails&) override;
+};
+```
+
+- [ ] 先用固定 snapshot 写轨道 header/lane、MIDI 与 audio block、标尺、循环带和两侧 handle 的非空且单调 geometry 测试；点击 MIDI 精确回调 ID，点击 audio 不污染 MIDI 选择。
+- [ ] 写多次 drag 时 commit 为 0、mouse-up 后恰好 1、未变化为 0、capture lost 取消、wheel zoom/scroll 产生合法 visible range，以及至少一次绘制到 `juce::Image` 不异常的 RED。
+- [ ] 组件只保存 snapshot、上层 selected ID、zoom、scroll、hover、drag edge 和 preview。顶部 ruler、其下 loop band、左侧轨道 header 与右侧 lane 使用同一纵向 geometry；小节线只消费 snapshot 边界。
+- [ ] 组件把像素换成 raw candidate tick，再同步调用应用层回调取得已吸附范围；自身不得读取 `Project` 或推导拍号。mouse-up 只有 preview 与 committed 不同时才回调一次；组件不得直接执行命令。
+- [ ] 运行 `D1_JUCE_TEST`、`D1_APP_ACTION_TEST` 和 `git diff --check`，完成双 reviewer 后提交 `feat: add visual loop timeline component`。
+
+##### Task 9：把主窗口改为布局 A 并统一 MIDI 选择真源
+
+**文件：**
+
+- 修改 `src/app/juce/TrackLoomMainComponent.h`
+- 修改 `src/app/juce/TrackLoomMainComponent.cpp`
+- 修改 `src/app/juce/TrackLoomApplication.cpp` 的默认/最小窗口尺寸
+- 修改 `tests/d1_juce_loop_editor_tests.cpp`
+
+**稳定 component ID：**
+
+```cpp
+inline constexpr auto mainMidiClipSelectorComponentId =
+    "trackloom-main-midi-clip-selector";
+inline constexpr auto mainSetLoopButtonComponentId =
+    "trackloom-main-set-loop";
+inline constexpr auto mainClearLoopButtonComponentId =
+    "trackloom-main-clear-loop";
+inline constexpr auto mainLoopToggleComponentId =
+    "trackloom-main-loop-toggle";
+inline constexpr auto mainLoopIntentStatusComponentId =
+    "trackloom-main-loop-intent-status";
+inline constexpr auto mainInspectorViewportComponentId =
+    "trackloom-main-inspector";
+inline constexpr auto mainMidiEditorToggleComponentId =
+    "trackloom-main-midi-editor-toggle";
+inline constexpr auto mainMidiEditorPlaceholderComponentId =
+    "trackloom-main-midi-editor-placeholder";
+inline constexpr auto mainAddInstrumentTrackButtonComponentId =
+    "trackloom-main-add-instrument-track";
+inline constexpr auto mainCreateMidiClipButtonComponentId =
+    "trackloom-main-create-midi-clip";
+```
+
+本任务同时在 `TrackLoomMainComponentDependencies` 建立可测试的异步打开选择缝，供“成功打开后清除选择”测试和 Task 10 的二次门禁测试共同使用：
+
+```cpp
+using AppOpenProjectChooserCompletion =
+    std::function<void(std::optional<std::filesystem::path>)>;
+using AppOpenProjectChooserOperation =
+    std::function<void(AppOpenProjectChooserCompletion)>;
+
+AppOpenProjectChooserOperation chooseProjectToOpen;
+```
+
+dependency 为空时由生产代码适配当前 `juce::FileChooser`；测试可注入 operation 并保存 completion。Task 9 只用它确定性驱动成功打开和选择清理，Task 10 再覆盖首检与异步回调二检之间进入 Preparing 的竞争。
+
+- [ ] 先写 1280×820 下 top transport、左轨道 header/中央 lane、右 inspector 和底部 placeholder 的拓扑测试，以及折叠底部后时间线扩展但不重叠测试；新 ID 必须找到正确 JUCE 类型。
+- [ ] 写 timeline 点击与 ComboBox 双向同步同一个 clip ID、删除所选后保持空、成功新建/打开后保持空的 RED；给测试建工程所需的既有添加轨道/创建片段按钮补稳定 ID。
+- [ ] 移除主界面的旧 `trackListText_`/`timelineText_` 呈现，但保留旧 `AppTimelineStatus` 模块给既有 selector/文本兼容调用方；用 `TimelineLoopEditorComponent` 同时绘制左轨道 header 与中央 lane。
+- [ ] 顶部保留文件与 transport 并放置 Loop toggle；右侧 `juce::Viewport` 承载可滚动 inspector content，现有轨道/片段动作必须 reparent 而不是删除；底部显示“D3 预留，尚未实现”的可折叠占位。
+- [ ] 所有选择入口只调用一个 `selectMidiClipById(std::string_view)` 更新 `selectedMidiClipId_`。`refreshMidiClipTargetSelector()` 只保留仍存在且为 MIDI 的 ID，否则清空，删除当前自动选首个片段的分支。
+- [ ] `refreshFromSession()` 用组件的 `visibleTickRange()` 构建应用快照并传回 component；可见范围回调只刷新画布，避免 paint 或 resize 触发完整递归刷新。
+- [ ] 运行 `D1_JUCE_TEST`、`trackloom_app_juce_tests`、隐藏启动烟测和 `git diff --check`，完成双 reviewer 后提交 `feat: adopt loop arranger layout A`。
+
+##### Task 10：连接 inspector、顶部开关、播放提示和工程替换
+
+**文件：**
+
+- 修改 `src/app/juce/TrackLoomMainComponent.cpp`
+- 修改 `src/app/juce/TrackLoomMainComponent.h`
+- 修改 `tests/d1_juce_loop_editor_tests.cpp`
+
+**连接规则：**
+
+```cpp
+const auto effectiveLoop = effectiveAppPlaybackLoopRange(
+    session_.project(), loopState_);
+
+startAppPlayback(playback_, session_, loopState_);   // Play
+toggleAppPlayback(playback_, session_, loopState_); // Space
+playback_.poll(session_, loopState_);                // Timer/intent sync
+```
+
+继续复用 Task 9 已建立的 `chooseProjectToOpen` dependency seam；测试捕获 completion，从而可以确定性地控制“首检通过”和“异步回调二检”之间的状态变化，禁止再增加第二套 chooser 抽象。
+
+- [ ] 先写“选片段→设循环→范围显示且开关开启”、关闭后再次设同范围只改 session、Set→Undo→Redo 与 Clear→Undo→Redo 完整矩阵、toggle 往返不标脏/不入历史、打开带范围 v11 工程后范围可见但开关关闭，以及拖动多次 mouse-up 后一次 undo 回旧范围的 RED。
+- [ ] 写 Play 与 Space 捕获相同 loop range/start、Preparing 切换显示“循环设置已变化，请重新播放”且旧 worker 不安装、Playing 切换仍播放且显示“停止并重新播放后生效”的 RED。
+- [ ] 写 Preparing 新建被拒绝且工程/选择/循环/preview 不变；异步测试先触发 Open 并捕获 completion，再让 playback 进入 Preparing，最后回调有效路径，断言二次门禁拒绝且所有状态不变；成功替换才清选择、关闭会话循环和取消 preview。
+- [ ] Main 继续使用 Task 6 已建立的唯一 `loopState_`；Set/Clear/Toggle/drag commit/undo/redo 后立即同步播放意图再刷新。UI 只显示 `AppPlaybackStatus.loopIntentMessage`，不得自己缓存第二份 pending flag。
+- [ ] Play 与 Space 必须经过上述两个显式接收同一 `loopState_` 的应用入口；timer 的 `poll` 也接收同一状态。回到开头保留 controller 行为，由 Task 6 在真正重播时读取最新范围。
+- [ ] 新建、open chooser 首检/回调二检和最近工程全部调用 Task 7 门禁；失败不调用 `clearProjectObjectSelections()`、`resetForProjectReplacement()` 或 `cancelLoopDrag()`。
+- [ ] 运行 `D1_JUCE_TEST`、四个 D1 app 测试、`trackloom_app_juce_tests`、隐藏启动烟测和 `git diff --check`，完成双 reviewer 后提交 `feat: wire visual loop controls to playback`。
+
+##### Task 11：建立固定 8 轨/32 片段 fake-device 十分钟验收
+
+**文件：**
+
+- 新建 `tests/fixtures/d1-loop/visual-midi-loop-benchmark.trackloom`
+- 新建 `tests/fixtures/d1-loop/README.md`
+- 修改 `.gitattributes`，仅为上述文本 fixture 固定 LF
+- 新建 `tests/d1_loop_fake_audio_benchmark_tests.cpp`
+- 修改 `tests/CMakeLists.txt`
+
+**固定常量与断言：**
+
+```cpp
+constexpr double sampleRate = 48'000.0;
+constexpr int blockFrames = 512;
+constexpr std::uint64_t blockCount = 56'250;
+constexpr std::uint64_t expectedFrames =
+    blockCount * static_cast<std::uint64_t>(blockFrames);
+static_assert(expectedFrames == 28'800'000);
+```
+
+- [ ] 先建立 test source/target 并写 fixture 读取断言，但暂不创建 fixture；运行 `D1_FAKE_ACCEPTANCE_TEST`，必须因固定 fixture 缺失而 RED。GREEN fixture 必须是 v11、精确 8 条乐器轨、每轨 4 个普通 MIDI 片段、合计 32 个片段、工程循环 `[0,15360)`；任何数量或类型不符都失败。
+- [ ] fixture 固定为 120 BPM、4/4、ticks-per-quarter=960，并使用稳定 track ID `track-1`…`track-8` 和按 track-major 顺序排列的 clip ID `clip-1`…`clip-32`。每轨 4 个片段；唯一例外是 `trackId="track-1", clipId="clip-1"` 从 tick 0 开始、长度 15360，作为与工程循环 `[0,15360)` 完全相同的 session-only 验收片段，其余片段的绝对起点为 `clipIndex * 3840`、长度为 3840。每个片段先放一个相对起点 `trackIndex * 60`、长度 480、音高 `48 + trackIndex`、力度 96、通道 1 的音符，其中 `trackIndex`/`clipIndex` 均从 0 起；再在 `clip-1` 加入相对起点 14880、长度 480 的边界音符，使其 Note Off 精确落在循环右边界。fixture 总计 32 个片段、33 个音符、最大同时发声数不超过 8，并明确覆盖右边界释放；因此该循环精确为 8 秒，600 秒后 loop iteration 为 75 且工程播放头回到 0。README 必须解释 anchor 片段与其余三个 `track-1` 片段的有意视觉重叠，避免被误当 fixture 错误。
+- [ ] 写 48 kHz/512 的同步 fake device 测试：加载 fixture 后先断言持久化范围存在、`AppLoopPlaybackState.enabled=false` 且 effective range 为空；选择 `clip-1` 调用 `setAppPlaybackLoopFromSelectedMidiClip()`，断言返回 `SessionOnlyEnabled` 且 dirty、generation、undo/redo 深度均不变；随后必须调用高层 `startAppPlayback(controller, session, loopState)`，不得直接把持久化范围塞给低层 controller。用 `tests/support/FakeJuceAudioDeviceType.h` 的 active device 恰好执行 56,250 次 `runCallback(512)`；测试断言推进阶段 callback=56,250、rendered=28,800,000、loopIteration=75、project head 回到 0、至少产生过非零输出。
+- [ ] 使用 deterministic tick operation 避免把测试机调度抖动伪装为 callback timeout；断言 timeout、exception、oversized、voice steal、stale Note Off 和 fake xrun 均为 0。停止验证必须严格按“`requestStop`，先不 poll/service → 继续泵 callback 直到 runtime 发布 `Stopped` → callback 仍注册时调用 `runCallback(512, 1.0f)` 并断言所有有效输出被清为 0 → 最后才调用 `poll(session, loopState)`/`serviceNonRealtime()`，断言 controller 为 `Stopped` 且 device 不再 playing”的顺序；callback 移除后不得再把 `runCallback()` 的预填充值当作静音证据。
+- [ ] 增加短故障子测试，证明设备失败不会修改工程范围。每次运行打印 wall elapsed；只有 Windows x64 Release 且显式设置 `TRACKLOOM_D1_ACCEPTANCE_BENCHMARK=1` 时把超过 60 秒判为失败，其余 Debug/CI 仍执行全部功能断言并记录时间。
+- [ ] 为 CTest 设置 `TIMEOUT 120` 和 `LABELS "d1;fake-audio"`，显式 `/utf-8`。运行 `D1_FAKE_ACCEPTANCE_TEST`、`D1_CORE_TEST`、`D1_APP_PLAYBACK_TEST`、`D1_JUCE_HOST_TEST`、`JUCE_TEST` 和 `git diff --check`；完成双 reviewer 后提交 `test: add deterministic D1 loop benchmark`。
+
+##### Task 12：完成最终复审、Release 基准和人工/真实硬件证据
+
+**文件：**
+
+- 新建 `tests/evidence/d1-loop/README.md`
+- 新建 `tests/evidence/d1-loop/run-template.md`
+- 实际执行后新建 `tests/evidence/d1-loop/YYYY-MM-DD-d1-loop-acceptance.md`
+- 仅在全部完成门槛满足后更新本文件第 16.2 节和第 16.5.6 节的阶段状态
+
+- [ ] 先在工作树建立但暂不提交证据模板，固定记录 `testedCodeCommit`、绝对日期、Windows/Release 构建、fixture、output id/name、requested/actual format、fake wall time、GUI 完整流程、听感、撤销/重做、保存重开、独立操作者时间、失败步骤、提示需求及 600 秒 runner diagnostics；模板和执行记录只在后述 `B` 中提交。
+- [ ] 在选择 `A` 前，由最终独立 reviewer 对照第 16.5.1–16.5.6 节逐条检查 Task 1–11 的实现与测试；Critical/Important 先补 RED、用独立修复提交解决，再重新跑对应定向测试。只有 reviewer 给出 Ready 且所有修复已经提交，当前代码 HEAD 才可命名为 `A`。
+- [ ] 采用两阶段提交协议：`A` 是通过最终代码复审、此后不再修改生产代码的 implementation commit；fake benchmark、GUI 人工流程、独立操作者和真实 WASAPI 都必须检出并记录 `testedCodeCommit=A`。`B` 是只包含 evidence/阶段状态文档的直接后继提交 `test: record D1 loop acceptance evidence`，不得含生产代码或测试逻辑改动。为避免提交哈希自引用，证据文件不内嵌自己的 `B` 哈希；最终交付说明或 CI artifact 记录 `evidenceCommit=B`，Git 父子关系证明该证据对应 `A`。若 `B` 后又改任何生产代码，旧人工/硬件证据立即失效并从新的 `A` 重跑。
+- [ ] 在 `A` 上 fresh 配置 Release：
+
+  ```powershell
+  cmd.exe /d /s /c 'call "E:/Android/VS/2022/BuildTools/Common7/Tools/VsDevCmd.bat" -arch=x64 && "E:/Android/VS/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DTRACKLOOM_JUCE_ROOT="E:/Android/DevTools/JUCE" -DBUILD_TESTING=ON'
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  ```
+
+- [ ] 运行显式启用的 Release fake benchmark；指定验收机必须完成全部 28,800,000 frames 且不超过 60 秒：
+
+  ```powershell
+  cmd.exe /d /s /c 'call "E:/Android/VS/2022/BuildTools/Common7/Tools/VsDevCmd.bat" -arch=x64 && set TRACKLOOM_D1_ACCEPTANCE_BENCHMARK=1&& "E:/Android/VS/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" --build build-release --target trackloom_d1_loop_fake_audio_benchmark_tests --parallel && "E:/Android/VS/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/ctest.exe" --test-dir build-release -R "^trackloom_d1_loop_fake_audio_benchmark_tests$" --output-on-failure'
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  ```
+
+- [ ] 先把固定 D1 fixture 复制到 `build-release` 下唯一的人工验收工作目录，只打开和保存该副本；再启动 Release GUI 完成“选片段→设循环→拖两侧边界→可听循环→关闭循环→停止并重播确认线性→undo/redo→保存重开确认范围恢复且开关关闭”：
+
+  ```powershell
+  cmd.exe /d /s /c 'call "E:/Android/VS/2022/BuildTools/Common7/Tools/VsDevCmd.bat" -arch=x64 && "E:/Android/VS/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" --build build-release --target trackloom_app --parallel'
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  $d1ManualRunName = 'd1-manual-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+  $d1ManualDirectory = Join-Path (Resolve-Path 'build-release').Path $d1ManualRunName
+  New-Item -ItemType Directory -Path $d1ManualDirectory | Out-Null
+  $d1ManualProject = Join-Path $d1ManualDirectory 'visual-midi-loop-acceptance.trackloom'
+  Copy-Item -LiteralPath 'tests/fixtures/d1-loop/visual-midi-loop-benchmark.trackloom' -Destination $d1ManualProject
+  Write-Host "在应用中打开并保存这个工作副本：$d1ManualProject"
+  & 'build-release/src/app/trackloom_app.exe'
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  git diff --exit-code -- tests/fixtures/d1-loop/visual-midi-loop-benchmark.trackloom tests/fixtures/d1-loop/README.md .gitattributes
+  if ($LASTEXITCODE -ne 0) { throw '固定 D1 fixture 被人工验收流程修改' }
+  ```
+
+- [ ] 复用现有 `trackloom_audio_hardware_smoke_tests`，由操作者输入 runner 枚举出的精确设备名并运行十分钟；返回码 77 必须记录为 `skipped`，不能写成 passed：
+
+  ```powershell
+  cmd.exe /d /s /c 'call "E:/Android/VS/2022/BuildTools/Common7/Tools/VsDevCmd.bat" -arch=x64 && "E:/Android/VS/2022/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe" --build build-release --target trackloom_audio_hardware_smoke_tests --parallel'
+  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  Remove-Item Env:\TRACKLOOM_AUDIO_HARDWARE_SMOKE -ErrorAction SilentlyContinue
+  Remove-Item Env:\TRACKLOOM_AUDIO_HARDWARE_SMOKE_SELF_TEST -ErrorAction SilentlyContinue
+  Remove-Item Env:\TRACKLOOM_ACCEPT_AUDIO_FORMAT_DEVIATION -ErrorAction SilentlyContinue
+  & 'build-release/tests/trackloom_audio_hardware_smoke_tests.exe'
+  $d1EnumerationExit = $LASTEXITCODE
+  if ($d1EnumerationExit -ne 77) {
+      throw "设备枚举运行应以 skipped(77) 结束，实际为 $d1EnumerationExit"
+  }
+  $d1OutputName = Read-Host '输入 runner 枚举输出的精确设备名'
+  if ([string]::IsNullOrWhiteSpace($d1OutputName)) { throw '设备名不能为空' }
+  $env:TRACKLOOM_AUDIO_HARDWARE_SMOKE = '1'
+  $env:TRACKLOOM_AUDIO_OUTPUT_NAME = $d1OutputName
+  $env:TRACKLOOM_AUDIO_SMOKE_SECONDS = '600'
+  & 'build-release/tests/trackloom_audio_hardware_smoke_tests.exe'
+  $d1HardwareExit = $LASTEXITCODE
+  Remove-Item Env:\TRACKLOOM_AUDIO_HARDWARE_SMOKE -ErrorAction SilentlyContinue
+  Remove-Item Env:\TRACKLOOM_AUDIO_OUTPUT_NAME -ErrorAction SilentlyContinue
+  Remove-Item Env:\TRACKLOOM_AUDIO_SMOKE_SECONDS -ErrorAction SilentlyContinue
+  if ($d1HardwareExit -eq 77) { Write-Host 'skipped' }
+  elseif ($d1HardwareExit -ne 0) { exit $d1HardwareExit }
+  ```
+
+  仅当日志证明 request→actual 确有偏差且用户明确接受时，才临时设置 `$env:TRACKLOOM_ACCEPT_AUDIO_FORMAT_DEVIATION = '1'` 重新运行同一硬件命令；结束后必须 `Remove-Item Env:\TRACKLOOM_ACCEPT_AUDIO_FORMAT_DEVIATION -ErrorAction SilentlyContinue`，并在证据中记录请求值、实际值和接受理由。
+- [ ] 请一名未参与实现的人按统一说明完成核心流程并计时，目标不超过 3 分钟。无人可听、没有可用设备或未执行时写 `skipped`，D1 可听验收保持未完成。
+- [ ] 提交 evidence-only 的 `B` 后，在 `B` 上 fresh 运行所有 D1 target、`FULL_TEST`、隐藏应用烟测、`git diff --check` 和 `git show --check --stat --oneline HEAD`；这些自动复验绑定 `B`，人工与硬件记录仍通过 `testedCodeCommit=A` 绑定未变的代码。只有自动、Release、GUI 人工、独立操作者和真实 WASAPI 可听证据全部可追溯，且 `B` 相对 `A` 只含允许的证据/阶段状态文档时，才把 D1 标为完成。
+
+**计划最终复审门槛：** 12 个任务必须按依赖顺序执行；实现中若发现已确认规格与现有代码事实冲突，应暂停对应任务、回到本节和第 16.5.1–16.5.6 节更新唯一基线并取得确认，不得在代码里静默改变产品语义。
 
 ### 16.6 毕业后范围
 
