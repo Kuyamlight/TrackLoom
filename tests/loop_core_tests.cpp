@@ -3,6 +3,7 @@
 #include "Project.h"
 #include "support/TestFailureOutput.h"
 
+#include <cmath>
 #include <cstdint>
 #include <iostream>
 #include <limits>
@@ -85,6 +86,31 @@ void playbackTickConversionKeepsZeroAtTheLowerSampleBoundary()
     require(samplePosition == 0, "tick zero should convert to the lower sample boundary");
 }
 
+void playbackSampleRoundingAcceptsTheInt64LowerBoundary()
+{
+    std::int64_t samplePosition = 12345;
+
+    const auto converted = trackloom::detail::tryRoundPlaybackSamplePosition(
+        -9223372036854775808.0, samplePosition);
+
+    require(converted, "the inclusive -2^63 llround boundary should convert");
+    require(samplePosition == std::numeric_limits<std::int64_t>::min(),
+        "the inclusive -2^63 boundary should produce INT64_MIN");
+}
+
+void playbackSampleRoundingRejectsValuesBelowTheInt64LowerBoundary()
+{
+    std::int64_t samplePosition = 12345;
+    const auto belowMinimum = std::nextafter(
+        -9223372036854775808.0, -std::numeric_limits<double>::infinity());
+
+    const auto converted = trackloom::detail::tryRoundPlaybackSamplePosition(
+        belowMinimum, samplePosition);
+
+    require(!converted, "values below -2^63 must be rejected before llround");
+    require(samplePosition == 12345, "lower-bound failure must preserve the output parameter");
+}
+
 void playbackTickConversionAcceptsTheLargestRepresentableRoundedSample()
 {
     trackloom::Project project;
@@ -135,6 +161,8 @@ int main()
         playbackTickConversionConvertsDefault120BpmTicksToSamples();
         playbackTickConversionRejectsInvalidSampleRatesWithoutWritingOutput();
         playbackTickConversionKeepsZeroAtTheLowerSampleBoundary();
+        playbackSampleRoundingAcceptsTheInt64LowerBoundary();
+        playbackSampleRoundingRejectsValuesBelowTheInt64LowerBoundary();
         playbackTickConversionAcceptsTheLargestRepresentableRoundedSample();
         playbackTickConversionRejectsTheExclusiveLlroundUpperBoundary();
         playbackTickConversionRejectsNonFiniteScaledSamples();
