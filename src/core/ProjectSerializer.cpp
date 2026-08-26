@@ -109,6 +109,12 @@ std::string saveProjectToText(const Project& project)
                << '\n';
     }
 
+    if (const auto& loop = project.playbackLoopRange(); loop.has_value()) {
+        output << "playback_loop "
+               << loop->startTick << ' '
+               << loop->endTick << '\n';
+    }
+
     for (const auto& track : project.tracks()) {
         output << "track " << track.id << ' ' << toString(track.type) << ' ' << track.name << '\n';
         output << "track_playback_state " << track.id
@@ -182,6 +188,7 @@ LoadProjectResult loadProjectFromText(const std::string& text)
     Project project(projectName);
     bool loadedDefaultTempoRecord = false;
     bool loadedDefaultTimeSignatureRecord = false;
+    bool loadedPlaybackLoopRecord = false;
 
     while (std::getline(input, line)) {
         if (line.empty()) {
@@ -264,6 +271,36 @@ LoadProjectResult loadProjectFromText(const std::string& text)
         }
 
         // 播放状态单独成行，避免破坏 track 行里“轨道名可以包含空格”的规则。
+        if (line == "playback_loop" || startsWith(line, "playback_loop ")) {
+            if (version < 11) {
+                return LoadProjectResult::fail("Playback loop requires project version 11.");
+            }
+            if (loadedPlaybackLoopRecord) {
+                return LoadProjectResult::fail("Duplicate playback loop record.");
+            }
+
+            std::istringstream loopLine(line);
+            std::string startTickToken;
+            std::string endTickToken;
+            std::string trailingToken;
+            PlaybackLoopRange range;
+            if (!(loopLine >> keyword >> startTickToken >> endTickToken)
+                || (loopLine >> trailingToken)) {
+                return LoadProjectResult::fail("Invalid playback loop record.");
+            }
+            if (!parseInt64Value(startTickToken, range.startTick)
+                || !parseInt64Value(endTickToken, range.endTick)) {
+                return LoadProjectResult::fail("Invalid playback loop value.");
+            }
+            if (!isValidPlaybackLoopRange(range)
+                || !project.setPlaybackLoopRange(range)) {
+                return LoadProjectResult::fail("Invalid playback loop range.");
+            }
+
+            loadedPlaybackLoopRecord = true;
+            continue;
+        }
+
         if (startsWith(line, "track_playback_state ")) {
             if (version < 2) {
                 return LoadProjectResult::fail("Track playback state requires project version 2.");

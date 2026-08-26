@@ -2,6 +2,7 @@
 #include "PlaybackTimeConversion.h"
 #include "Command.h"
 #include "Project.h"
+#include "ProjectSerializer.h"
 #include "support/TestFailureOutput.h"
 
 #include <cmath>
@@ -11,6 +12,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace {
 
@@ -20,6 +22,112 @@ void require(bool condition, const std::string& message)
         std::cerr << message << '\n';
         throw std::runtime_error(message);
     }
+}
+
+void requirePlaybackLoopLoadFailure(
+    std::string_view playbackLoopRecord,
+    std::string_view expectedError,
+    std::string_view caseName)
+{
+    const std::string text =
+        "trackloom_project 11\n"
+        "name Broken Loop Project\n"
+        "track track-1 Instrument Lead\n"
+        + std::string(playbackLoopRecord) + "\n";
+    const auto loaded = trackloom::loadProjectFromText(text);
+
+    require(!loaded.project.has_value(), std::string(caseName)
+        + " must reject the complete project rather than deliver its preceding track");
+    require(loaded.error == expectedError, std::string(caseName)
+        + " must report the stable playback-loop error classification");
+}
+
+void projectSerializerRoundTripsPlaybackLoopAndPlacesItBetweenTimeSignatureAndTrack()
+{
+    trackloom::Project project("Looped Project");
+    require(project.setPlaybackLoopRange(trackloom::PlaybackLoopRange { 960, 7680 }),
+        "the serializer fixture should accept a valid playback loop");
+    project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto timeSignaturePosition = saved.find("time_signature meter-1 0 4 4\n");
+    const auto loopPosition = saved.find("playback_loop 960 7680\n");
+    const auto trackPosition = saved.find("track track-1 Instrument Lead\n");
+
+    require(saved.find("trackloom_project 11\n") == 0,
+        "saving a project with a loop must write format version 11");
+    require(timeSignaturePosition != std::string::npos
+            && loopPosition != std::string::npos
+            && trackPosition != std::string::npos
+            && timeSignaturePosition < loopPosition
+            && loopPosition < trackPosition,
+        "the playback loop record must follow time signatures and precede tracks");
+    require(saved.find("playback_loop ", loopPosition + 1) == std::string::npos,
+        "a project with one loop range must write exactly one playback loop record");
+
+    const auto loaded = trackloom::loadProjectFromText(saved);
+    require(loaded.project.has_value(), "a v11 project with a playback loop should load");
+    require(loaded.project->playbackLoopRange() == trackloom::PlaybackLoopRange { 960, 7680 },
+        "a v11 playback loop must survive text round trip");
+}
+
+void projectSerializerOmitsPlaybackLoopWhenProjectHasNoRange()
+{
+    trackloom::Project project("Linear Project");
+    project.createTrack("Lead", trackloom::TrackType::Instrument);
+
+    const auto saved = trackloom::saveProjectToText(project);
+    const auto loaded = trackloom::loadProjectFromText(saved);
+
+    require(saved.find("trackloom_project 11\n") == 0,
+        "saving a project without a loop must still write format version 11");
+    require(saved.find("playback_loop") == std::string::npos,
+        "a project without a loop range must not write a playback loop record");
+    require(loaded.project.has_value(), "a v11 project without a loop should load");
+    require(!loaded.project->playbackLoopRange().has_value(),
+        "a v11 project without a playback loop record must remain linear");
+}
+
+void legacyProjectVersionsDefaultToNoPlaybackLoopAndRejectPlaybackLoopRecords()
+{
+    for (int version = 1; version <= 10; ++version) {
+        const std::string legacyProject = "trackloom_project " + std::to_string(version)
+            + "\nname Legacy Project\n";
+        const auto loadedLegacyProject = trackloom::loadProjectFromText(legacyProject);
+        require(loadedLegacyProject.project.has_value(), "v" + std::to_string(version)
+            + " projects without a playback loop record should load");
+        require(!loadedLegacyProject.project->playbackLoopRange().has_value(), "v"
+            + std::to_string(version) + " projects must default to no playback loop range");
+
+        const auto loadedFutureRecord = trackloom::loadProjectFromText(legacyProject
+            + "playback_loop 0 960\n");
+        require(!loadedFutureRecord.project.has_value(), "v" + std::to_string(version)
+            + " projects must reject a future playback loop record");
+        require(loadedFutureRecord.error == "Playback loop requires project version 11.", "v"
+            + std::to_string(version) + " projects must report the v11 record requirement");
+    }
+}
+
+void projectSerializerRejectsMalformedPlaybackLoopRecordsAtomically()
+{
+    requirePlaybackLoopLoadFailure("playback_loop 0 960\nplayback_loop 960 1920",
+        "Duplicate playback loop record.", "duplicate playback loop records");
+    requirePlaybackLoopLoadFailure("playback_loop", "Invalid playback loop record.",
+        "a playback loop record without fields");
+    requirePlaybackLoopLoadFailure("playback_loop 0", "Invalid playback loop record.",
+        "a playback loop record with one field");
+    requirePlaybackLoopLoadFailure("playback_loop 0 960 trailing", "Invalid playback loop record.",
+        "a playback loop record with a trailing field");
+    requirePlaybackLoopLoadFailure("playback_loop zero 960", "Invalid playback loop value.",
+        "a playback loop record with a non-integer start");
+    requirePlaybackLoopLoadFailure("playback_loop 0 9223372036854775808",
+        "Invalid playback loop value.", "a playback loop record with an int64 overflow");
+    requirePlaybackLoopLoadFailure("playback_loop -1 960", "Invalid playback loop range.",
+        "a playback loop record with a negative start");
+    requirePlaybackLoopLoadFailure("playback_loop 960 960", "Invalid playback loop range.",
+        "a playback loop record with zero length");
+    requirePlaybackLoopLoadFailure("playback_loop 1920 960", "Invalid playback loop range.",
+        "a playback loop record with a reversed range");
 }
 
 void playbackLoopRangeAcceptsEveryValidInt64TickBoundary()
@@ -361,6 +469,10 @@ int main()
     trackloom::test::configureTestFailureOutput();
 
     try {
+        projectSerializerRoundTripsPlaybackLoopAndPlacesItBetweenTimeSignatureAndTrack();
+        projectSerializerOmitsPlaybackLoopWhenProjectHasNoRange();
+        legacyProjectVersionsDefaultToNoPlaybackLoopAndRejectPlaybackLoopRecords();
+        projectSerializerRejectsMalformedPlaybackLoopRecordsAtomically();
         playbackLoopRangeAcceptsEveryValidInt64TickBoundary();
         playbackLoopRangeRejectsNegativeOrEmptyOrReversedRanges();
         newProjectStartsWithoutPlaybackLoopRange();

@@ -1818,6 +1818,13 @@ void audibleReferenceFixtureBuildsExpectedLoop()
     const auto loaded = trackloom::loadProjectFromFile(
         fixtureDirectory / "reference.trackloom");
     require(loaded.project.has_value(), "reference fixture should load: " + loaded.error);
+    require(!loaded.project->playbackLoopRange().has_value(),
+        "the fixed v10 reference fixture must migrate with no playback loop range");
+    const auto upgradedText = trackloom::saveProjectToText(*loaded.project);
+    require(upgradedText.find("trackloom_project 11\n") == 0,
+        "saving the migrated v10 reference fixture should upgrade it to v11 in memory");
+    require(upgradedText.find("playback_loop") == std::string::npos,
+        "saving the migrated v10 reference fixture must not invent a playback loop record");
 
     trackloom::PreparedMidiPlaybackPlanBuildRequest request;
     request.projectSnapshot = *loaded.project;
@@ -7226,7 +7233,7 @@ void projectCanRoundTripTrackRename()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 10\n") == 0, "track rename should use current project format version");
+    require(saved.find("trackloom_project 11\n") == 0, "track rename should use current project format version");
     require(loaded.project.has_value(), "project with renamed track should load");
     require(loaded.project->findTrackById(track.id).has_value(), "loaded project should keep renamed track id");
     require(loaded.project->findTrackById(track.id)->name == "Lead", "loaded project should keep renamed track name");
@@ -7276,7 +7283,7 @@ void projectCanRoundTripTrackReorder()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 10\n") == 0, "track reorder should use current project format version");
+    require(saved.find("trackloom_project 11\n") == 0, "track reorder should use current project format version");
     require(loaded.project.has_value(), "project with reordered tracks should load");
     require(loaded.project->tracks()[0].id == leadTrack.id, "loaded project should keep first track order");
     require(loaded.project->tracks()[1].id == vocalTrack.id, "loaded project should keep shifted track order");
@@ -7301,7 +7308,7 @@ void projectCanRoundTripTrackViewState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 10\n") == 0, "saved view project should use current format version");
+    require(saved.find("trackloom_project 11\n") == 0, "saved view project should use current format version");
     require(saved.find("track_view_state " + leadTrack.id + " hidden=1 collapsed=0\n") != std::string::npos, "saved project should include hidden state");
     require(saved.find("track_view_state " + folderTrack.id + " hidden=1 collapsed=1\n") != std::string::npos, "saved project should include folder collapsed state");
     require(loaded.project.has_value(), "project with view state should load");
@@ -7322,7 +7329,7 @@ void projectCanRoundTripTrackPlaybackState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 10\n") == 0, "saved project should use current format version");
+    require(saved.find("trackloom_project 11\n") == 0, "saved project should use current format version");
     require(loaded.project.has_value(), "project with playback state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
     require(loadedTrack.has_value(), "loaded project should contain track");
@@ -7342,7 +7349,7 @@ void projectCanRoundTripTrackMixState()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 10\n") == 0, "saved mix project should use current format version");
+    require(saved.find("trackloom_project 11\n") == 0, "saved mix project should use current format version");
     require(saved.find("track_mix_state " + track.id + " gain=0.25 pan=-0.5\n") != std::string::npos, "saved project should include track mix state");
     require(loaded.project.has_value(), "project with mix state should load");
     const auto loadedTrack = loaded.project->findTrackById(track.id);
@@ -7362,7 +7369,7 @@ void projectCanRoundTripTimelineClips()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 10\n") == 0, "saved clip project should use current format version");
+    require(saved.find("trackloom_project 11\n") == 0, "saved clip project should use current format version");
     require(saved.find("clip clip-1 " + instrumentTrack.id + " Midi 0 960 Intro Melody\n") != std::string::npos, "saved project should include midi clip record");
     require(saved.find("clip clip-2 " + audioTrack.id + " Audio 960 1920 Vocal Take\n") != std::string::npos, "saved project should include audio clip record");
     require(loaded.project.has_value(), "project with clips should load");
@@ -7532,7 +7539,7 @@ void projectCanRoundTripTimelineMarkers()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 10\n") == 0, "saved marker project should use current format version");
+    require(saved.find("trackloom_project 11\n") == 0, "saved marker project should use current format version");
     require(saved.find("marker " + introMarker->id + " 0 Intro\n") != std::string::npos, "saved project should include intro marker");
     require(saved.find("marker " + verseMarker->id + " 1920 Verse A\n") != std::string::npos, "saved project should include edited marker");
     require(loaded.project.has_value(), "project with markers should load");
@@ -7575,7 +7582,7 @@ void projectCanRoundTripTempoEvents()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 10\n") == 0, "saved tempo project should use current format version");
+    require(saved.find("trackloom_project 11\n") == 0, "saved tempo project should use current format version");
     require(saved.find("tempo tempo-1 0 100\n") != std::string::npos, "saved project should include default tempo record");
     require(saved.find("tempo " + customTempo->id + " 960 60\n") != std::string::npos, "saved project should include custom tempo record");
     require(loaded.project.has_value(), "project with tempo events should load");
@@ -7596,7 +7603,7 @@ void projectCanRoundTripTimeSignatureEvents()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 10\n") == 0, "saved time signature project should use current format version");
+    require(saved.find("trackloom_project 11\n") == 0, "saved time signature project should use current format version");
     require(saved.find("time_signature meter-1 0 6 8\n") != std::string::npos, "saved project should include default time signature record");
     require(saved.find("time_signature " + customMeter->id + " 3840 3 4\n") != std::string::npos, "saved project should include custom time signature record");
     require(loaded.project.has_value(), "project with time signature events should load");
@@ -7620,7 +7627,7 @@ void projectCanRoundTripMidiNotes()
     const auto saved = trackloom::saveProjectToText(project);
     const auto loaded = trackloom::loadProjectFromText(saved);
 
-    require(saved.find("trackloom_project 10\n") == 0, "saved midi note project should use current format version");
+    require(saved.find("trackloom_project 11\n") == 0, "saved midi note project should use current format version");
     require(saved.find("midi_note " + clip->id + " " + note->id + " 120 240 60 100 1\n") != std::string::npos, "saved project should include midi note record");
     require(loaded.project.has_value(), "project with midi notes should load");
     const auto loadedClip = loaded.project->findClipById(clip->id);

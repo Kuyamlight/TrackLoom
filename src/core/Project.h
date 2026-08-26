@@ -126,7 +126,7 @@ struct TimeSignatureEvent {
 // 后续 UI、AI 和导入器都应通过命令系统修改它，避免绕过验证、撤销和历史记录。
 class Project {
 public:
-    static constexpr int currentFormatVersion = 10;
+    static constexpr int currentFormatVersion = 11;
     static constexpr std::int64_t ticksPerQuarterNote = 960;
 
     explicit Project(std::string name = "Untitled");
