@@ -5,6 +5,7 @@
 #include "ProjectSerializer.h"
 #include "support/TestFailureOutput.h"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -47,21 +48,27 @@ void projectSerializerRoundTripsPlaybackLoopAndPlacesItBetweenTimeSignatureAndTr
     trackloom::Project project("Looped Project");
     require(project.setPlaybackLoopRange(trackloom::PlaybackLoopRange { 960, 7680 }),
         "the serializer fixture should accept a valid playback loop");
+    const auto secondTimeSignature = project.createTimeSignatureEvent(3840, 3, 4);
+    require(secondTimeSignature.has_value(),
+        "the serializer fixture should create a second time signature");
     project.createTrack("Lead", trackloom::TrackType::Instrument);
 
     const auto saved = trackloom::saveProjectToText(project);
-    const auto timeSignaturePosition = saved.find("time_signature meter-1 0 4 4\n");
+    const auto firstTimeSignaturePosition = saved.find("time_signature meter-1 0 4 4\n");
+    const auto lastTimeSignaturePosition = saved.find("time_signature meter-2 3840 3 4\n");
     const auto loopPosition = saved.find("playback_loop 960 7680\n");
     const auto trackPosition = saved.find("track track-1 Instrument Lead\n");
 
     require(saved.find("trackloom_project 11\n") == 0,
         "saving a project with a loop must write format version 11");
-    require(timeSignaturePosition != std::string::npos
+    require(firstTimeSignaturePosition != std::string::npos
+            && lastTimeSignaturePosition != std::string::npos
             && loopPosition != std::string::npos
             && trackPosition != std::string::npos
-            && timeSignaturePosition < loopPosition
+            && firstTimeSignaturePosition < lastTimeSignaturePosition
+            && lastTimeSignaturePosition < loopPosition
             && loopPosition < trackPosition,
-        "the playback loop record must follow time signatures and precede tracks");
+        "the playback loop record must follow every time signature and precede tracks");
     require(saved.find("playback_loop ", loopPosition + 1) == std::string::npos,
         "a project with one loop range must write exactly one playback loop record");
 
@@ -90,21 +97,34 @@ void projectSerializerOmitsPlaybackLoopWhenProjectHasNoRange()
 
 void legacyProjectVersionsDefaultToNoPlaybackLoopAndRejectPlaybackLoopRecords()
 {
+    constexpr std::array<std::string_view, 8> playbackLoopRecords {
+        "playback_loop 0 960",
+        "playback_loop",
+        "playback_loop 0 960 trailing",
+        "playback_loop zero 960",
+        "playback_loop 0 9223372036854775808",
+        "playback_loop -1 960",
+        "playback_loop 960 960",
+        "playback_loop 1920 960"
+    };
+
     for (int version = 1; version <= 10; ++version) {
         const std::string legacyProject = "trackloom_project " + std::to_string(version)
-            + "\nname Legacy Project\n";
+            + "\nname Legacy Project\ntrack track-1 Instrument Lead\n";
         const auto loadedLegacyProject = trackloom::loadProjectFromText(legacyProject);
         require(loadedLegacyProject.project.has_value(), "v" + std::to_string(version)
             + " projects without a playback loop record should load");
         require(!loadedLegacyProject.project->playbackLoopRange().has_value(), "v"
             + std::to_string(version) + " projects must default to no playback loop range");
 
-        const auto loadedFutureRecord = trackloom::loadProjectFromText(legacyProject
-            + "playback_loop 0 960\n");
-        require(!loadedFutureRecord.project.has_value(), "v" + std::to_string(version)
-            + " projects must reject a future playback loop record");
-        require(loadedFutureRecord.error == "Playback loop requires project version 11.", "v"
-            + std::to_string(version) + " projects must report the v11 record requirement");
+        for (const auto playbackLoopRecord : playbackLoopRecords) {
+            const auto loadedFutureRecord = trackloom::loadProjectFromText(legacyProject
+                + std::string(playbackLoopRecord) + "\n");
+            require(!loadedFutureRecord.project.has_value(), "v" + std::to_string(version)
+                + " projects must reject every future playback loop record without delivering the preceding track");
+            require(loadedFutureRecord.error == "Playback loop requires project version 11.", "v"
+                + std::to_string(version) + " projects must reject future playback loop records before record parsing");
+        }
     }
 }
 
