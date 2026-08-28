@@ -2,12 +2,16 @@
 
 #include "Project.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace trackloom {
+
+// 画布快照是应用层有界数据。调用方应缩小可见 tick 范围后再重试超出预算的请求。
+inline constexpr std::size_t appTimelineCanvasMaxMeasureBoundaryCount = 65'536;
 
 struct AppTimelineVisibleTickRange {
     std::int64_t startTick = 0;
@@ -34,7 +38,8 @@ enum class AppTimelineCanvasFailureReason {
     None,
     InvalidVisibleRange,
     InvalidCandidateTick,
-    ClipEndOverflow
+    ClipEndOverflow,
+    MeasureBoundaryCapacityExceeded
 };
 
 struct AppTimelineMeasureBoundaryNeighbors {

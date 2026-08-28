@@ -219,6 +219,61 @@ void finalRepresentableBoundaryHasNoOverflowingUpperNeighbor()
         "maximum canvas should contain only the final representable boundary");
 }
 
+void extremelyWideVisibleRangeFailsCapacityCheckWithoutPartialCanvas()
+{
+    trackloom::Project project("Capacity Failure");
+    require(project.insertExistingTrack({
+        "track-capacity", "Capacity", trackloom::TrackType::Instrument, {}, {}, {} }),
+        "capacity track fixture should insert");
+    require(project.insertExistingClip({
+        "clip-capacity", "track-capacity", "Capacity Clip",
+        trackloom::ClipType::Midi, 0, 960, {} }),
+        "capacity clip fixture should insert");
+    require(project.setPlaybackLoopRange(trackloom::PlaybackLoopRange { 0, 3840 }),
+        "capacity loop fixture should set");
+
+    const auto result = trackloom::buildAppTimelineCanvasStatus(
+        project, { 0, std::numeric_limits<std::int64_t>::max() });
+
+    require(!result.success, "extremely wide visible range should fail quickly");
+    require(result.failureReason
+            == trackloom::AppTimelineCanvasFailureReason::MeasureBoundaryCapacityExceeded,
+        "extremely wide visible range should use the stable capacity failure reason");
+    requireEmptyStatus(result.status,
+        "capacity failure must not leak tracks, clips, loop range, or boundaries");
+}
+
+void measureBoundaryCapacityBudgetAllowsExactLimitAndRejectsOneMore()
+{
+    constexpr std::int64_t ticksPerFourFourMeasure = 3840;
+    constexpr auto exactLimitEnd =
+        (static_cast<std::int64_t>(trackloom::appTimelineCanvasMaxMeasureBoundaryCount) - 1)
+        * ticksPerFourFourMeasure;
+    constexpr auto oneOverLimitEnd =
+        static_cast<std::int64_t>(trackloom::appTimelineCanvasMaxMeasureBoundaryCount)
+        * ticksPerFourFourMeasure;
+    const trackloom::Project project("Capacity Boundary");
+
+    const auto exactLimit = trackloom::buildAppTimelineCanvasStatus(
+        project, { 0, exactLimitEnd });
+    require(exactLimit.success, "exact public measure-boundary budget should build");
+    require(exactLimit.status.measureBoundaryTicks.size()
+            == trackloom::appTimelineCanvasMaxMeasureBoundaryCount,
+        "exact budget should return every permitted boundary");
+    require(exactLimit.status.measureBoundaryTicks.front() == 0
+            && exactLimit.status.measureBoundaryTicks.back() == exactLimitEnd,
+        "exact budget should preserve the closed visible boundary endpoints");
+
+    const auto oneOverLimit = trackloom::buildAppTimelineCanvasStatus(
+        project, { 0, oneOverLimitEnd });
+    require(!oneOverLimit.success, "one boundary over the public budget should fail");
+    require(oneOverLimit.failureReason
+            == trackloom::AppTimelineCanvasFailureReason::MeasureBoundaryCapacityExceeded,
+        "one-over-budget range should use the stable capacity failure reason");
+    requireEmptyStatus(oneOverLimit.status,
+        "one-over-budget failure must return an atomic empty canvas");
+}
+
 void canvasAndNeighborSearchShareMeterChangeBoundarySemantics()
 {
     trackloom::Project project("Shared Semantics");
@@ -260,6 +315,8 @@ int main()
         clipEndOverflowFailsWithoutPartialCanvas();
         neighborSearchRejectsNegativeCandidateAndMatchesExactBoundary();
         finalRepresentableBoundaryHasNoOverflowingUpperNeighbor();
+        extremelyWideVisibleRangeFailsCapacityCheckWithoutPartialCanvas();
+        measureBoundaryCapacityBudgetAllowsExactLimitAndRejectsOneMore();
         canvasAndNeighborSearchShareMeterChangeBoundarySemantics();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';

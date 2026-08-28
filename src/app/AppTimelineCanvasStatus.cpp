@@ -125,20 +125,29 @@ AppTimelineCanvasBuildResult failedCanvasBuild(
     return result;
 }
 
-bool collectVisibleMeasureBoundaries(
+enum class MeasureBoundaryVisitResult {
+    Completed,
+    VisitorStopped,
+    PrimitiveFailure
+};
+
+template <typename Visitor>
+MeasureBoundaryVisitResult visitVisibleMeasureBoundaries(
     const Project& project,
     AppTimelineVisibleTickRange visibleRange,
-    std::vector<std::int64_t>& boundaries)
+    Visitor&& visitor)
 {
     const auto first = findMeasureBoundaryNeighbors(
         project.timeSignatureEvents(), visibleRange.startTick);
     if (!first.success) {
-        return false;
+        return MeasureBoundaryVisitResult::PrimitiveFailure;
     }
 
     auto boundary = first.neighbors.atOrAfterTick;
     while (boundary.has_value() && *boundary <= visibleRange.endTick) {
-        boundaries.push_back(*boundary);
+        if (!visitor(*boundary)) {
+            return MeasureBoundaryVisitResult::VisitorStopped;
+        }
         if (*boundary == std::numeric_limits<std::int64_t>::max()) {
             break;
         }
@@ -148,12 +157,46 @@ bool collectVisibleMeasureBoundaries(
         if (!next.success
             || (next.neighbors.atOrAfterTick.has_value()
                 && *next.neighbors.atOrAfterTick <= *boundary)) {
-            return false;
+            return MeasureBoundaryVisitResult::PrimitiveFailure;
         }
         boundary = next.neighbors.atOrAfterTick;
     }
 
-    return true;
+    return MeasureBoundaryVisitResult::Completed;
+}
+
+enum class MeasureBoundaryPreflightResult {
+    Success,
+    CapacityExceeded,
+    PrimitiveFailure
+};
+
+MeasureBoundaryPreflightResult preflightVisibleMeasureBoundaryCount(
+    const Project& project,
+    AppTimelineVisibleTickRange visibleRange,
+    std::size_t& boundaryCount)
+{
+    std::size_t count = 0;
+    const auto visitResult = visitVisibleMeasureBoundaries(
+        project,
+        visibleRange,
+        [&](std::int64_t) {
+            if (count == appTimelineCanvasMaxMeasureBoundaryCount) {
+                return false;
+            }
+            ++count;
+            return true;
+        });
+
+    if (visitResult == MeasureBoundaryVisitResult::VisitorStopped) {
+        return MeasureBoundaryPreflightResult::CapacityExceeded;
+    }
+    if (visitResult == MeasureBoundaryVisitResult::PrimitiveFailure) {
+        return MeasureBoundaryPreflightResult::PrimitiveFailure;
+    }
+
+    boundaryCount = count;
+    return MeasureBoundaryPreflightResult::Success;
 }
 
 }
@@ -166,6 +209,20 @@ AppTimelineCanvasBuildResult buildAppTimelineCanvasStatus(
         return failedCanvasBuild(
             AppTimelineCanvasFailureReason::InvalidVisibleRange,
             "可见时间范围无效。");
+    }
+
+    std::size_t measureBoundaryCount = 0;
+    const auto boundaryPreflight = preflightVisibleMeasureBoundaryCount(
+        project, visibleRange, measureBoundaryCount);
+    if (boundaryPreflight == MeasureBoundaryPreflightResult::CapacityExceeded) {
+        return failedCanvasBuild(
+            AppTimelineCanvasFailureReason::MeasureBoundaryCapacityExceeded,
+            "可见范围需要的小节边界超过画布快照容量。");
+    }
+    if (boundaryPreflight == MeasureBoundaryPreflightResult::PrimitiveFailure) {
+        return failedCanvasBuild(
+            AppTimelineCanvasFailureReason::InvalidVisibleRange,
+            "无法生成可见范围内的小节边界。");
     }
 
     AppTimelineCanvasStatus status;
@@ -195,8 +252,15 @@ AppTimelineCanvasBuildResult buildAppTimelineCanvasStatus(
     }
 
     status.playbackLoopRange = project.playbackLoopRange();
-    if (!collectVisibleMeasureBoundaries(
-            project, visibleRange, status.measureBoundaryTicks)) {
+    status.measureBoundaryTicks.reserve(measureBoundaryCount);
+    const auto boundaryVisit = visitVisibleMeasureBoundaries(
+        project,
+        visibleRange,
+        [&](std::int64_t boundaryTick) {
+            status.measureBoundaryTicks.push_back(boundaryTick);
+            return true;
+        });
+    if (boundaryVisit != MeasureBoundaryVisitResult::Completed) {
         return failedCanvasBuild(
             AppTimelineCanvasFailureReason::InvalidVisibleRange,
             "无法生成可见范围内的小节边界。");
