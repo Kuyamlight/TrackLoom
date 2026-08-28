@@ -47,6 +47,24 @@ set_tests_properties(trackloom_app_timeline_canvas_tests PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     TIMEOUT 20)
 
+add_executable(trackloom_app_loop_actions_tests
+    app_loop_actions_tests.cpp
+)
+
+target_link_libraries(trackloom_app_loop_actions_tests
+    PRIVATE
+        trackloom_app_support
+)
+
+if(MSVC)
+    target_compile_options(trackloom_app_loop_actions_tests PRIVATE /utf-8)
+endif()
+
+add_test(NAME trackloom_app_loop_actions_tests COMMAND trackloom_app_loop_actions_tests)
+set_tests_properties(trackloom_app_loop_actions_tests PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    TIMEOUT 20)
+
 add_test(NAME trackloom_audio_fixture_hash_tests
     COMMAND ${CMAKE_COMMAND}
         -DFIXTURE_DIR=${CMAKE_SOURCE_DIR}/tests/fixtures/audio/minimum-audible-midi

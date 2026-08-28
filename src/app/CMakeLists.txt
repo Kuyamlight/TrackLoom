@@ -8,6 +8,7 @@ add_library(trackloom_app_support STATIC
     AppShortcutSettings.cpp
     AppShortcutStatus.cpp
     AppMainMenu.cpp
+    AppLoopActions.cpp
     AppTimelineCanvasStatus.cpp
     AppMidiClipActions.cpp
     AppMidiNoteActions.cpp
