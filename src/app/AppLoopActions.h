@@ -10,6 +10,20 @@
 
 namespace trackloom {
 
+namespace detail {
+
+enum class AppLoopClipTimingClassification {
+    Valid,
+    InvalidTiming,
+    EndOverflow
+};
+
+AppLoopClipTimingClassification classifyAppLoopClipTiming(
+    std::int64_t startTick,
+    std::int64_t lengthTick) noexcept;
+
+}
+
 class AppLoopPlaybackState final {
 public:
     bool enabled() const noexcept;

@@ -8,6 +8,24 @@
 #include <utility>
 
 namespace trackloom {
+
+namespace detail {
+
+AppLoopClipTimingClassification classifyAppLoopClipTiming(
+    std::int64_t startTick,
+    std::int64_t lengthTick) noexcept
+{
+    if (startTick < 0 || lengthTick <= 0) {
+        return AppLoopClipTimingClassification::InvalidTiming;
+    }
+    if (lengthTick > std::numeric_limits<std::int64_t>::max() - startTick) {
+        return AppLoopClipTimingClassification::EndOverflow;
+    }
+    return AppLoopClipTimingClassification::Valid;
+}
+
+}
+
 namespace {
 
 AppLoopActionFeedback successFeedback(
@@ -29,17 +47,6 @@ AppLoopPreviewResult previewFailure(
     std::string message)
 {
     return { false, kind, std::nullopt, std::move(message) };
-}
-
-bool checkedClipEndTick(const TimelineClip& clip, std::int64_t& endTick) noexcept
-{
-    if (clip.startTick < 0 || clip.lengthTick <= 0
-        || clip.lengthTick > std::numeric_limits<std::int64_t>::max() - clip.startTick) {
-        return false;
-    }
-
-    endTick = clip.startTick + clip.lengthTick;
-    return true;
 }
 
 std::optional<std::int64_t> snappedBoundaryForEdge(
@@ -142,12 +149,18 @@ AppLoopActionFeedback setAppPlaybackLoopFromSelectedMidiClip(
             "无法设为循环：只能使用 MIDI 片段。");
     }
 
-    std::int64_t endTick = 0;
-    if (!checkedClipEndTick(*clip, endTick)) {
+    const auto timing = detail::classifyAppLoopClipTiming(clip->startTick, clip->lengthTick);
+    if (timing == detail::AppLoopClipTimingClassification::InvalidTiming) {
+        return failureFeedback(
+            AppLoopActionFeedbackKind::InvalidLoopRange,
+            "无法设为循环：片段时间范围无效。");
+    }
+    if (timing == detail::AppLoopClipTimingClassification::EndOverflow) {
         return failureFeedback(
             AppLoopActionFeedbackKind::ClipEndOverflow,
             "无法设为循环：片段终点超出可表示 tick 范围。");
     }
+    const auto endTick = clip->startTick + clip->lengthTick;
 
     return commitAppPlaybackLoopRange(session, { clip->startTick, endTick }, state);
 }

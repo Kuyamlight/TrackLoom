@@ -238,6 +238,42 @@ void previewsHandleFinalRepresentableBoundaryWithoutOverflow()
         "a missing next boundary must not overflow and must retain the lower neighbor");
 }
 
+void previewsCanSelectUpperNeighborAndCommitAnUnchangedRangeWithoutHistory()
+{
+    trackloom::AppProjectSession session;
+    require(session.editProject().setPlaybackLoopRange(trackloom::PlaybackLoopRange { 3840, 7680 }),
+        "upper-only fixture range must be valid");
+    trackloom::AppLoopPlaybackState state;
+    require(state.setEnabled(session.project(), true), "upper-only fixture must enable the session");
+    const auto dirty = session.isDirty();
+    const auto generation = session.projectEditGeneration();
+
+    const auto preview = trackloom::previewAppPlaybackLoopBoundaryDrag(
+        session.project(), trackloom::AppLoopBoundaryEdge::End, 6000);
+    require(preview.success && preview.range == trackloom::PlaybackLoopRange { 3840, 7680 },
+        "when lower equals the fixed start, end dragging must select the upper neighbor");
+
+    const auto committed = trackloom::commitAppPlaybackLoopRange(session, *preview.range, state);
+    require(committed.success && committed.kind == trackloom::AppLoopActionFeedbackKind::NoOp,
+        "committing an upper-only preview equal to the project range must be a no-op");
+    require(state.enabled(), "unchanged preview commit must preserve enabled session state");
+    requireSessionMetadataUnchanged(session, dirty, generation, false, false,
+        "unchanged upper-only preview commit must not change session metadata or history");
+}
+
+void previewsSelectsCloserUpperNeighborWhenBothCandidatesAreLegal()
+{
+    trackloom::Project project("Upper Nearer");
+    require(project.setPlaybackLoopRange(trackloom::PlaybackLoopRange { 0, 11520 }),
+        "upper-nearer fixture range must be valid");
+
+    const auto preview = trackloom::previewAppPlaybackLoopBoundaryDrag(
+        project, trackloom::AppLoopBoundaryEdge::Start, 7000);
+
+    require(preview.success && preview.range == trackloom::PlaybackLoopRange { 7680, 11520 },
+        "when both start candidates are legal, the closer upper neighbor must win");
+}
+
 void commitRejectsInvalidRangeAndEffectiveRangeTracksSessionState()
 {
     trackloom::AppProjectSession session;
@@ -260,6 +296,65 @@ void commitRejectsInvalidRangeAndEffectiveRangeTracksSessionState()
     require(!state.enabled(), "project replacement must reset session-only loop state");
 }
 
+void enabledSessionSurvivesEveryPublicValidationFailure()
+{
+    trackloom::AppProjectSession session;
+    auto& project = session.editProject();
+    const auto instrument = project.createTrack("Lead", trackloom::TrackType::Instrument);
+    const auto audioTrack = project.createTrack("Voice", trackloom::TrackType::Audio);
+    const auto audio = project.createClip(
+        audioTrack.id, "Voice clip", trackloom::ClipType::Audio, 0, 960);
+    const auto overflow = project.createClip(
+        instrument.id, "Overflow clip", trackloom::ClipType::Midi,
+        std::numeric_limits<std::int64_t>::max(), 1);
+    require(audio.has_value() && overflow.has_value(), "enabled-session fixtures must create clips");
+    const trackloom::PlaybackLoopRange range { 0, 3840 };
+    require(project.setPlaybackLoopRange(range), "enabled-session fixture range must be valid");
+    trackloom::AppLoopPlaybackState state;
+    require(state.setEnabled(session.project(), true), "enabled-session fixture must enable loop playback");
+    const auto dirty = session.isDirty();
+    const auto generation = session.projectEditGeneration();
+
+    const auto requireEnabledFailure = [&](const trackloom::AppLoopActionFeedback& feedback,
+                                          trackloom::AppLoopActionFeedbackKind expectedKind,
+                                          const std::string& message) {
+        require(!feedback.success && feedback.kind == expectedKind, message + ": stable failure kind");
+        require(state.enabled(), message + ": enabled state");
+        require(session.project().playbackLoopRange() == range, message + ": project range");
+        requireSessionMetadataUnchanged(session, dirty, generation, false, false, message);
+    };
+
+    require(trackloom::detail::classifyAppLoopClipTiming(-1, 1)
+            == trackloom::detail::AppLoopClipTimingClassification::InvalidTiming,
+        "negative clip timing must classify as invalid rather than overflow");
+    require(trackloom::detail::classifyAppLoopClipTiming(0, 0)
+            == trackloom::detail::AppLoopClipTimingClassification::InvalidTiming,
+        "zero clip length must classify as invalid rather than overflow");
+    require(trackloom::detail::classifyAppLoopClipTiming(
+                std::numeric_limits<std::int64_t>::max(), 1)
+            == trackloom::detail::AppLoopClipTimingClassification::EndOverflow,
+        "checked-add overflow must not classify as invalid timing");
+    require(state.enabled(), "pure invalid-timing classifier must not disable an enabled session");
+    requireSessionMetadataUnchanged(session, dirty, generation, false, false,
+        "pure invalid-timing classifier must not mutate session metadata");
+
+    requireEnabledFailure(trackloom::setAppPlaybackLoopFromSelectedMidiClip(session, "", state),
+        trackloom::AppLoopActionFeedbackKind::MissingSelection,
+        "empty selection must preserve an enabled session");
+    requireEnabledFailure(trackloom::setAppPlaybackLoopFromSelectedMidiClip(session, "missing", state),
+        trackloom::AppLoopActionFeedbackKind::MissingClip,
+        "missing selection must preserve an enabled session");
+    requireEnabledFailure(trackloom::setAppPlaybackLoopFromSelectedMidiClip(session, audio->id, state),
+        trackloom::AppLoopActionFeedbackKind::IncompatibleClipType,
+        "audio selection must preserve an enabled session");
+    requireEnabledFailure(trackloom::setAppPlaybackLoopFromSelectedMidiClip(session, overflow->id, state),
+        trackloom::AppLoopActionFeedbackKind::ClipEndOverflow,
+        "real clip-end overflow must preserve an enabled session");
+    requireEnabledFailure(trackloom::commitAppPlaybackLoopRange(session, { 960, 960 }, state),
+        trackloom::AppLoopActionFeedbackKind::InvalidLoopRange,
+        "invalid range commit must preserve an enabled session");
+}
+
 }
 
 int main()
@@ -273,7 +368,10 @@ int main()
         clearUndoRedoAndReconcileKeepProjectAndSessionStateSeparate();
         previewsSnapBySharedNeighborsAndRejectCrossingRanges();
         previewsHandleFinalRepresentableBoundaryWithoutOverflow();
+        previewsCanSelectUpperNeighborAndCommitAnUnchangedRangeWithoutHistory();
+        previewsSelectsCloserUpperNeighborWhenBothCandidatesAreLegal();
         commitRejectsInvalidRangeAndEffectiveRangeTracksSessionState();
+        enabledSessionSurvivesEveryPublicValidationFailure();
     } catch (const std::exception& error) {
         std::cerr << "Test failed: " << error.what() << '\n';
         return 1;
