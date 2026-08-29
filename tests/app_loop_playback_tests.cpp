@@ -7,6 +7,7 @@
 #endif
 
 #include <atomic>
+#include <chrono>
 #include <iostream>
 #include <latch>
 #include <limits>
@@ -218,11 +219,18 @@ void loopStartResolutionUsesTheProjectTempoMap()
     require(project.createTempoEvent(960, 60.0).has_value(),
         "tempo-map fixture must add the second tempo segment");
 
-    const auto result = trackloom::resolveAppPlaybackStartSample(
-        project, 48000.0, 1000, trackloom::PlaybackLoopRange { 960, 1920 });
+    const trackloom::PlaybackLoopRange loop { 1920, 2880 };
+    const auto insideChangedTempoSegment = trackloom::resolveAppPlaybackStartSample(
+        project, 48000.0, 100000, loop);
+    const auto atChangedTempoRightBoundary = trackloom::resolveAppPlaybackStartSample(
+        project, 48000.0, 120000, loop);
 
-    require(result.success && result.sample == 24000,
-        "the loop start at tick 960 must retain the first 120 BPM quarter note");
+    require(insideChangedTempoSegment.success
+            && insideChangedTempoSegment.sample == 100000,
+        "a current sample inside the slower tempo segment must be preserved");
+    require(atChangedTempoRightBoundary.success
+            && atChangedTempoRightBoundary.sample == 72000,
+        "the slower segment's converted right boundary must remain half-open");
 }
 
 void loopStartResolutionClassifiesInvalidSampleRatesFirst()
@@ -502,6 +510,111 @@ void preparingStalenessUsesLoopProjectThenDevicePriority()
     }
 }
 
+void completionReadyStalenessIsRejectedBeforeInstallationInPriorityOrder()
+{
+    using namespace std::chrono_literals;
+
+    {
+        trackloom::AppProjectSession session;
+        trackloom::AppLoopPlaybackState loopState;
+        enableProjectLoop(session, loopState, { 960, 3840 });
+        FakeRealtimePlaybackHost host;
+        std::latch buildReturning(1);
+        std::atomic<int> buildCount { 0 };
+        trackloom::AppPlaybackController playback(
+            host,
+            [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+                ++buildCount;
+                auto result = makeFakePreparedPlan(request);
+                buildReturning.count_down();
+                return result;
+            });
+        require(trackloom::startAppPlayback(playback, session, loopState).success,
+            "completion-ready loop-priority fixture must start preparation");
+        buildReturning.wait();
+        std::this_thread::sleep_for(20ms);
+        setProjectLoop(session, { 3840, 7680 });
+        host.setFormatGeneration(2);
+
+        playback.poll(session, loopState);
+
+        const auto status = playback.status();
+        require(status.loopIntentStatus
+                == trackloom::AppPlaybackLoopIntentStatus::PreparationInvalidated,
+            "a published completion must still classify loop changes before project and device changes");
+        require(status.failureReason
+                == trackloom::AppPlaybackFailureReason::PreparationCancelled,
+            "completion-ready loop invalidation must retain its loop cancellation reason");
+        require(host.installCallCount == 0 && buildCount.load() == 1,
+            "a completion published before loop invalidation is polled must not install or auto replay");
+    }
+    {
+        trackloom::AppProjectSession session;
+        trackloom::AppLoopPlaybackState loopState;
+        FakeRealtimePlaybackHost host;
+        std::latch buildReturning(1);
+        std::atomic<int> buildCount { 0 };
+        trackloom::AppPlaybackController playback(
+            host,
+            [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+                ++buildCount;
+                auto result = makeFakePreparedPlan(request);
+                buildReturning.count_down();
+                return result;
+            });
+        require(trackloom::startAppPlayback(playback, session, loopState).success,
+            "completion-ready project-priority fixture must start preparation");
+        buildReturning.wait();
+        std::this_thread::sleep_for(20ms);
+        session.editProject().rename("completion-ready generation");
+        host.setFormatGeneration(2);
+
+        playback.poll(session, loopState);
+
+        const auto status = playback.status();
+        require(status.failureReason
+                == trackloom::AppPlaybackFailureReason::StalePreparation,
+            "a published completion must classify project generation before device format changes");
+        require(status.loopIntentStatus
+                == trackloom::AppPlaybackLoopIntentStatus::None,
+            "completion-ready project staleness must not be reported as loop intent");
+        require(host.installCallCount == 0 && buildCount.load() == 1,
+            "a completion published before project staleness is polled must not install or auto replay");
+    }
+    {
+        trackloom::AppProjectSession session;
+        trackloom::AppLoopPlaybackState loopState;
+        FakeRealtimePlaybackHost host;
+        std::latch buildReturning(1);
+        std::atomic<int> buildCount { 0 };
+        trackloom::AppPlaybackController playback(
+            host,
+            [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
+                ++buildCount;
+                auto result = makeFakePreparedPlan(request);
+                buildReturning.count_down();
+                return result;
+            });
+        require(trackloom::startAppPlayback(playback, session, loopState).success,
+            "completion-ready device-priority fixture must start preparation");
+        buildReturning.wait();
+        std::this_thread::sleep_for(20ms);
+        host.setFormatGeneration(2);
+
+        playback.poll(session, loopState);
+
+        const auto status = playback.status();
+        require(status.failureReason
+                == trackloom::AppPlaybackFailureReason::StalePreparation,
+            "a published completion must retain changed-format invalidation semantics");
+        require(status.loopIntentStatus
+                == trackloom::AppPlaybackLoopIntentStatus::None,
+            "completion-ready device staleness must not publish loop intent");
+        require(host.installCallCount == 0 && buildCount.load() == 1,
+            "a completion published before device staleness is polled must not install or auto replay");
+    }
+}
+
 void playingLoopPendingIsDerivedFromTheInstalledRangeAndIsReversible()
 {
     trackloom::AppProjectSession session;
@@ -634,6 +747,7 @@ int main()
         preparingProjectLoopChangeCancelsAndRejectsTheOldCompletion();
         preparingSessionToggleCancelsWithoutRelyingOnProjectGeneration();
         preparingStalenessUsesLoopProjectThenDevicePriority();
+        completionReadyStalenessIsRejectedBeforeInstallationInPriorityOrder();
         playingLoopPendingIsDerivedFromTheInstalledRangeAndIsReversible();
         stopThenReplayBuildsTheLatestRangeAndClearsPending();
         rewindAfterStopReReadsTheLatestRangeAtTheActualReplayPoint();
