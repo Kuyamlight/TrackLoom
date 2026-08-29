@@ -462,6 +462,95 @@ void AppPlaybackController::poll(
     }
 }
 
+AppProjectReplacementSafety AppPlaybackController::prepareForProjectReplacement()
+{
+    if (worker_.joinable()) {
+        return {
+            false,
+            AppProjectReplacementFailureReason::PreparationWorkerActive,
+            "无法替换工程：播放准备线程仍在运行。"
+        };
+    }
+
+    if (status_.state == AppPlaybackState::Preparing
+        || status_.state == AppPlaybackState::Playing
+        || status_.state == AppPlaybackState::Stopping) {
+        return {
+            false,
+            AppProjectReplacementFailureReason::PlaybackActive,
+            "无法替换工程：播放仍处于活动状态。"
+        };
+    }
+
+    auto hostSnapshot = host_.snapshot();
+    if ((status_.state == AppPlaybackState::Stopped
+            || status_.state == AppPlaybackState::Unavailable)
+        && hostSnapshot.callbackRunning) {
+        return {
+            false,
+            AppProjectReplacementFailureReason::HostNotQuiescent,
+            "无法替换工程：音频回调仍在运行。"
+        };
+    }
+
+    const auto needsReset = status_.state == AppPlaybackState::Faulted
+        || hostSnapshot.planInstalled;
+    if (needsReset) {
+        host_.hardStopAndReset();
+        hostSnapshot = host_.snapshot();
+        if (hostSnapshot.callbackRunning || hostSnapshot.planInstalled) {
+            return {
+                false,
+                AppProjectReplacementFailureReason::HostResetFailed,
+                "无法替换工程：音频主机复位后仍未静止。"
+            };
+        }
+    }
+
+    if (hostSnapshot.callbackRunning || hostSnapshot.planInstalled) {
+        return {
+            false,
+            AppProjectReplacementFailureReason::HostNotQuiescent,
+            "无法替换工程：音频主机尚未静止。"
+        };
+    }
+
+    return { true, AppProjectReplacementFailureReason::None, "工程替换门禁已放行。" };
+}
+
+void AppPlaybackController::resetAfterProjectReplacement()
+{
+    activePreparationKey_.reset();
+    installedPreparationKey_.reset();
+    activePreparationUsesLoopIntent_ = false;
+    installedPreparationUsesLoopIntent_ = false;
+    playbackStartSample_ = defaultAppPlaybackStartSample;
+    loopRange_.reset();
+    nextPlaybackStartSample_.reset();
+    rewindAfterStop_ = false;
+    rewindAfterStopUsesLoopIntent_ = false;
+    {
+        std::scoped_lock lock(completionState_->mailboxMutex);
+        completionState_->mailbox.reset();
+    }
+    completionState_->completionPublished.store(false, std::memory_order_release);
+
+    const auto hostSnapshot = host_.snapshot();
+    if (hostSnapshot.realtime.state == RealtimePlaybackState::Faulted) {
+        status_.state = AppPlaybackState::Faulted;
+        status_.failureReason = AppPlaybackFailureReason::DeviceFault;
+    } else if (!hostSnapshot.format.available) {
+        status_.state = AppPlaybackState::Unavailable;
+        status_.failureReason = AppPlaybackFailureReason::NoAudioDevice;
+    } else {
+        status_.state = AppPlaybackState::Stopped;
+        status_.failureReason = AppPlaybackFailureReason::None;
+    }
+    status_.loopIntentStatus = AppPlaybackLoopIntentStatus::None;
+    status_.loopIntentMessage.clear();
+    updateStatusFromHost(hostSnapshot);
+}
+
 void AppPlaybackController::finishPreparation(
     const AppProjectSession& session,
     const AppLoopPlaybackState& loopState)

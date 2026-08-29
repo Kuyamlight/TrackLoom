@@ -25,6 +25,8 @@ struct RealtimePlaybackHostSnapshot {
     int xRunCount = -1;
     std::uint64_t deviceListRevision = 0;
     bool deviceListRefreshPending = false;
+    bool callbackRunning = false;
+    bool planInstalled = false;
 };
 
 enum class RealtimePlaybackHostFailureReason {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AppLoopActions.h"
+#include "AppProjectReplacementTypes.h"
 #include "AppProjectSession.h"
 #include "PreparedMidiPlaybackPlan.h"
 #include "RealtimePlaybackHost.h"
@@ -153,6 +154,8 @@ public:
         std::optional<PlaybackLoopRange> loopRange = std::nullopt);
     AppPlaybackActionFeedback stop();
     AppPlaybackActionFeedback rewindToStart();
+    AppProjectReplacementSafety prepareForProjectReplacement();
+    void resetAfterProjectReplacement();
     void poll(
         const AppProjectSession& session,
         const AppLoopPlaybackState& loopState);

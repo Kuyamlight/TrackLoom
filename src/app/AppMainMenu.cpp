@@ -14,12 +14,12 @@ AppMainMenuItem commandItem(AppMainMenuCommand command, std::string label, bool 
     return { appMainMenuCommandId(command), false, enabled, std::move(label) };
 }
 
-AppMainMenuItem recentProjectItem(const AppRecentProjectRow& row)
+AppMainMenuItem recentProjectItem(const AppRecentProjectRow& row, bool enabled)
 {
     return {
         appMainMenuRecentProjectCommandId(row.number),
         false,
-        true,
+        enabled,
         std::to_string(row.number) + ". " + row.displayName
     };
 }
@@ -159,11 +159,16 @@ AppMainMenuStatus describeAppMainMenu(
     const AppRecentProjects& recentProjects)
 {
     AppMainMenuStatus status;
-
+    const auto playbackState = playback.status().state;
+    const auto canReplaceProject = playbackState != AppPlaybackState::Preparing
+        && playbackState != AppPlaybackState::Playing
+        && playbackState != AppPlaybackState::Stopping;
     AppMainMenuGroup fileMenu;
     fileMenu.name = "文件";
-    fileMenu.items.push_back(commandItem(AppMainMenuCommand::NewProject, "新建工程", true));
-    fileMenu.items.push_back(commandItem(AppMainMenuCommand::OpenProject, "打开工程...", true));
+    fileMenu.items.push_back(commandItem(
+        AppMainMenuCommand::NewProject, "新建工程", canReplaceProject));
+    fileMenu.items.push_back(commandItem(
+        AppMainMenuCommand::OpenProject, "打开工程...", canReplaceProject));
     fileMenu.items.push_back(commandItem(AppMainMenuCommand::SaveProject, "保存", true));
     fileMenu.items.push_back(commandItem(AppMainMenuCommand::SaveProjectAs, "另存为...", true));
     fileMenu.items.push_back(separatorItem());
@@ -173,7 +178,7 @@ AppMainMenuStatus describeAppMainMenu(
         fileMenu.items.push_back(disabledInfoItem("暂无最近工程"));
     } else {
         for (const auto& row : recentStatus.rows) {
-            fileMenu.items.push_back(recentProjectItem(row));
+            fileMenu.items.push_back(recentProjectItem(row, canReplaceProject));
         }
     }
 

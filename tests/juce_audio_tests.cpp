@@ -1188,6 +1188,8 @@ void juceAudioHostServicesStoppingOnlyAfterTheRuntimeFinishesItsTail()
     });
     require(host.installAndStart(std::move(plan)).success,
         "Stopping service test plan should start");
+    require(host.snapshot().callbackRunning && host.snapshot().planInstalled,
+        "existing host regression must map install/start to callback=true and plan=true");
     observedType->activeDevice()->runCallback(64);
     require(host.requestStop(), "playing audio should enter Stopping");
     observedType->clearCalls();
@@ -1209,6 +1211,8 @@ void juceAudioHostServicesStoppingOnlyAfterTheRuntimeFinishesItsTail()
     }
     require(host.snapshot().realtime.state == trackloom::RealtimePlaybackState::Stopped,
         "release callbacks should eventually publish Stopped");
+    require(host.snapshot().callbackRunning && host.snapshot().planInstalled,
+        "runtime Stopped before service must still expose callback and plan ownership");
     require(observedType->calls().empty(),
         "the audio callback must not stop the device from the realtime thread");
 
@@ -1218,6 +1222,12 @@ void juceAudioHostServicesStoppingOnlyAfterTheRuntimeFinishesItsTail()
         "service must stop the device only after runtime reaches Stopped");
     require(!observedType->activeDevice()->isPlaying(),
         "the non-realtime service stop must end backend playback");
+    require(!host.snapshot().callbackRunning && host.snapshot().planInstalled,
+        "service must stop the callback while retaining the lazily owned plan");
+
+    host.hardStopAndReset();
+    require(!host.snapshot().callbackRunning && !host.snapshot().planInstalled,
+        "hard reset must clear both quiescence evidence fields");
 }
 
 void juceAudioHostSamplesXrunsOnlyFromNonRealtimeService()

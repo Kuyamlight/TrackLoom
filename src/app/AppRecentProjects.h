@@ -9,6 +9,9 @@
 
 namespace trackloom {
 
+class AppLoopPlaybackState;
+class AppPlaybackController;
+
 constexpr std::size_t defaultMaxAppRecentProjects = 8;
 
 // AppRecentProjects 只管理桌面应用的“最近工程”偏好。
@@ -77,6 +80,8 @@ AppRecentProjectRecordResult recordAndSaveAppRecentProject(
 // 编号使用用户可见的 1-based 行号；打开成功后才会提升最近工程顺序。
 AppRecentProjectOpenFeedback openAppRecentProjectByNumber(
     AppProjectSession& session,
+    AppPlaybackController& playback,
+    AppLoopPlaybackState& loopState,
     AppRecentProjects& recentProjects,
     std::size_t number,
     const std::filesystem::path& settingsPath);

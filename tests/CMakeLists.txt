@@ -81,7 +81,28 @@ endif()
 add_test(NAME trackloom_app_loop_playback_tests COMMAND trackloom_app_loop_playback_tests)
 set_tests_properties(trackloom_app_loop_playback_tests PROPERTIES
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    TIMEOUT 30)
+    TIMEOUT 30
+    LABELS "D1_APP_PLAYBACK_TEST")
+
+add_executable(trackloom_app_project_replacement_tests
+    app_project_replacement_tests.cpp
+)
+
+target_link_libraries(trackloom_app_project_replacement_tests
+    PRIVATE
+        trackloom_app_support
+)
+
+if(MSVC)
+    target_compile_options(trackloom_app_project_replacement_tests PRIVATE /utf-8)
+endif()
+
+add_test(NAME trackloom_app_project_replacement_tests
+    COMMAND trackloom_app_project_replacement_tests)
+set_tests_properties(trackloom_app_project_replacement_tests PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    TIMEOUT 30
+    LABELS "D1_APP_REPLACEMENT_TEST")
 
 add_test(NAME trackloom_audio_fixture_hash_tests
     COMMAND ${CMAKE_COMMAND}
@@ -104,6 +125,7 @@ target_link_libraries(trackloom_app_support_tests
 )
 
 add_test(NAME trackloom_app_support_tests COMMAND trackloom_app_support_tests)
+set_tests_properties(trackloom_app_support_tests PROPERTIES LABELS "APP_TEST")
 
 if(TARGET trackloom_app)
     add_test(NAME trackloom_app_hidden_smoke_tests
@@ -121,6 +143,10 @@ if(TARGET trackloom_juce)
         juce_audio_tests.cpp
     )
 
+    add_executable(trackloom_d1_juce_host_quiescence_tests
+        d1_juce_host_quiescence_tests.cpp
+    )
+
     add_executable(trackloom_juce_tests
         juce_midi_output_tests.cpp
     )
@@ -134,6 +160,11 @@ if(TARGET trackloom_juce)
     )
 
     target_link_libraries(trackloom_juce_audio_tests
+        PRIVATE
+            trackloom_juce
+    )
+
+    target_link_libraries(trackloom_d1_juce_host_quiescence_tests
         PRIVATE
             trackloom_juce
     )
@@ -173,6 +204,12 @@ if(TARGET trackloom_juce)
     add_test(NAME trackloom_app_juce_tests COMMAND trackloom_app_juce_tests)
     set_tests_properties(trackloom_app_juce_tests PROPERTIES TIMEOUT 20)
     add_test(NAME trackloom_juce_audio_tests COMMAND trackloom_juce_audio_tests)
+    set_tests_properties(trackloom_juce_audio_tests PROPERTIES LABELS "JUCE_TEST")
+    add_test(NAME trackloom_d1_juce_host_quiescence_tests
+        COMMAND trackloom_d1_juce_host_quiescence_tests)
+    set_tests_properties(trackloom_d1_juce_host_quiescence_tests PROPERTIES
+        TIMEOUT 20
+        LABELS "D1_JUCE_HOST_TEST")
     add_test(NAME trackloom_juce_tests COMMAND trackloom_juce_tests)
     add_test(NAME trackloom_midi_hardware_smoke_tests COMMAND trackloom_midi_hardware_smoke_tests)
     # 真实 MIDI 硬件不是普通开发环境的必需条件，默认跳过而不是失败。

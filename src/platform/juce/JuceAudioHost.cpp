@@ -55,8 +55,11 @@ RealtimeAudioError resetErrorForCurrentFault(
     const RealtimeAudioDiagnosticsSnapshot& realtime,
     bool deviceErrorPending) noexcept
 {
-    return realtime.lastError == RealtimeAudioError::DeviceError || deviceErrorPending
-        ? RealtimeAudioError::DeviceError
+    if (realtime.lastError == RealtimeAudioError::DeviceError || deviceErrorPending) {
+        return RealtimeAudioError::DeviceError;
+    }
+    return realtime.state == RealtimePlaybackState::Faulted
+        ? realtime.lastError
         : RealtimeAudioError::None;
 }
 
@@ -545,6 +548,8 @@ RealtimePlaybackHostSnapshot JuceAudioHost::snapshot() const
         impl_->publishedDeviceListRevision.load(std::memory_order_acquire);
     result.deviceListRefreshPending =
         result.deviceListRevision != impl_->servicedDeviceListRevision;
+    result.callbackRunning = impl_->device != nullptr && impl_->device->isPlaying();
+    result.planInstalled = impl_->plan != nullptr;
     return result;
 }
 

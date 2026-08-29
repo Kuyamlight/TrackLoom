@@ -11,6 +11,7 @@
 #include "AppProjectFileActions.h"
 #include "AppRecentProjects.h"
 #include "AppProjectSession.h"
+#include "AppProjectReplacementActions.h"
 #include "AppProjectStatus.h"
 #include "AppTimelineStatus.h"
 #include "AppTrackActions.h"
@@ -1383,15 +1384,12 @@ private:
 
     void requestNewProject()
     {
-        if (session_.isDirty()) {
-            lastActionMessage_ = "当前工程有未保存修改，请先保存或另存为，再新建工程。";
-            refreshFromSession();
-            return;
+        const auto result = trackloom::createNewAppProjectIfSafe(
+            session_, playback_, loopState_, "Untitled");
+        if (result.success) {
+            clearProjectObjectSelections();
         }
-
-        session_.createNewProject("Untitled");
-        clearProjectObjectSelections();
-        lastActionMessage_ = "已新建空白工程。";
+        lastActionMessage_ = result.message;
         refreshFromSession();
     }
 
@@ -1399,6 +1397,13 @@ private:
     {
         if (session_.isDirty()) {
             lastActionMessage_ = "当前工程有未保存修改，请先保存或另存为，再打开其他工程。";
+            refreshFromSession();
+            return;
+        }
+
+        const auto safety = trackloom::prepareAppProjectReplacement(playback_);
+        if (!safety.safe) {
+            lastActionMessage_ = safety.message;
             refreshFromSession();
             return;
         }
@@ -1465,13 +1470,14 @@ private:
             return;
         }
 
-        const auto openResult = session_.openFrom(juceFileToPath(selectedFile));
+        const auto openResult = trackloom::openAppProjectIfSafe(
+            session_, playback_, loopState_, juceFileToPath(selectedFile));
         if (openResult.success) {
             clearProjectObjectSelections();
+            recordCurrentProjectAsRecent();
         }
-        setFileActionFeedback(trackloom::describeAppProjectFileActionResult(
-            trackloom::AppProjectFileAction::Open,
-            openResult));
+        lastActionMessage_ = openResult.message;
+        refreshFromSession();
     }
 
     void finishSaveProjectChoice(const juce::FileChooser& chooser)
@@ -2541,6 +2547,8 @@ private:
 
         const auto feedback = trackloom::openAppRecentProjectByNumber(
             session_,
+            playback_,
+            loopState_,
             recentProjects_,
             selectedRecentProjectNumber_,
             recentProjectsSettingsPath_);

@@ -92,6 +92,8 @@ public:
         snapshot_.realtime.projectSamplePosition = installedPlan->playbackStartSample;
         snapshot_.realtime.renderedSampleCount = 0;
         snapshot_.realtime.state = trackloom::RealtimePlaybackState::Playing;
+        snapshot_.callbackRunning = true;
+        snapshot_.planInstalled = true;
         return installResult;
     }
 
@@ -115,6 +117,9 @@ public:
     {
         std::scoped_lock lock(mutex_);
         snapshot_.realtime.state = trackloom::RealtimePlaybackState::Stopped;
+        snapshot_.callbackRunning = false;
+        snapshot_.planInstalled = false;
+        installedPlan.reset();
     }
 
     trackloom::RealtimePlaybackHostSnapshot snapshot() const override
@@ -1276,10 +1281,15 @@ void recentProjectsOpenByNumberLoadsProjectAndPromotesSelection()
 
     trackloom::AppProjectSession session;
     session.createNewProject("Current");
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
+    trackloom::AppLoopPlaybackState loopState;
 
     // 编号 2 打开当前列表里的第二个工程；打开后它应移动到最近列表最前。
     const auto feedback = trackloom::openAppRecentProjectByNumber(
         session,
+        playback,
+        loopState,
         recent,
         2,
         settingsPath);
@@ -1318,9 +1328,14 @@ void recentProjectsOpenByNumberRejectsDirtySessionWithoutMutation()
     trackloom::AppProjectSession session;
     session.createNewProject("Dirty Current");
     session.editProject().createTrack("Lead", trackloom::TrackType::Instrument);
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
+    trackloom::AppLoopPlaybackState loopState;
 
     const auto feedback = trackloom::openAppRecentProjectByNumber(
         session,
+        playback,
+        loopState,
         recent,
         1,
         testWorkspace() / "settings" / "recent-projects.txt");
@@ -1342,9 +1357,14 @@ void recentProjectsOpenByNumberRejectsMissingSelection()
     trackloom::AppProjectSession session;
     session.createNewProject("No Selection");
     trackloom::AppRecentProjects recent;
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
+    trackloom::AppLoopPlaybackState loopState;
 
     const auto feedback = trackloom::openAppRecentProjectByNumber(
         session,
+        playback,
+        loopState,
         recent,
         1,
         testWorkspace() / "settings" / "recent-projects.txt");
@@ -1367,9 +1387,14 @@ void recentProjectsOpenByNumberRejectsMissingFileWithoutMutation()
 
     trackloom::AppProjectSession session;
     session.createNewProject("Keep Current");
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host);
+    trackloom::AppLoopPlaybackState loopState;
 
     const auto feedback = trackloom::openAppRecentProjectByNumber(
         session,
+        playback,
+        loopState,
         recent,
         1,
         testWorkspace() / "settings" / "recent-projects.txt");

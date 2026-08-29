@@ -782,20 +782,22 @@ void appPlaybackControllerDoesNotClearANonDevicePreparationFault()
     });
     require(host.openOutput({}).success,
         "non-device-fault isolation test requires an available stopped host");
-    std::latch buildFinished {1};
+    std::latch completionPublished {1};
     trackloom::AppPlaybackController controller(
         host,
-        [&buildFinished](trackloom::PreparedMidiPlaybackPlanBuildRequest, std::stop_token) {
-            buildFinished.count_down();
+        [](trackloom::PreparedMidiPlaybackPlanBuildRequest, std::stop_token) {
             return trackloom::PreparedMidiPlaybackPlanBuildResult {
                 trackloom::PreparedMidiPlaybackPlanBuildFailureReason::InvalidOutputFormat,
                 nullptr
             };
         });
+    trackloom::detail::setAppPlaybackPreparationPublishedCallbackForTesting(
+        controller,
+        [&completionPublished]() { completionPublished.count_down(); });
     trackloom::AppProjectSession session;
     require(controller.start(session.capturePlaybackSnapshot()).success,
         "non-device-fault isolation test must start its failing preparation worker");
-    buildFinished.wait();
+    completionPublished.wait();
     controller.poll(session, disabledLoopState);
     const auto failed = controller.status();
     require(failed.state == trackloom::AppPlaybackState::Faulted

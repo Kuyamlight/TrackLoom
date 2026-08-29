@@ -13,6 +13,7 @@ add_library(trackloom_app_support STATIC
     AppMidiClipActions.cpp
     AppMidiNoteActions.cpp
     AppPlaybackActions.cpp
+    AppProjectReplacementActions.cpp
     AppProjectFileActions.cpp
     AppProjectSession.cpp
     AppProjectStatus.cpp

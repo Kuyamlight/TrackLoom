@@ -1,5 +1,7 @@
 #include "AppRecentProjects.h"
 
+#include "AppProjectReplacementActions.h"
+
 #include <algorithm>
 #include <fstream>
 #include <string>
@@ -120,6 +122,8 @@ AppRecentProjectRecordResult recordAndSaveAppRecentProject(
 
 AppRecentProjectOpenFeedback openAppRecentProjectByNumber(
     AppProjectSession& session,
+    AppPlaybackController& playback,
+    AppLoopPlaybackState& loopState,
     AppRecentProjects& recentProjects,
     std::size_t number,
     const std::filesystem::path& settingsPath)
@@ -134,23 +138,19 @@ AppRecentProjectOpenFeedback openAppRecentProjectByNumber(
     }
 
     const auto projectPath = recentProjects.paths()[number - 1];
-    if (session.isDirty()) {
-        return recentOpenFeedback(
-            false,
-            AppRecentProjectOpenFeedbackKind::DirtyProject,
-            projectPath,
-            false,
-            "当前工程有未保存修改，请先保存或另存为，再打开最近工程。");
-    }
-
-    const auto openResult = session.openFrom(projectPath);
+    const auto openResult = openAppProjectIfSafe(
+        session, playback, loopState, projectPath);
     if (!openResult.success) {
+        const auto kind = openResult.failureReason
+                == AppProjectReplacementFailureReason::DirtyProject
+            ? AppRecentProjectOpenFeedbackKind::DirtyProject
+            : AppRecentProjectOpenFeedbackKind::OpenFailed;
         return recentOpenFeedback(
             false,
-            AppRecentProjectOpenFeedbackKind::OpenFailed,
+            kind,
             projectPath,
             false,
-            "打开最近工程失败：" + openResult.error);
+            openResult.message);
     }
 
     const auto recordResult = recordAndSaveAppRecentProject(
