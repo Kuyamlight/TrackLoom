@@ -7,7 +7,6 @@
 #endif
 
 #include <atomic>
-#include <chrono>
 #include <iostream>
 #include <latch>
 #include <limits>
@@ -512,27 +511,24 @@ void preparingStalenessUsesLoopProjectThenDevicePriority()
 
 void completionReadyStalenessIsRejectedBeforeInstallationInPriorityOrder()
 {
-    using namespace std::chrono_literals;
-
     {
         trackloom::AppProjectSession session;
         trackloom::AppLoopPlaybackState loopState;
         enableProjectLoop(session, loopState, { 960, 3840 });
         FakeRealtimePlaybackHost host;
-        std::latch buildReturning(1);
+        std::latch completionPublished(1);
         std::atomic<int> buildCount { 0 };
         trackloom::AppPlaybackController playback(
             host,
             [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
                 ++buildCount;
-                auto result = makeFakePreparedPlan(request);
-                buildReturning.count_down();
-                return result;
+                return makeFakePreparedPlan(request);
             });
+        trackloom::detail::setAppPlaybackPreparationPublishedCallbackForTesting(
+            playback, [&] { completionPublished.count_down(); });
         require(trackloom::startAppPlayback(playback, session, loopState).success,
             "completion-ready loop-priority fixture must start preparation");
-        buildReturning.wait();
-        std::this_thread::sleep_for(20ms);
+        completionPublished.wait();
         setProjectLoop(session, { 3840, 7680 });
         host.setFormatGeneration(2);
 
@@ -552,20 +548,19 @@ void completionReadyStalenessIsRejectedBeforeInstallationInPriorityOrder()
         trackloom::AppProjectSession session;
         trackloom::AppLoopPlaybackState loopState;
         FakeRealtimePlaybackHost host;
-        std::latch buildReturning(1);
+        std::latch completionPublished(1);
         std::atomic<int> buildCount { 0 };
         trackloom::AppPlaybackController playback(
             host,
             [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
                 ++buildCount;
-                auto result = makeFakePreparedPlan(request);
-                buildReturning.count_down();
-                return result;
+                return makeFakePreparedPlan(request);
             });
+        trackloom::detail::setAppPlaybackPreparationPublishedCallbackForTesting(
+            playback, [&] { completionPublished.count_down(); });
         require(trackloom::startAppPlayback(playback, session, loopState).success,
             "completion-ready project-priority fixture must start preparation");
-        buildReturning.wait();
-        std::this_thread::sleep_for(20ms);
+        completionPublished.wait();
         session.editProject().rename("completion-ready generation");
         host.setFormatGeneration(2);
 
@@ -585,20 +580,19 @@ void completionReadyStalenessIsRejectedBeforeInstallationInPriorityOrder()
         trackloom::AppProjectSession session;
         trackloom::AppLoopPlaybackState loopState;
         FakeRealtimePlaybackHost host;
-        std::latch buildReturning(1);
+        std::latch completionPublished(1);
         std::atomic<int> buildCount { 0 };
         trackloom::AppPlaybackController playback(
             host,
             [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request, std::stop_token) {
                 ++buildCount;
-                auto result = makeFakePreparedPlan(request);
-                buildReturning.count_down();
-                return result;
+                return makeFakePreparedPlan(request);
             });
+        trackloom::detail::setAppPlaybackPreparationPublishedCallbackForTesting(
+            playback, [&] { completionPublished.count_down(); });
         require(trackloom::startAppPlayback(playback, session, loopState).success,
             "completion-ready device-priority fixture must start preparation");
-        buildReturning.wait();
-        std::this_thread::sleep_for(20ms);
+        completionPublished.wait();
         host.setFormatGeneration(2);
 
         playback.poll(session, loopState);

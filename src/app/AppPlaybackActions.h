@@ -109,6 +109,8 @@ using AppPreparedPlanBuildOperation = std::function<
         PreparedMidiPlaybackPlanBuildRequest,
         std::stop_token)>;
 
+class AppPlaybackController;
+
 namespace detail {
 
 struct AppPlaybackPreparationCompletion {
@@ -120,6 +122,7 @@ struct AppPlaybackPreparationCompletionState {
     mutable std::mutex mailboxMutex;
     std::optional<AppPlaybackPreparationCompletion> mailbox;
     std::atomic<bool> completionPublished { false };
+    std::function<void()> completionPublishedCallbackForTesting;
 };
 
 void runAppPlaybackPreparationBuild(
@@ -128,6 +131,10 @@ void runAppPlaybackPreparationBuild(
     AppPlaybackPreparationKey key,
     AppPreparedPlanBuildOperation build,
     std::stop_token stopToken) noexcept;
+
+void setAppPlaybackPreparationPublishedCallbackForTesting(
+    AppPlaybackController& playback,
+    std::function<void()> callback);
 
 }
 
@@ -155,6 +162,9 @@ public:
     double currentSeconds() const noexcept;
 
 private:
+    friend void detail::setAppPlaybackPreparationPublishedCallbackForTesting(
+        AppPlaybackController& playback,
+        std::function<void()> callback);
     friend AppPlaybackActionFeedback startAppPlayback(
         AppPlaybackController& playback,
         const AppProjectSession& session,

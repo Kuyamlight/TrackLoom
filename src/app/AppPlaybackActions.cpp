@@ -88,12 +88,27 @@ void detail::runAppPlaybackPreparationBuild(
     } catch (...) {
         result.failureReason = PreparedMidiPlaybackPlanBuildFailureReason::InvalidOutputFormat;
     }
+    std::function<void()> completionPublishedCallbackForTesting;
     {
         std::scoped_lock lock(completionState->mailboxMutex);
         completionState->mailbox.emplace(
             AppPlaybackPreparationCompletion { std::move(key), std::move(result) });
+        completionPublishedCallbackForTesting =
+            std::move(completionState->completionPublishedCallbackForTesting);
     }
     completionState->completionPublished.store(true, std::memory_order_release);
+    if (completionPublishedCallbackForTesting) {
+        completionPublishedCallbackForTesting();
+    }
+}
+
+void detail::setAppPlaybackPreparationPublishedCallbackForTesting(
+    AppPlaybackController& playback,
+    std::function<void()> callback)
+{
+    std::scoped_lock lock(playback.completionState_->mailboxMutex);
+    playback.completionState_->completionPublishedCallbackForTesting =
+        std::move(callback);
 }
 
 AppPlaybackController::AppPlaybackController(
