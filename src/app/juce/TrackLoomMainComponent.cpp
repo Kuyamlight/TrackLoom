@@ -597,7 +597,7 @@ public:
             lastActionMessage_ = "快捷键设置：检测到冲突，已保留默认绑定，请在后续设置界面中修正。";
         }
         initialiseAudioOutput();
-        playback_.poll(session_);
+        playback_.poll(session_, loopState_);
         refreshFromSession();
         startTimerHz(30);
         setSize(1040, 920);
@@ -1377,7 +1377,7 @@ private:
 
     void timerCallback() override
     {
-        playback_.poll(session_);
+        playback_.poll(session_, loopState_);
         refreshPlaybackPresentation(audioHost_->snapshot());
     }
 
@@ -1601,7 +1601,7 @@ private:
 
     void startProjectPlayback()
     {
-        const auto feedback = trackloom::startAppPlayback(playback_, session_);
+        const auto feedback = trackloom::startAppPlayback(playback_, session_, loopState_);
         lastActionMessage_ = feedback.message;
         startTimerHz(30);
         refreshFromSession();
@@ -1616,7 +1616,7 @@ private:
 
     void toggleProjectPlayback()
     {
-        const auto feedback = trackloom::toggleAppPlayback(playback_, session_);
+        const auto feedback = trackloom::toggleAppPlayback(playback_, session_, loopState_);
         lastActionMessage_ = feedback.message;
         startTimerHz(30);
         refreshFromSession();
@@ -2998,6 +2998,7 @@ private:
         presentAudioSettings_;
     trackloom::AppAudioSettings currentAudioSettings_;
     trackloom::AppProjectSession session_;
+    trackloom::AppLoopPlaybackState loopState_;
     std::function<void(std::string)> titleChanged_;
     std::unique_ptr<juce::FileChooser> fileChooser_;
     std::filesystem::path recentProjectsSettingsPath_;

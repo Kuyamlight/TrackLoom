@@ -23,6 +23,8 @@
 
 namespace {
 
+const trackloom::AppLoopPlaybackState disabledLoopState;
+
 void configureTestFailureOutput()
 {
 #if defined(_MSC_VER)
@@ -794,7 +796,7 @@ void appPlaybackControllerDoesNotClearANonDevicePreparationFault()
     require(controller.start(session.capturePlaybackSnapshot()).success,
         "non-device-fault isolation test must start its failing preparation worker");
     buildFinished.wait();
-    controller.poll(session);
+    controller.poll(session, disabledLoopState);
     const auto failed = controller.status();
     require(failed.state == trackloom::AppPlaybackState::Faulted
             && failed.failureReason == trackloom::AppPlaybackFailureReason::PreparationFailed,
@@ -803,7 +805,7 @@ void appPlaybackControllerDoesNotClearANonDevicePreparationFault()
             && host.snapshot().realtime.state == trackloom::RealtimePlaybackState::Stopped,
         "the isolation host must remain stopped and available after preparation failure");
 
-    controller.poll(session);
+    controller.poll(session, disabledLoopState);
 
     const auto afterPoll = controller.status();
     require(afterPoll.state == trackloom::AppPlaybackState::Faulted

@@ -38,6 +38,8 @@
 
 namespace {
 
+const trackloom::AppLoopPlaybackState disabledLoopState;
+
 void configureTestFailureOutput()
 {
 #if defined(_MSC_VER)
@@ -177,7 +179,7 @@ void pollPlaybackUntilWorkerSettles(
     const trackloom::AppProjectSession& session)
 {
     for (int attempt = 0; attempt < 10000; ++attempt) {
-        playback.poll(session);
+        playback.poll(session, disabledLoopState);
         const auto state = playback.status().state;
         if (state != trackloom::AppPlaybackState::Preparing
             && state != trackloom::AppPlaybackState::Stopping) {
@@ -1763,12 +1765,12 @@ void mainMenuReflectsPlayingTransportState()
         });
     trackloom::AppRecentProjects recent;
 
-    require(trackloom::startAppPlayback(playback, session).success,
+    require(trackloom::startAppPlayback(playback, session, disabledLoopState).success,
         "playing menu test should start preparing playback");
     built.wait();
     pollPlaybackUntilWorkerSettles(playback, session);
     host.setRealtimePosition(512, 512);
-    playback.poll(session);
+    playback.poll(session, disabledLoopState);
 
     const auto menu = trackloom::describeAppMainMenu(session, playback, recent);
     const auto& playbackItems = menu.groups[4].items;
@@ -4539,7 +4541,7 @@ void playbackPreparationIsQueryableAndCancellableWithoutJoiningInHandlers()
     for (int attempt = 0;
          attempt < 1000 && playback.status().state == trackloom::AppPlaybackState::Stopping;
          ++attempt) {
-        playback.poll(session);
+        playback.poll(session, disabledLoopState);
         std::this_thread::yield();
     }
 
@@ -4607,7 +4609,7 @@ void playbackPreparationInstallsAndTracksHostLifecycle()
             return result;
         });
 
-    require(trackloom::startAppPlayback(playback, session).success,
+    require(trackloom::startAppPlayback(playback, session, disabledLoopState).success,
         "playback start action should accept asynchronous preparation");
     require(playback.status().state == trackloom::AppPlaybackState::Preparing,
         "accepted start should enter Preparing before poll installs the plan");
@@ -4620,7 +4622,7 @@ void playbackPreparationInstallsAndTracksHostLifecycle()
     require(!session.isDirty(), "runtime playback must not dirty the project");
 
     host.setRealtimePosition(512, 512);
-    playback.poll(session);
+    playback.poll(session, disabledLoopState);
     require(playback.currentSample() == 512 && playback.currentSeconds() > 0.0,
         "poll should expose the host playback position");
     require(trackloom::stopAppPlayback(playback).success,
@@ -4628,7 +4630,7 @@ void playbackPreparationInstallsAndTracksHostLifecycle()
     require(playback.status().state == trackloom::AppPlaybackState::Stopping,
         "accepted host stop should enter Stopping");
     host.setRealtimeState(trackloom::RealtimePlaybackState::Stopped);
-    playback.poll(session);
+    playback.poll(session, disabledLoopState);
     require(playback.status().state == trackloom::AppPlaybackState::Stopped,
         "polled host stop completion should enter Stopped");
 }
@@ -4657,7 +4659,7 @@ void playbackStatusAndMenuUseStructuredControllerState()
             built.count_down();
             return result;
         });
-    require(trackloom::toggleAppPlayback(playing, session).success,
+    require(trackloom::toggleAppPlayback(playing, session, disabledLoopState).success,
         "toggle should start stopped playback");
     built.wait();
     pollPlaybackUntilWorkerSettles(playing, session);
@@ -4678,7 +4680,7 @@ void playbackUnavailableHostAndFaultExposeStableReasons()
         "missing device should enter Unavailable");
     require(!unavailable.status().canStart,
         "missing device should disable start");
-    const auto noDevice = startAppPlayback(unavailable, session);
+    const auto noDevice = startAppPlayback(unavailable, session, disabledLoopState);
     require(!noDevice.success
             && noDevice.failureReason == trackloom::AppPlaybackFailureReason::NoAudioDevice,
         "missing device start should expose NoAudioDevice");
@@ -4686,7 +4688,7 @@ void playbackUnavailableHostAndFaultExposeStableReasons()
     FakeRealtimePlaybackHost faultHost;
     trackloom::AppPlaybackController faulted(faultHost);
     faultHost.setRealtimeState(trackloom::RealtimePlaybackState::Faulted);
-    faulted.poll(session);
+    faulted.poll(session, disabledLoopState);
     require(faulted.status().state == trackloom::AppPlaybackState::Faulted
             && faulted.status().failureReason == trackloom::AppPlaybackFailureReason::DeviceFault,
         "host fault should expose Faulted and DeviceFault");
@@ -4811,13 +4813,13 @@ void playbackHostFaultDuringPreparationDiscardsCompletedPlan()
         "fault during preparation test should start preparation");
     entered.wait();
     host.setRealtimeState(trackloom::RealtimePlaybackState::Faulted);
-    playback.poll(session);
+    playback.poll(session, disabledLoopState);
     require(playback.status().state == trackloom::AppPlaybackState::Faulted
             && playback.status().failureReason == trackloom::AppPlaybackFailureReason::DeviceFault,
         "host fault during preparation should immediately expose DeviceFault");
     release.count_down();
     for (int attempt = 0; attempt < 10000 && host.installCallCount == 0; ++attempt) {
-        playback.poll(session);
+        playback.poll(session, disabledLoopState);
         std::this_thread::yield();
         if (playback.status().state == trackloom::AppPlaybackState::Faulted
             && playback.status().failureReason == trackloom::AppPlaybackFailureReason::DeviceFault) {
@@ -4845,14 +4847,14 @@ void playbackDeviceFaultDoesNotRecoverUntilItsPreparationWorkerJoins()
         "joinable-worker recovery test must start one blocked preparation");
     entered.wait();
     host.setRealtimeState(trackloom::RealtimePlaybackState::Faulted);
-    playback.poll(session);
+    playback.poll(session, disabledLoopState);
     require(playback.status().state == trackloom::AppPlaybackState::Faulted
             && playback.status().failureReason == trackloom::AppPlaybackFailureReason::DeviceFault,
         "a host fault while preparation is blocked must expose DeviceFault");
 
     host.setRealtimeState(trackloom::RealtimePlaybackState::Stopped);
     host.setDeviceAvailable(true);
-    playback.poll(session);
+    playback.poll(session, disabledLoopState);
     const auto beforeJoin = playback.status();
     if (beforeJoin.state != trackloom::AppPlaybackState::Faulted
         || beforeJoin.failureReason != trackloom::AppPlaybackFailureReason::DeviceFault) {
@@ -4866,7 +4868,7 @@ void playbackDeviceFaultDoesNotRecoverUntilItsPreparationWorkerJoins()
          attempt < 10000
              && playback.status().state == trackloom::AppPlaybackState::Faulted;
          ++attempt) {
-        playback.poll(session);
+        playback.poll(session, disabledLoopState);
         std::this_thread::yield();
     }
     require(playback.status().state == trackloom::AppPlaybackState::Stopped
@@ -4936,12 +4938,12 @@ void playbackKeepsInstalledPlanDuringEditsAndRebuildsAfterStop()
     pollPlaybackUntilWorkerSettles(playback, session);
     require(playback.isPlaying(), "first generation should be playing");
     session.editProject().rename("Second Generation");
-    playback.poll(session);
+    playback.poll(session, disabledLoopState);
     require(host.installCallCount == 1 && playback.isPlaying(),
         "editing during playback should not replace the installed plan");
     require(playback.stop().success, "playing plan should accept stop");
     host.setRealtimeState(trackloom::RealtimePlaybackState::Stopped);
-    playback.poll(session);
+    playback.poll(session, disabledLoopState);
     require(playback.start(session.capturePlaybackSnapshot()).success,
         "stopped playback should accept rebuilding the edited project");
     secondBuilt.wait();
@@ -4970,7 +4972,7 @@ void playbackRewindStopsThenPreparesAgainFromZero()
         "rewind test should start initial preparation");
     pollPlaybackUntilWorkerSettles(playback, session);
     host.setRealtimePosition(1024, 1024);
-    playback.poll(session);
+    playback.poll(session, disabledLoopState);
 
     require(playback.rewindToStart().success,
         "rewind while playing should request an orderly stop");
@@ -4979,7 +4981,7 @@ void playbackRewindStopsThenPreparesAgainFromZero()
     require(host.stopCallCount == 1,
         "rewind while playing should request one host stop");
     host.setRealtimeState(trackloom::RealtimePlaybackState::Stopped);
-    playback.poll(session);
+    playback.poll(session, disabledLoopState);
     require(playback.status().state == trackloom::AppPlaybackState::Preparing,
         "host stop completion should begin fresh preparation for rewind");
     pollPlaybackUntilWorkerSettles(playback, session);
