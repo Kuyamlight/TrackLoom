@@ -3,6 +3,8 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <array>
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -19,6 +21,29 @@ void require(bool condition, const std::string& message)
         std::cerr << message << '\n';
         throw std::runtime_error(message);
     }
+}
+
+void requireBounds(
+    const std::optional<juce::Rectangle<float>>& actual,
+    float x,
+    float y,
+    float width,
+    float height,
+    const std::string& message)
+{
+    require(actual.has_value(), message + " must exist");
+    require(actual->getX() == x && actual->getY() == y
+            && actual->getWidth() == width && actual->getHeight() == height,
+        message + " must match its hand-derived bounds");
+}
+
+void requireColour(
+    juce::Colour actual,
+    juce::Colour expected,
+    const std::string& message)
+{
+    require(actual.getARGB() == expected.getARGB(),
+        message + " (actual ARGB=" + std::to_string(actual.getARGB()) + ")");
 }
 
 trackloom::AppTimelineCanvasStatus fixtureStatus()
@@ -63,7 +88,7 @@ juce::MouseEvent mouseEvent(
     };
 }
 
-void geometryPaintsTheTimelineBandsAndExposesMonotonicClipAndHandleBounds()
+void geometryPaintsTheTimelineBandsAndExposesHandDerivedBounds()
 {
     juce::ScopedJuceInitialiser_GUI initialiseGui;
     trackloom::TimelineLoopEditorComponent component;
@@ -76,30 +101,32 @@ void geometryPaintsTheTimelineBandsAndExposesMonotonicClipAndHandleBounds()
     const auto audio = component.clipBounds("audio-1");
     const auto loopStart = component.loopHandleBounds(trackloom::AppLoopBoundaryEdge::Start);
     const auto loopEnd = component.loopHandleBounds(trackloom::AppLoopBoundaryEdge::End);
-    require(midi.has_value() && audio.has_value() && loopStart.has_value() && loopEnd.has_value(),
-        "fixed snapshot must expose MIDI, audio, and both loop handle bounds");
-    require(midi->getWidth() > 0.0f && audio->getWidth() > 0.0f
-            && midi->getX() < midi->getRight() && audio->getX() < audio->getRight(),
-        "MIDI and audio clips must have non-empty monotonic lane geometry");
-    require(midi->getCentreY() < audio->getCentreY(),
-        "track rows must use one shared increasing vertical geometry");
-    require(loopStart->getWidth() > 0.0f && loopEnd->getWidth() > 0.0f
-            && loopStart->getX() < loopEnd->getX(),
-        "loop handles must be non-empty and follow their loop boundary order");
+    requireBounds(midi, 260.0f, 58.0f, 300.0f, 40.0f,
+        "MIDI clip in 960 by 360 fixture");
+    requireBounds(audio, 660.0f, 110.0f, 200.0f, 40.0f,
+        "audio clip in 960 by 360 fixture");
+    requireBounds(loopStart, 356.0f, 28.0f, 8.0f, 24.0f,
+        "loop start handle in 960 by 360 fixture");
+    requireBounds(loopEnd, 756.0f, 28.0f, 8.0f, 24.0f,
+        "loop end handle in 960 by 360 fixture");
 
     juce::Image image(juce::Image::ARGB, 960, 360, true);
     {
         juce::Graphics graphics(image);
         component.paint(graphics);
     }
-    require(image.getPixelAt(8, 70).getAlpha() != 0,
-        "paint must fill the fixed left track header");
-    require(image.getPixelAt(170, 70).getAlpha() != 0,
-        "paint must fill the right track lane beside the header");
-    require(image.getPixelAt(170, 10).getAlpha() != 0,
-        "paint must fill the top ruler");
-    require(image.getPixelAt(170, 35).getAlpha() != 0,
-        "paint must fill the loop band below the ruler");
+    requireColour(image.getPixelAt(8, 70), juce::Colour(0xff20231f),
+        "fixed left header must use the panel colour");
+    requireColour(image.getPixelAt(170, 70), juce::Colour(0xff151815),
+        "right lane must retain the canvas colour outside clips");
+    requireColour(image.getPixelAt(170, 10), juce::Colour(0xff20231f),
+        "top ruler must use the panel colour");
+    requireColour(image.getPixelAt(170, 35), juce::Colour(0xff20231f),
+        "loop band before the loop ribbon must use the panel colour");
+    requireColour(image.getPixelAt(560, 150), juce::Colour(0xff3a463c),
+        "measure boundary must use the grid colour at its hand-derived x position");
+    requireColour(image.getPixelAt(600, 35), juce::Colour(0xff35533d),
+        "loop ribbon must visibly blend the loop accent over the panel");
 }
 
 void clicksSelectOnlyMidiClips()
@@ -154,14 +181,247 @@ void loopDragPreviewsUntilMouseUpAndCommitsOnceOnlyWhenChanged()
     component.mouseDrag(mouseEvent(component, secondDrag, down, true));
     require(previewCalls == 2 && commitCalls == 0,
         "multiple loop drags must only synchronously preview and never commit before mouse-up");
-    require(candidates.size() == 2 && candidates[0] < candidates[1],
-        "pixel drag positions must be converted to increasing raw candidate ticks");
+    require(candidates == std::vector<std::int64_t> { 2400, 2880 },
+        "known lane pixels must map to their hand-derived raw candidate ticks");
     require(component.previewLoopRange() == std::optional<trackloom::PlaybackLoopRange>({ candidates[1], 5760 }),
         "the component must retain the snapped preview returned by the application callback");
 
     component.mouseUp(mouseEvent(component, secondDrag, down, true));
     require(commitCalls == 1 && committed == trackloom::PlaybackLoopRange { candidates[1], 5760 },
         "mouse-up must commit exactly the returned preview once when it differs from the saved range");
+}
+
+void extremeTickRangesClampRawCandidatesAndBadSnapshotTicks()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    std::vector<std::int64_t> candidates;
+    trackloom::TimelineLoopEditorComponent component({
+        {},
+        [&](trackloom::AppLoopBoundaryEdge, std::int64_t candidate) {
+            candidates.push_back(candidate);
+            return std::nullopt;
+        },
+        {},
+        {}
+    });
+    component.setSize(960, 360);
+    auto wide = fixtureStatus();
+    wide.visibleRange = { 0, std::numeric_limits<std::int64_t>::max() };
+    wide.playbackLoopRange = trackloom::PlaybackLoopRange { 0, 1 };
+    component.setTimelineStatus(wide);
+    const auto handle = *component.loopHandleBounds(trackloom::AppLoopBoundaryEdge::Start);
+    component.mouseDown(mouseEvent(component, handle.getCentre(), handle.getCentre()));
+    component.mouseDrag(mouseEvent(component, { 960.0f, handle.getCentreY() }, handle.getCentre(), true));
+    require(candidates == std::vector<std::int64_t> { std::numeric_limits<std::int64_t>::max() },
+        "the right lane endpoint of [0, INT64_MAX] must emit INT64_MAX exactly");
+
+    auto narrow = fixtureStatus();
+    narrow.visibleRange = { std::numeric_limits<std::int64_t>::max() - 1,
+        std::numeric_limits<std::int64_t>::max() };
+    narrow.clips = {
+        { "bad-negative", "track-midi", trackloom::ClipType::Midi, "bad",
+            std::numeric_limits<std::int64_t>::min(), std::numeric_limits<std::int64_t>::min() + 1 }
+    };
+    narrow.measureBoundaryTicks = { std::numeric_limits<std::int64_t>::min(),
+        std::numeric_limits<std::int64_t>::max() };
+    component.setTimelineStatus(narrow);
+    require(!component.clipBounds("bad-negative").has_value(),
+        "an extreme out-of-range clip must not wrap into the visible lane");
+    juce::Image image(juce::Image::ARGB, 960, 360, true);
+    {
+        juce::Graphics graphics(image);
+        component.paint(graphics);
+    }
+
+    narrow.playbackLoopRange = trackloom::PlaybackLoopRange {
+        std::numeric_limits<std::int64_t>::max() - 1,
+        std::numeric_limits<std::int64_t>::max() };
+    component.setTimelineStatus(narrow);
+    const auto narrowHandle = *component.loopHandleBounds(trackloom::AppLoopBoundaryEdge::Start);
+    component.mouseDown(mouseEvent(component, narrowHandle.getCentre(), narrowHandle.getCentre()));
+    component.mouseDrag(mouseEvent(component, { 960.0f, narrowHandle.getCentreY() }, narrowHandle.getCentre(), true));
+    require(candidates == std::vector<std::int64_t> {
+        std::numeric_limits<std::int64_t>::max(), std::numeric_limits<std::int64_t>::max() },
+        "[INT64_MAX - 1, INT64_MAX] must map its right endpoint without overflow");
+}
+
+void loopHandlesClipToTheVisibleLoopBand()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    int previewCalls = 0;
+    trackloom::TimelineLoopEditorComponent component({
+        {},
+        [&](trackloom::AppLoopBoundaryEdge, std::int64_t) {
+            ++previewCalls;
+            return std::nullopt;
+        },
+        {},
+        {}
+    });
+    component.setSize(960, 360);
+    auto status = fixtureStatus();
+    status.visibleRange = { 1920, 5760 };
+    status.playbackLoopRange = trackloom::PlaybackLoopRange { 0, 7680 };
+    component.setTimelineStatus(status);
+    require(!component.loopHandleBounds(trackloom::AppLoopBoundaryEdge::Start).has_value(),
+        "a loop start entirely left of the visible range must not expose a handle");
+    require(!component.loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value(),
+        "a loop end entirely right of the visible range must not expose a handle");
+
+    status.playbackLoopRange = trackloom::PlaybackLoopRange { 1920, 5760 };
+    component.setTimelineStatus(status);
+    requireBounds(component.loopHandleBounds(trackloom::AppLoopBoundaryEdge::Start),
+        160.0f, 28.0f, 4.0f, 24.0f,
+        "loop start exactly at visible start");
+    requireBounds(component.loopHandleBounds(trackloom::AppLoopBoundaryEdge::End),
+        956.0f, 28.0f, 4.0f, 24.0f,
+        "loop end exactly at visible end");
+
+    status.playbackLoopRange = trackloom::PlaybackLoopRange { 1910, 5770 };
+    component.setTimelineStatus(status);
+    require(!component.loopHandleBounds(trackloom::AppLoopBoundaryEdge::Start).has_value()
+            && !component.loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value(),
+        "loop edges just beyond the visible interval must not create clipped-in handles");
+    juce::Image image(juce::Image::ARGB, 960, 360, true);
+    {
+        juce::Graphics graphics(image);
+        component.paint(graphics);
+    }
+    requireColour(image.getPixelAt(161, 35), juce::Colour(0xff35533d),
+        "an out-of-range start handle must not paint over the loop ribbon at the lane edge");
+    requireColour(image.getPixelAt(959, 35), juce::Colour(0xff35533d),
+        "an out-of-range end handle must not paint over the loop ribbon at the lane edge");
+    const auto leftEdge = juce::Point<float> { 161.0f, 40.0f };
+    component.mouseDown(mouseEvent(component, leftEdge, leftEdge));
+    component.mouseDrag(mouseEvent(component, { 300.0f, 40.0f }, leftEdge, true));
+    require(previewCalls == 0,
+        "an out-of-range handle must not be a loop-drag hit target");
+
+    status.clips = {
+        { "left", "track-midi", trackloom::ClipType::Midi, "left", 0, 960 },
+        { "crossing", "track-midi", trackloom::ClipType::Midi, "crossing", 0, 3000 },
+        { "right", "track-midi", trackloom::ClipType::Midi, "right", 6720, 7680 }
+    };
+    component.setTimelineStatus(status);
+    require(!component.clipBounds("left").has_value()
+            && !component.clipBounds("right").has_value(),
+        "clips wholly outside the visible lane must not expose hit-test geometry");
+    requireBounds(component.clipBounds("crossing"), 160.0f, 58.0f, 225.0f, 40.0f,
+        "a clip crossing visible start must clip exactly to the lane");
+}
+
+void wheelNormalizesNonFiniteAndExtremeInput()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    std::vector<trackloom::AppTimelineVisibleTickRange> published;
+    trackloom::TimelineLoopEditorComponent component({
+        {}, {}, {}, [&](trackloom::AppTimelineVisibleTickRange range) { published.push_back(range); }
+    });
+    component.setSize(960, 360);
+    const auto point = juce::Point<float> { 500.0f, 100.0f };
+    const auto nan = std::numeric_limits<float>::quiet_NaN();
+    for (const auto delta : std::array<float, 3> { nan,
+             std::numeric_limits<float>::infinity(),
+             -std::numeric_limits<float>::infinity() }) {
+        auto status = fixtureStatus();
+        status.visibleRange = { 100, 200 };
+        component.setTimelineStatus(status);
+        component.mouseWheelMove(mouseEvent(component, point, point), { delta, delta, false, false, false });
+        require(component.visibleTickRange() == trackloom::AppTimelineVisibleTickRange { 100, 200 },
+            "non-finite wheel input must be treated as zero without corrupting the range");
+    }
+
+    auto status = fixtureStatus();
+    status.visibleRange = { 100, 200 };
+    component.setTimelineStatus(status);
+    component.mouseWheelMove(mouseEvent(component, point, point),
+        { std::numeric_limits<float>::max(), 0.0f, false, false, false });
+    require(component.visibleTickRange() == trackloom::AppTimelineVisibleTickRange {
+        std::numeric_limits<std::int64_t>::max() - 100, std::numeric_limits<std::int64_t>::max() },
+        "a finite huge positive horizontal wheel delta must saturate at the legal right edge");
+    component.setTimelineStatus(status);
+    component.mouseWheelMove(mouseEvent(component, point, point),
+        { -std::numeric_limits<float>::max(), 0.0f, false, false, false });
+    require(component.visibleTickRange() == trackloom::AppTimelineVisibleTickRange { 0, 100 },
+        "a finite huge negative horizontal wheel delta must saturate at zero");
+    component.setSize(0, 360);
+    component.setTimelineStatus(status);
+    for (int index = 0; index < 100; ++index) {
+        component.mouseWheelMove(mouseEvent(component, point, point), { 0.0f, 1.0f, false, false, false });
+    }
+    const auto afterRepeatedZoom = component.visibleTickRange();
+    require(afterRepeatedZoom.startTick >= 0 && afterRepeatedZoom.endTick > afterRepeatedZoom.startTick,
+        "zero-width repeated zoom must keep the published range legal");
+    require(published.size() == 105,
+        "each real wheel event must publish exactly one normalized range");
+}
+
+void interactionAndGeometryMutationGuards()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    int selectionCalls = 0;
+    int previewCalls = 0;
+    int commitCalls = 0;
+    std::vector<std::int64_t> previewCandidates;
+    trackloom::TimelineLoopEditorComponent component({
+        [&](std::string) { ++selectionCalls; },
+        [&](trackloom::AppLoopBoundaryEdge edge, std::int64_t candidate) {
+            ++previewCalls;
+            previewCandidates.push_back(candidate);
+            if (previewCalls == 1) {
+                return std::optional<trackloom::PlaybackLoopRange> {};
+            }
+            return edge == trackloom::AppLoopBoundaryEdge::Start
+                ? std::optional<trackloom::PlaybackLoopRange>({ candidate, 5760 })
+                : std::optional<trackloom::PlaybackLoopRange>({ 1920, candidate });
+        },
+        [&](trackloom::PlaybackLoopRange) { ++commitCalls; },
+        {}
+    });
+    component.setSize(960, 360);
+    component.setTimelineStatus(fixtureStatus());
+    const auto startHandle = *component.loopHandleBounds(trackloom::AppLoopBoundaryEdge::Start);
+    const auto down = startHandle.getCentre();
+
+    component.mouseDown(mouseEvent(component, down, down));
+    component.mouseDrag(mouseEvent(component, { 410.0f, down.y }, down, true));
+    component.mouseUp(mouseEvent(component, { 410.0f, down.y }, down, true));
+    require(previewCalls == 1 && commitCalls == 0,
+        "a null preview from the application must never commit on mouse-up");
+    require(selectionCalls == 0,
+        "pressing a loop handle must not select a MIDI clip");
+
+    component.mouseDown(mouseEvent(component, down, down));
+    component.mouseDrag(mouseEvent(component, { 410.0f, down.y }, down, true));
+    component.mouseDrag(mouseEvent(component, { 410.0f, down.y }, down, true));
+    require(previewCandidates == std::vector<std::int64_t> { 2400, 2400, 2400 },
+        "repeated known drag positions must forward the same hand-derived raw tick each time");
+    require(component.previewLoopRange().has_value(),
+        "a valid preview must remain visible until a state reset or release");
+    component.setTimelineStatus(fixtureStatus());
+    require(!component.previewLoopRange().has_value(),
+        "a snapshot refresh during drag must clear stale preview state");
+    component.mouseUp(mouseEvent(component, { 410.0f, down.y }, down, true));
+    require(commitCalls == 0,
+        "mouse-up after a snapshot refresh must not commit the discarded drag");
+
+    component.setSize(0, 360);
+    component.setTimelineStatus(fixtureStatus());
+    require(!component.clipBounds("midi-1").has_value()
+            && !component.loopHandleBounds(trackloom::AppLoopBoundaryEdge::Start).has_value(),
+        "zero width must not expose invalid clip or loop geometry");
+    juce::Image zeroWidthImage(juce::Image::ARGB, 1, 360, true);
+    {
+        juce::Graphics graphics(zeroWidthImage);
+        component.paint(graphics);
+    }
+
+    component.setSize(160, 360);
+    component.setTimelineStatus(fixtureStatus());
+    const auto headerOnlyClip = component.clipBounds("midi-1");
+    require(!headerOnlyClip.has_value() || (headerOnlyClip->getX() >= 159.0f
+            && headerOnlyClip->getRight() <= 160.0f),
+        "header-only width must clip any remaining lane geometry to its one-pixel lane");
 }
 
 void unchangedLoopReleaseAndCaptureLossDoNotCommit()
@@ -227,15 +487,25 @@ void wheelAndInvalidSnapshotKeepTheVisibleRangeLegal()
 
 }
 
-int main()
+int main(int argumentCount, char* arguments[])
 {
     trackloom::test::configureTestFailureOutput();
     try {
-        geometryPaintsTheTimelineBandsAndExposesMonotonicClipAndHandleBounds();
-        clicksSelectOnlyMidiClips();
-        loopDragPreviewsUntilMouseUpAndCommitsOnceOnlyWhenChanged();
-        unchangedLoopReleaseAndCaptureLossDoNotCommit();
-        wheelAndInvalidSnapshotKeepTheVisibleRangeLegal();
+        const auto requested = argumentCount > 1 ? std::string(arguments[1]) : std::string {};
+        const auto run = [&](std::string_view name, const auto& test) {
+            if (requested.empty() || requested == name) {
+                test();
+            }
+        };
+        run("geometry", geometryPaintsTheTimelineBandsAndExposesHandDerivedBounds);
+        run("selection", clicksSelectOnlyMidiClips);
+        run("drag", loopDragPreviewsUntilMouseUpAndCommitsOnceOnlyWhenChanged);
+        run("cancel", unchangedLoopReleaseAndCaptureLossDoNotCommit);
+        run("extreme-ticks", extremeTickRangesClampRawCandidatesAndBadSnapshotTicks);
+        run("loop-clipping", loopHandlesClipToTheVisibleLoopBand);
+        run("wheel", wheelNormalizesNonFiniteAndExtremeInput);
+        run("mutation-guards", interactionAndGeometryMutationGuards);
+        run("range", wheelAndInvalidSnapshotKeepTheVisibleRangeLegal);
     } catch (const std::exception& error) {
         std::cerr << "D1 JUCE loop editor test failed: " << error.what() << '\n';
         return 1;

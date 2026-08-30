@@ -25,6 +25,17 @@ bool isValidRange(AppTimelineVisibleTickRange range) noexcept
     return range.startTick >= 0 && range.endTick > range.startTick;
 }
 
+AppTimelineVisibleTickRange makeVisibleRange(
+    std::int64_t startTick,
+    std::int64_t span) noexcept
+{
+    const auto maximumSpan = std::numeric_limits<std::int64_t>::max();
+    const auto legalSpan = std::clamp(span, std::int64_t { 1 }, maximumSpan);
+    const auto maximumStart = maximumSpan - legalSpan;
+    const auto legalStart = std::clamp(startTick, std::int64_t { 0 }, maximumStart);
+    return { legalStart, legalStart + legalSpan };
+}
+
 }
 
 TimelineLoopEditorComponent::TimelineLoopEditorComponent(
@@ -119,11 +130,18 @@ std::optional<juce::Rectangle<float>> TimelineLoopEditorComponent::loopHandleBou
     const auto tick = edge == AppLoopBoundaryEdge::Start
         ? loopRange->startTick
         : loopRange->endTick;
-    return juce::Rectangle<float>(
+    if (tick < visibleRange_.startTick || tick > visibleRange_.endTick) {
+        return std::nullopt;
+    }
+    const auto handle = juce::Rectangle<float>(
         xForTick(tick) - loopHandleWidth * 0.5f,
         layoutValue.loopBand.getY(),
         loopHandleWidth,
         layoutValue.loopBand.getHeight());
+    const auto visibleHandle = handle.getIntersection(layoutValue.loopBand);
+    return visibleHandle.isEmpty()
+        ? std::nullopt
+        : std::optional<juce::Rectangle<float>>(visibleHandle);
 }
 
 void TimelineLoopEditorComponent::paint(juce::Graphics& graphics)
@@ -276,16 +294,17 @@ void TimelineLoopEditorComponent::mouseWheelMove(
 {
     const auto current = visibleRange_;
     const auto span = current.endTick - current.startTick;
-    const auto zoomFactor = wheel.deltaY > 0.0f ? 0.8 : (wheel.deltaY < 0.0f ? 1.25 : 1.0);
+    const auto deltaX = std::isfinite(wheel.deltaX) ? static_cast<double>(wheel.deltaX) : 0.0;
+    const auto deltaY = std::isfinite(wheel.deltaY) ? static_cast<double>(wheel.deltaY) : 0.0;
+    const auto zoomFactor = deltaY > 0.0 ? 0.8 : (deltaY < 0.0 ? 1.25 : 1.0);
     const auto maximumSpan = std::numeric_limits<std::int64_t>::max();
     const auto scaledSpan = static_cast<double>(span) * zoomFactor;
     const auto zoomedSpan = scaledSpan >= static_cast<double>(maximumSpan)
         ? maximumSpan
         : std::max<std::int64_t>(1, static_cast<std::int64_t>(std::llround(scaledSpan)));
-    zoom_ = std::max(0.0001, zoom_ / zoomFactor);
+    zoom_ = std::clamp(zoom_ / zoomFactor, 0.0001, 1'000'000.0);
     const auto maximumStart = std::numeric_limits<std::int64_t>::max() - zoomedSpan;
-    const auto scaledShift = static_cast<double>(zoomedSpan)
-        * static_cast<double>(wheel.deltaX) * 0.1;
+    const auto scaledShift = static_cast<double>(zoomedSpan) * deltaX * 0.1;
     const auto minimumShift = -current.startTick;
     const auto maximumShift = maximumStart - current.startTick;
     const auto clampedShift = std::clamp(
@@ -297,8 +316,7 @@ void TimelineLoopEditorComponent::mouseWheelMove(
         : (clampedShift >= static_cast<double>(maximumShift)
             ? maximumShift
             : static_cast<std::int64_t>(std::llround(clampedShift)));
-    const auto shiftedStart = current.startTick + shift;
-    visibleRange_ = { shiftedStart, shiftedStart + zoomedSpan };
+    visibleRange_ = makeVisibleRange(current.startTick + shift, zoomedSpan);
     scrollStartTick_ = visibleRange_.startTick;
     status_.visibleRange = visibleRange_;
     if (callbacks_.visibleRangeChanged) {
@@ -369,7 +387,14 @@ float TimelineLoopEditorComponent::xForTick(std::int64_t tick) const noexcept
     if (lane.isEmpty() || span <= 0) {
         return lane.getX();
     }
-    const auto ratio = static_cast<double>(tick - visibleRange_.startTick)
+    if (tick <= visibleRange_.startTick) {
+        return lane.getX();
+    }
+    if (tick >= visibleRange_.endTick) {
+        return lane.getRight();
+    }
+    const auto offset = tick - visibleRange_.startTick;
+    const auto ratio = static_cast<double>(offset)
         / static_cast<double>(span);
     return lane.getX() + static_cast<float>(ratio * lane.getWidth());
 }
@@ -381,12 +406,25 @@ std::int64_t TimelineLoopEditorComponent::rawCandidateTick(float x) const noexce
     if (lane.isEmpty() || span <= 0) {
         return visibleRange_.startTick;
     }
+    if (x <= lane.getX()) {
+        return visibleRange_.startTick;
+    }
+    if (x >= lane.getRight()) {
+        return visibleRange_.endTick;
+    }
     const auto ratio = std::clamp(
         static_cast<double>(x - lane.getX()) / static_cast<double>(lane.getWidth()),
         0.0,
         1.0);
-    return visibleRange_.startTick + static_cast<std::int64_t>(std::llround(
-        ratio * static_cast<double>(span)));
+    const auto scaledOffset = ratio * static_cast<double>(span);
+    if (!std::isfinite(scaledOffset) || scaledOffset <= 0.0) {
+        return visibleRange_.startTick;
+    }
+    if (scaledOffset >= static_cast<double>(span)) {
+        return visibleRange_.endTick;
+    }
+    const auto offset = static_cast<std::int64_t>(std::llround(scaledOffset));
+    return visibleRange_.startTick + std::clamp<std::int64_t>(offset, 0, span);
 }
 
 }
