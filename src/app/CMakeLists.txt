@@ -47,6 +47,7 @@ endif()
 if(TARGET trackloom_juce)
     add_library(trackloom_app_juce_support STATIC
         juce/AudioSettingsComponent.cpp
+        juce/TimelineLoopEditorComponent.cpp
         juce/TrackLoomMainComponent.cpp
     )
 
