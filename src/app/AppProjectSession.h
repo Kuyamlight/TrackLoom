@@ -51,7 +51,38 @@ using ProjectSaveOperation = FileOperationResult (*) (
     const Project& project,
     const std::filesystem::path& path);
 
+using ProjectLoadOperation = LoadProjectResult (*) (
+    const std::filesystem::path& path);
+
 }
+
+class AppProjectSessionReplacement final {
+public:
+    AppProjectSessionReplacement(AppProjectSessionReplacement&&) = default;
+    AppProjectSessionReplacement& operator=(AppProjectSessionReplacement&&) = default;
+
+    AppProjectSessionReplacement(const AppProjectSessionReplacement&) = delete;
+    AppProjectSessionReplacement& operator=(const AppProjectSessionReplacement&) = delete;
+
+private:
+    friend class AppProjectSession;
+
+    AppProjectSessionReplacement(
+        Project project,
+        std::optional<std::filesystem::path> path,
+        std::uint64_t generation);
+
+    Project project_;
+    CommandStack commandStack_;
+    std::optional<std::filesystem::path> path_;
+    bool dirty_ = false;
+    std::uint64_t generation_ = 0;
+};
+
+struct AppProjectSessionReplacementStageResult {
+    std::optional<AppProjectSessionReplacement> replacement;
+    std::string error;
+};
 
 // AppProjectSession 保存桌面应用“当前打开的工程”状态。
 // 它不定义工程文件格式，只组合 Project、当前文件路径和 dirty 标志，供 UI、快捷键和 AI 工具复用。
@@ -59,6 +90,9 @@ class AppProjectSession final {
 public:
     AppProjectSession();
     explicit AppProjectSession(detail::ProjectSaveOperation saveOperation);
+    AppProjectSession(
+        detail::ProjectSaveOperation saveOperation,
+        detail::ProjectLoadOperation loadOperation);
 
     const Project& project() const;
     std::uint64_t projectEditGeneration() const noexcept;
@@ -78,6 +112,11 @@ public:
     bool canUndoProjectEdit() const;
     bool canRedoProjectEdit() const;
 
+    AppProjectSessionReplacement stageNewProject(std::string name) const;
+    AppProjectSessionReplacementStageResult stageOpenProject(
+        const std::filesystem::path& path) const;
+    void commitProjectReplacement(AppProjectSessionReplacement&& replacement) noexcept;
+
     void createNewProject(std::string name = "Untitled");
 
     AppProjectSessionResult save();
@@ -93,6 +132,7 @@ private:
     bool dirty_ = false;
     std::uint64_t projectEditGeneration_ = 0;
     detail::ProjectSaveOperation saveOperation_;
+    detail::ProjectLoadOperation loadOperation_;
 };
 
 }

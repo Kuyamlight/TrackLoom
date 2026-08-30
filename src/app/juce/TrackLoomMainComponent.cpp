@@ -1385,10 +1385,7 @@ private:
     void requestNewProject()
     {
         const auto result = trackloom::createNewAppProjectIfSafe(
-            session_, playback_, loopState_, "Untitled");
-        if (result.success) {
-            clearProjectObjectSelections();
-        }
+            session_, playback_, loopState_, projectObjectSelection(), "Untitled");
         lastActionMessage_ = result.message;
         refreshFromSession();
     }
@@ -1471,9 +1468,12 @@ private:
         }
 
         const auto openResult = trackloom::openAppProjectIfSafe(
-            session_, playback_, loopState_, juceFileToPath(selectedFile));
+            session_,
+            playback_,
+            loopState_,
+            projectObjectSelection(),
+            juceFileToPath(selectedFile));
         if (openResult.success) {
-            clearProjectObjectSelections();
             recordCurrentProjectAsRecent();
         }
         lastActionMessage_ = openResult.message;
@@ -2549,25 +2549,22 @@ private:
             session_,
             playback_,
             loopState_,
+            projectObjectSelection(),
             recentProjects_,
             selectedRecentProjectNumber_,
             recentProjectsSettingsPath_);
         lastActionMessage_ = feedback.message;
-        if (feedback.success) {
-            clearProjectObjectSelections();
-        }
-
         refreshFromSession();
     }
 
-    void clearProjectObjectSelections()
+    trackloom::AppProjectObjectSelection projectObjectSelection() noexcept
     {
-        // 这些 ID 都只在当前工程内有效。新建或打开其他工程后，旧 ID 必须清空，
-        // 让刷新逻辑从新工程里重新选择可操作对象。
-        selectedTrackId_.clear();
-        selectedAudioTrackId_.clear();
-        selectedAudioClipId_.clear();
-        selectedMidiClipId_.clear();
+        return {
+            selectedTrackId_,
+            selectedAudioTrackId_,
+            selectedAudioClipId_,
+            selectedMidiClipId_
+        };
     }
 
     void refreshTrackTargetSelector()

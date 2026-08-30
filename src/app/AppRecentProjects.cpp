@@ -45,6 +45,58 @@ AppRecentProjectOpenFeedback recentOpenFeedback(
     };
 }
 
+AppRecentProjectOpenFeedback openAppRecentProjectByNumberImpl(
+    AppProjectSession& session,
+    AppPlaybackController& playback,
+    AppLoopPlaybackState& loopState,
+    AppProjectObjectSelection* selection,
+    AppRecentProjects& recentProjects,
+    std::size_t number,
+    const std::filesystem::path& settingsPath)
+{
+    if (number == 0 || number > recentProjects.paths().size()) {
+        return recentOpenFeedback(
+            false,
+            AppRecentProjectOpenFeedbackKind::MissingRecentProject,
+            {},
+            false,
+            "请选择一个最近工程。");
+    }
+
+    const auto projectPath = recentProjects.paths()[number - 1];
+    const auto openResult = selection != nullptr
+        ? openAppProjectIfSafe(session, playback, loopState, *selection, projectPath)
+        : openAppProjectIfSafe(session, playback, loopState, projectPath);
+    if (!openResult.success) {
+        const auto kind = openResult.failureReason
+                == AppProjectReplacementFailureReason::DirtyProject
+            ? AppRecentProjectOpenFeedbackKind::DirtyProject
+            : AppRecentProjectOpenFeedbackKind::OpenFailed;
+        return recentOpenFeedback(
+            false,
+            kind,
+            projectPath,
+            false,
+            openResult.message);
+    }
+
+    const auto recordResult = recordAndSaveAppRecentProject(
+        recentProjects,
+        projectPath,
+        settingsPath);
+    auto message = "已打开最近工程：" + projectPath.string();
+    if (!recordResult.saved) {
+        message += " 最近工程列表暂未写入本地设置。";
+    }
+
+    return recentOpenFeedback(
+        true,
+        AppRecentProjectOpenFeedbackKind::Success,
+        projectPath,
+        recordResult.saved,
+        std::move(message));
+}
+
 }
 
 AppRecentProjects::AppRecentProjects(std::size_t maxEntries)
@@ -128,46 +180,21 @@ AppRecentProjectOpenFeedback openAppRecentProjectByNumber(
     std::size_t number,
     const std::filesystem::path& settingsPath)
 {
-    if (number == 0 || number > recentProjects.paths().size()) {
-        return recentOpenFeedback(
-            false,
-            AppRecentProjectOpenFeedbackKind::MissingRecentProject,
-            {},
-            false,
-            "请选择一个最近工程。");
-    }
+    return openAppRecentProjectByNumberImpl(
+        session, playback, loopState, nullptr, recentProjects, number, settingsPath);
+}
 
-    const auto projectPath = recentProjects.paths()[number - 1];
-    const auto openResult = openAppProjectIfSafe(
-        session, playback, loopState, projectPath);
-    if (!openResult.success) {
-        const auto kind = openResult.failureReason
-                == AppProjectReplacementFailureReason::DirtyProject
-            ? AppRecentProjectOpenFeedbackKind::DirtyProject
-            : AppRecentProjectOpenFeedbackKind::OpenFailed;
-        return recentOpenFeedback(
-            false,
-            kind,
-            projectPath,
-            false,
-            openResult.message);
-    }
-
-    const auto recordResult = recordAndSaveAppRecentProject(
-        recentProjects,
-        projectPath,
-        settingsPath);
-    auto message = "已打开最近工程：" + projectPath.string();
-    if (!recordResult.saved) {
-        message += " 最近工程列表暂未写入本地设置。";
-    }
-
-    return recentOpenFeedback(
-        true,
-        AppRecentProjectOpenFeedbackKind::Success,
-        projectPath,
-        recordResult.saved,
-        std::move(message));
+AppRecentProjectOpenFeedback openAppRecentProjectByNumber(
+    AppProjectSession& session,
+    AppPlaybackController& playback,
+    AppLoopPlaybackState& loopState,
+    AppProjectObjectSelection selection,
+    AppRecentProjects& recentProjects,
+    std::size_t number,
+    const std::filesystem::path& settingsPath)
+{
+    return openAppRecentProjectByNumberImpl(
+        session, playback, loopState, &selection, recentProjects, number, settingsPath);
 }
 
 bool saveAppRecentProjects(

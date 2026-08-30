@@ -1,5 +1,6 @@
 #include "AppProjectSession.h"
 
+#include <type_traits>
 #include <utility>
 
 namespace trackloom {
@@ -19,13 +20,31 @@ AppProjectSessionResult AppProjectSessionResult::fail(
 }
 
 AppProjectSession::AppProjectSession()
-    : AppProjectSession(saveProjectToFileAtomically)
+    : AppProjectSession(saveProjectToFileAtomically, loadProjectFromFile)
 {
 }
 
 AppProjectSession::AppProjectSession(detail::ProjectSaveOperation saveOperation)
+    : AppProjectSession(saveOperation, loadProjectFromFile)
+{
+}
+
+AppProjectSession::AppProjectSession(
+    detail::ProjectSaveOperation saveOperation,
+    detail::ProjectLoadOperation loadOperation)
     : project_("Untitled")
     , saveOperation_(saveOperation ? saveOperation : saveProjectToFileAtomically)
+    , loadOperation_(loadOperation ? loadOperation : loadProjectFromFile)
+{
+}
+
+AppProjectSessionReplacement::AppProjectSessionReplacement(
+    Project project,
+    std::optional<std::filesystem::path> path,
+    std::uint64_t generation)
+    : project_(std::move(project))
+    , path_(std::move(path))
+    , generation_(generation)
 {
 }
 
@@ -116,13 +135,47 @@ bool AppProjectSession::canRedoProjectEdit() const
     return commandStack_.canRedo();
 }
 
+AppProjectSessionReplacement AppProjectSession::stageNewProject(std::string name) const
+{
+    return AppProjectSessionReplacement(
+        Project(std::move(name)), std::nullopt, projectEditGeneration_ + 1);
+}
+
+AppProjectSessionReplacementStageResult AppProjectSession::stageOpenProject(
+    const std::filesystem::path& path) const
+{
+    auto loaded = loadOperation_(path);
+    if (!loaded.project.has_value()) {
+        return { std::nullopt, std::move(loaded.error) };
+    }
+
+    return {
+        AppProjectSessionReplacement(
+            std::move(*loaded.project),
+            std::optional<std::filesystem::path>(path),
+            projectEditGeneration_ + 1),
+        {}
+    };
+}
+
+void AppProjectSession::commitProjectReplacement(
+    AppProjectSessionReplacement&& replacement) noexcept
+{
+    static_assert(std::is_nothrow_swappable_v<Project>);
+    static_assert(std::is_nothrow_swappable_v<CommandStack>);
+    static_assert(std::is_nothrow_swappable_v<std::optional<std::filesystem::path>>);
+    using std::swap;
+    swap(project_, replacement.project_);
+    swap(commandStack_, replacement.commandStack_);
+    swap(currentProjectPath_, replacement.path_);
+    swap(dirty_, replacement.dirty_);
+    swap(projectEditGeneration_, replacement.generation_);
+}
+
 void AppProjectSession::createNewProject(std::string name)
 {
-    project_ = Project(std::move(name));
-    commandStack_ = CommandStack {};
-    currentProjectPath_.reset();
-    dirty_ = false;
-    advanceProjectEditGeneration();
+    auto replacement = stageNewProject(std::move(name));
+    commitProjectReplacement(std::move(replacement));
 }
 
 AppProjectSessionResult AppProjectSession::save()
@@ -152,19 +205,16 @@ AppProjectSessionResult AppProjectSession::saveAs(const std::filesystem::path& p
 
 AppProjectSessionResult AppProjectSession::openFrom(const std::filesystem::path& path)
 {
-    const auto loaded = loadProjectFromFile(path);
-    if (!loaded.project.has_value()) {
+    auto staged = stageOpenProject(path);
+    if (!staged.replacement.has_value()) {
         return AppProjectSessionResult::fail(
             AppProjectSessionFailureReason::OpenFailed,
-            loaded.error);
+            std::move(staged.error));
     }
 
-    project_ = std::move(*loaded.project);
-    commandStack_ = CommandStack {};
-    currentProjectPath_ = path;
-    dirty_ = false;
-    advanceProjectEditGeneration();
-    return AppProjectSessionResult::ok();
+    auto success = AppProjectSessionResult::ok();
+    commitProjectReplacement(std::move(*staged.replacement));
+    return success;
 }
 
 }

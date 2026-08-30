@@ -5,6 +5,7 @@
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <type_traits>
 #include <utility>
 
 namespace trackloom {
@@ -518,8 +519,49 @@ AppProjectReplacementSafety AppPlaybackController::prepareForProjectReplacement(
     return { true, AppProjectReplacementFailureReason::None, "工程替换门禁已放行。" };
 }
 
-void AppPlaybackController::resetAfterProjectReplacement()
+detail::AppPlaybackProjectReplacementReset
+AppPlaybackController::stageProjectReplacementReset() const
 {
+    auto stagedStatus = status_;
+    const auto hostSnapshot = host_.snapshot();
+    if (hostSnapshot.realtime.state == RealtimePlaybackState::Faulted) {
+        stagedStatus.state = AppPlaybackState::Faulted;
+        stagedStatus.failureReason = AppPlaybackFailureReason::DeviceFault;
+    } else if (!hostSnapshot.format.available) {
+        stagedStatus.state = AppPlaybackState::Unavailable;
+        stagedStatus.failureReason = AppPlaybackFailureReason::NoAudioDevice;
+    } else {
+        stagedStatus.state = AppPlaybackState::Stopped;
+        stagedStatus.failureReason = AppPlaybackFailureReason::None;
+    }
+    stagedStatus.loopIntentStatus = AppPlaybackLoopIntentStatus::None;
+    stagedStatus.loopIntentMessage.clear();
+    stagedStatus.deviceAvailable = hostSnapshot.format.available;
+    stagedStatus.projectSamplePosition = hostSnapshot.realtime.projectSamplePosition;
+    stagedStatus.renderedSampleCount = hostSnapshot.realtime.renderedSampleCount;
+    stagedStatus.projectSeconds = hostSnapshot.format.sampleRate > 0.0
+        ? static_cast<double>(stagedStatus.projectSamplePosition)
+            / hostSnapshot.format.sampleRate
+        : 0.0;
+    stagedStatus.canStart = stagedStatus.state == AppPlaybackState::Stopped
+        && hostSnapshot.format.available
+        && hostSnapshot.realtime.state == RealtimePlaybackState::Stopped;
+    stagedStatus.stateLabel = stateLabel(stagedStatus.state);
+    stagedStatus.summary = "播放状态：" + stagedStatus.stateLabel
+        + "，位置 " + std::to_string(stagedStatus.projectSamplePosition)
+        + " samples，约 " + secondsText(stagedStatus.projectSeconds) + " 秒。";
+
+    return {
+        std::move(stagedStatus),
+        std::make_shared<detail::AppPlaybackPreparationCompletionState>()
+    };
+}
+
+void AppPlaybackController::commitProjectReplacementReset(
+    detail::AppPlaybackProjectReplacementReset&& reset) noexcept
+{
+    static_assert(std::is_nothrow_swappable_v<AppPlaybackStatus>);
+    using std::swap;
     activePreparationKey_.reset();
     installedPreparationKey_.reset();
     activePreparationUsesLoopIntent_ = false;
@@ -529,26 +571,14 @@ void AppPlaybackController::resetAfterProjectReplacement()
     nextPlaybackStartSample_.reset();
     rewindAfterStop_ = false;
     rewindAfterStopUsesLoopIntent_ = false;
-    {
-        std::scoped_lock lock(completionState_->mailboxMutex);
-        completionState_->mailbox.reset();
-    }
-    completionState_->completionPublished.store(false, std::memory_order_release);
+    completionState_.swap(reset.completionState);
+    swap(status_, reset.status);
+}
 
-    const auto hostSnapshot = host_.snapshot();
-    if (hostSnapshot.realtime.state == RealtimePlaybackState::Faulted) {
-        status_.state = AppPlaybackState::Faulted;
-        status_.failureReason = AppPlaybackFailureReason::DeviceFault;
-    } else if (!hostSnapshot.format.available) {
-        status_.state = AppPlaybackState::Unavailable;
-        status_.failureReason = AppPlaybackFailureReason::NoAudioDevice;
-    } else {
-        status_.state = AppPlaybackState::Stopped;
-        status_.failureReason = AppPlaybackFailureReason::None;
-    }
-    status_.loopIntentStatus = AppPlaybackLoopIntentStatus::None;
-    status_.loopIntentMessage.clear();
-    updateStatusFromHost(hostSnapshot);
+void AppPlaybackController::resetAfterProjectReplacement()
+{
+    auto reset = stageProjectReplacementReset();
+    commitProjectReplacementReset(std::move(reset));
 }
 
 void AppPlaybackController::finishPreparation(

@@ -11,6 +11,7 @@ namespace trackloom {
 
 class AppLoopPlaybackState;
 class AppPlaybackController;
+struct AppProjectObjectSelection;
 
 constexpr std::size_t defaultMaxAppRecentProjects = 8;
 
@@ -82,6 +83,14 @@ AppRecentProjectOpenFeedback openAppRecentProjectByNumber(
     AppProjectSession& session,
     AppPlaybackController& playback,
     AppLoopPlaybackState& loopState,
+    AppRecentProjects& recentProjects,
+    std::size_t number,
+    const std::filesystem::path& settingsPath);
+AppRecentProjectOpenFeedback openAppRecentProjectByNumber(
+    AppProjectSession& session,
+    AppPlaybackController& playback,
+    AppLoopPlaybackState& loopState,
+    AppProjectObjectSelection selection,
     AppRecentProjects& recentProjects,
     std::size_t number,
     const std::filesystem::path& settingsPath);

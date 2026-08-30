@@ -78,6 +78,8 @@ public:
         std::unique_ptr<const trackloom::PreparedMidiPlaybackPlan> plan) override
     {
         std::scoped_lock lock(mutex_);
+        ++installCallCount;
+        installedStartSamples.push_back(plan->playbackStartSample);
         installedPlan_ = std::move(plan);
         snapshot_.realtime.state = trackloom::RealtimePlaybackState::Playing;
         snapshot_.callbackRunning = true;
@@ -115,7 +117,20 @@ public:
     trackloom::RealtimePlaybackHostSnapshot snapshot() const override
     {
         std::scoped_lock lock(mutex_);
+        if (snapshotsUntilThrow_ == 0) {
+            snapshotsUntilThrow_ = -1;
+            throw std::runtime_error("injected host snapshot failure");
+        }
+        if (snapshotsUntilThrow_ > 0) {
+            --snapshotsUntilThrow_;
+        }
         return snapshot_;
+    }
+
+    void throwAfterSuccessfulSnapshots(int count)
+    {
+        std::scoped_lock lock(mutex_);
+        snapshotsUntilThrow_ = count;
     }
 
     void setDeviceAvailable(bool available)
@@ -130,6 +145,20 @@ public:
         snapshot_.realtime.state = state;
     }
 
+    void completeStop()
+    {
+        std::scoped_lock lock(mutex_);
+        snapshot_.realtime.state = trackloom::RealtimePlaybackState::Stopped;
+        snapshot_.callbackRunning = false;
+    }
+
+    void setRealtimePosition(std::int64_t sample)
+    {
+        std::scoped_lock lock(mutex_);
+        snapshot_.realtime.projectSamplePosition = sample;
+        snapshot_.realtime.renderedSampleCount = static_cast<std::uint64_t>(sample);
+    }
+
     void setQuiescenceEvidence(bool callbackRunning, bool planInstalled)
     {
         std::scoped_lock lock(mutex_);
@@ -139,10 +168,13 @@ public:
 
     bool clearCallbackOnReset = true;
     bool clearPlanOnReset = true;
+    int installCallCount = 0;
     int hardResetCallCount = 0;
+    std::vector<std::int64_t> installedStartSamples;
 
 private:
     mutable std::mutex mutex_;
+    mutable int snapshotsUntilThrow_ = -1;
     trackloom::RealtimePlaybackHostSnapshot snapshot_;
     std::unique_ptr<const trackloom::PreparedMidiPlaybackPlan> installedPlan_;
 };
@@ -159,6 +191,11 @@ trackloom::PreparedMidiPlaybackPlanBuildResult makePreparedPlan(
     plan->playbackStartSample = request.playbackStartSample;
     return { trackloom::PreparedMidiPlaybackPlanBuildFailureReason::None,
         std::move(plan) };
+}
+
+trackloom::LoadProjectResult throwDuringProjectLoad(const std::filesystem::path&)
+{
+    throw std::runtime_error("injected project load failure");
 }
 
 void startPlaying(
@@ -185,14 +222,29 @@ struct SessionObservation {
     bool canRedo = false;
     std::uint64_t generation = 0;
     bool loopEnabled = false;
+    trackloom::AppPlaybackState playbackState = trackloom::AppPlaybackState::Stopped;
+    trackloom::AppPlaybackFailureReason playbackFailure =
+        trackloom::AppPlaybackFailureReason::None;
+    bool deviceAvailable = false;
+    bool canStart = false;
+    std::int64_t projectSamplePosition = 0;
+    std::uint64_t renderedSampleCount = 0;
+    double projectSeconds = 0.0;
+    trackloom::AppPlaybackLoopIntentStatus loopIntentStatus =
+        trackloom::AppPlaybackLoopIntentStatus::None;
+    std::string loopIntentMessage;
+    std::string stateLabel;
+    std::string summary;
 
     bool operator==(const SessionObservation&) const = default;
 };
 
 SessionObservation observe(
     const trackloom::AppProjectSession& session,
+    const trackloom::AppPlaybackController& playback,
     const trackloom::AppLoopPlaybackState& loopState)
 {
+    const auto& playbackStatus = playback.status();
     return {
         trackloom::saveProjectToText(session.project()),
         session.currentProjectPath(),
@@ -200,18 +252,56 @@ SessionObservation observe(
         session.canUndoProjectEdit(),
         session.canRedoProjectEdit(),
         session.projectEditGeneration(),
-        loopState.enabled()
+        loopState.enabled(),
+        playbackStatus.state,
+        playbackStatus.failureReason,
+        playbackStatus.deviceAvailable,
+        playbackStatus.canStart,
+        playbackStatus.projectSamplePosition,
+        playbackStatus.renderedSampleCount,
+        playbackStatus.projectSeconds,
+        playbackStatus.loopIntentStatus,
+        playbackStatus.loopIntentMessage,
+        playbackStatus.stateLabel,
+        playbackStatus.summary
     };
 }
+
+struct SelectionFixture {
+    std::string trackId = "selected-track";
+    std::string audioTrackId = "selected-audio-track";
+    std::string audioClipId = "selected-audio-clip";
+    std::string midiClipId = "selected-midi-clip";
+
+    trackloom::AppProjectObjectSelection selection()
+    {
+        return { trackId, audioTrackId, audioClipId, midiClipId };
+    }
+
+    bool unchanged() const
+    {
+        return trackId == "selected-track"
+            && audioTrackId == "selected-audio-track"
+            && audioClipId == "selected-audio-clip"
+            && midiClipId == "selected-midi-clip";
+    }
+
+    bool empty() const
+    {
+        return trackId.empty() && audioTrackId.empty()
+            && audioClipId.empty() && midiClipId.empty();
+    }
+};
 
 void requirePreserved(
     const SessionObservation& before,
     const trackloom::AppProjectSession& session,
+    const trackloom::AppPlaybackController& playback,
     const trackloom::AppLoopPlaybackState& loopState,
     const std::string& scenario)
 {
-    require(observe(session, loopState) == before,
-        scenario + " must preserve project, path, dirty, history, generation, and loop state");
+    require(observe(session, playback, loopState) == before,
+        scenario + " must preserve project, path, dirty, history, generation, loop, and controller status");
 }
 
 void preparePreservedSession(
@@ -249,15 +339,20 @@ void preparingWorkerRejectsReplacementBeforeTouchingTheSession()
         });
     trackloom::AppProjectSession session;
     trackloom::AppLoopPlaybackState loopState;
+    SelectionFixture selection;
     preparePreservedSession(session, loopState, testWorkspace() / "preparing.trackloom");
+    std::latch completionPublished(1);
+    trackloom::detail::setAppPlaybackPreparationPublishedCallbackForTesting(
+        playback, [&] { completionPublished.count_down(); });
     require(trackloom::startAppPlayback(playback, session, loopState).success,
         "preparing rejection fixture must start its worker");
     entered.wait();
-    const auto before = observe(session, loopState);
+    const auto before = observe(session, playback, loopState);
 
     const auto result = trackloom::createNewAppProjectIfSafe(
-        session, playback, loopState, "Rejected");
+        session, playback, loopState, selection.selection(), "Rejected");
     release.count_down();
+    completionPublished.wait();
 
     require(!result.success
             && result.failureReason
@@ -265,7 +360,11 @@ void preparingWorkerRejectsReplacementBeforeTouchingTheSession()
         "an unfinished preparation worker must win replacement classification");
     require(host.hardResetCallCount == 0,
         "worker rejection must happen before host reset");
-    requirePreserved(before, session, loopState, "preparing rejection");
+    requirePreserved(before, session, playback, loopState, "preparing rejection");
+    require(selection.unchanged(), "preparing rejection must preserve Main selection");
+    playback.poll(session, loopState);
+    require(playback.status().state == trackloom::AppPlaybackState::Playing,
+        "preparing rejection must preserve active key and published completion mailbox");
 }
 
 void playingAndStoppingRejectReplacementWithoutMutation()
@@ -275,28 +374,31 @@ void playingAndStoppingRejectReplacementWithoutMutation()
     trackloom::AppPlaybackController playback(host, makePreparedPlan);
     trackloom::AppProjectSession session;
     trackloom::AppLoopPlaybackState loopState;
+    SelectionFixture selection;
     preparePreservedSession(session, loopState, testWorkspace() / "active.trackloom");
     startPlaying(playback, session, loopState);
-    const auto playingBefore = observe(session, loopState);
+    const auto playingBefore = observe(session, playback, loopState);
 
     const auto playingResult = trackloom::createNewAppProjectIfSafe(
-        session, playback, loopState, "Rejected Playing");
+        session, playback, loopState, selection.selection(), "Rejected Playing");
     require(!playingResult.success
             && playingResult.failureReason
                 == trackloom::AppProjectReplacementFailureReason::PlaybackActive,
         "Playing must reject replacement as active playback");
-    requirePreserved(playingBefore, session, loopState, "playing rejection");
+    requirePreserved(playingBefore, session, playback, loopState, "playing rejection");
+    require(selection.unchanged(), "playing rejection must preserve Main selection");
 
     require(trackloom::stopAppPlayback(playback).success,
         "stopping rejection fixture must accept stop");
-    const auto stoppingBefore = observe(session, loopState);
+    const auto stoppingBefore = observe(session, playback, loopState);
     const auto stoppingResult = trackloom::createNewAppProjectIfSafe(
-        session, playback, loopState, "Rejected Stopping");
+        session, playback, loopState, selection.selection(), "Rejected Stopping");
     require(!stoppingResult.success
             && stoppingResult.failureReason
                 == trackloom::AppProjectReplacementFailureReason::PlaybackActive,
         "Stopping must reject replacement as active playback");
-    requirePreserved(stoppingBefore, session, loopState, "stopping rejection");
+    requirePreserved(stoppingBefore, session, playback, loopState, "stopping rejection");
+    require(selection.unchanged(), "stopping rejection must preserve Main selection");
 }
 
 void stoppedControllerRejectsAStillRunningCallbackWithoutMutation()
@@ -306,12 +408,13 @@ void stoppedControllerRejectsAStillRunningCallbackWithoutMutation()
     trackloom::AppPlaybackController playback(host, makePreparedPlan);
     trackloom::AppProjectSession session;
     trackloom::AppLoopPlaybackState loopState;
+    SelectionFixture selection;
     preparePreservedSession(session, loopState, testWorkspace() / "callback.trackloom");
     host.setQuiescenceEvidence(true, true);
-    const auto before = observe(session, loopState);
+    const auto before = observe(session, playback, loopState);
 
     const auto result = trackloom::createNewAppProjectIfSafe(
-        session, playback, loopState, "Rejected Callback");
+        session, playback, loopState, selection.selection(), "Rejected Callback");
 
     require(!result.success
             && result.failureReason
@@ -319,7 +422,8 @@ void stoppedControllerRejectsAStillRunningCallbackWithoutMutation()
         "Stopped controller with a running callback must reject replacement");
     require(host.hardResetCallCount == 0,
         "a running callback must be rejected rather than synchronously reset from Stopped");
-    requirePreserved(before, session, loopState, "running callback rejection");
+    requirePreserved(before, session, playback, loopState, "running callback rejection");
+    require(selection.unchanged(), "callback rejection must preserve Main selection");
 }
 
 void dirtyReadOnlyCheckPrecedesHostQuiescence()
@@ -330,12 +434,13 @@ void dirtyReadOnlyCheckPrecedesHostQuiescence()
     trackloom::AppPlaybackController playback(host, makePreparedPlan);
     trackloom::AppProjectSession session;
     trackloom::AppLoopPlaybackState loopState;
+    SelectionFixture selection;
     preparePreservedSession(session, loopState, testWorkspace() / "dirty.trackloom");
     session.editProject().rename("Dirty Preserved Project");
-    const auto before = observe(session, loopState);
+    const auto before = observe(session, playback, loopState);
 
     const auto result = trackloom::createNewAppProjectIfSafe(
-        session, playback, loopState, "Rejected Dirty");
+        session, playback, loopState, selection.selection(), "Rejected Dirty");
 
     require(!result.success
             && result.failureReason
@@ -343,7 +448,8 @@ void dirtyReadOnlyCheckPrecedesHostQuiescence()
         "dirty project must be classified before playback and host gates");
     require(host.hardResetCallCount == 0,
         "dirty read-only rejection must not release the host plan");
-    requirePreserved(before, session, loopState, "dirty rejection");
+    requirePreserved(before, session, playback, loopState, "dirty rejection");
+    require(selection.unchanged(), "dirty rejection must preserve Main selection");
 }
 
 void stoppedAndUnavailableQuiescentControllersAllowReplacement()
@@ -353,14 +459,17 @@ void stoppedAndUnavailableQuiescentControllersAllowReplacement()
         trackloom::AppPlaybackController playback(host, makePreparedPlan);
         trackloom::AppProjectSession session;
         trackloom::AppLoopPlaybackState loopState;
+        SelectionFixture selection;
 
         const auto result = trackloom::createNewAppProjectIfSafe(
-            session, playback, loopState, "Stopped Replacement");
+            session, playback, loopState, selection.selection(), "Stopped Replacement");
 
         require(result.success && session.project().name() == "Stopped Replacement",
             "quiescent Stopped controller must allow a new project");
         require(playback.status().state == trackloom::AppPlaybackState::Stopped,
             "successful replacement must reset controller presentation to Stopped");
+        require(selection.empty(),
+            "successful replacement must clear every Main selection field in the commit");
     }
 
     FakeRealtimePlaybackHost unavailableHost;
@@ -436,6 +545,7 @@ void failedHardResetRejectsReplacementWithoutMutation()
         trackloom::AppPlaybackController playback(host, makePreparedPlan);
         trackloom::AppProjectSession session;
         trackloom::AppLoopPlaybackState loopState;
+        SelectionFixture selection;
         preparePreservedSession(
             session,
             loopState,
@@ -443,10 +553,10 @@ void failedHardResetRejectsReplacementWithoutMutation()
         host.setRealtimeState(trackloom::RealtimePlaybackState::Faulted);
         host.setQuiescenceEvidence(true, true);
         playback.poll(session, loopState);
-        const auto before = observe(session, loopState);
+        const auto before = observe(session, playback, loopState);
 
         const auto result = trackloom::createNewAppProjectIfSafe(
-            session, playback, loopState, "Rejected Reset");
+            session, playback, loopState, selection.selection(), "Rejected Reset");
 
         require(!result.success
                 && result.failureReason
@@ -455,8 +565,11 @@ void failedHardResetRejectsReplacementWithoutMutation()
         require(host.hardResetCallCount == 1,
             "faulted replacement must attempt exactly one hard reset");
         requirePreserved(
-            before, session, loopState,
+            before, session, playback, loopState,
             std::string("hard reset ") + resetCase.name + " failure");
+        require(selection.unchanged(),
+            std::string("hard reset ") + resetCase.name
+                + " failure must preserve Main selection");
     }
 }
 
@@ -475,6 +588,7 @@ void faultedControllerWithUnfinishedWorkerRejectsBeforeHardReset()
         });
     trackloom::AppProjectSession session;
     trackloom::AppLoopPlaybackState loopState;
+    SelectionFixture selection;
     preparePreservedSession(session, loopState, testWorkspace() / "fault-worker.trackloom");
     require(trackloom::startAppPlayback(playback, session, loopState).success,
         "faulted worker fixture must start preparation");
@@ -482,10 +596,10 @@ void faultedControllerWithUnfinishedWorkerRejectsBeforeHardReset()
     host.setRealtimeState(trackloom::RealtimePlaybackState::Faulted);
     host.setQuiescenceEvidence(true, true);
     playback.poll(session, loopState);
-    const auto before = observe(session, loopState);
+    const auto before = observe(session, playback, loopState);
 
     const auto result = trackloom::createNewAppProjectIfSafe(
-        session, playback, loopState, "Rejected Fault Worker");
+        session, playback, loopState, selection.selection(), "Rejected Fault Worker");
     release.count_down();
 
     require(!result.success
@@ -494,7 +608,8 @@ void faultedControllerWithUnfinishedWorkerRejectsBeforeHardReset()
         "Faulted with an unfinished worker must reject before hard reset");
     require(host.hardResetCallCount == 0,
         "worker-first rejection must not touch the faulted host");
-    requirePreserved(before, session, loopState, "faulted worker rejection");
+    requirePreserved(before, session, playback, loopState, "faulted worker rejection");
+    require(selection.unchanged(), "faulted worker rejection must preserve Main selection");
 }
 
 void asynchronousOpenPerformsASecondGateAtLoadTime()
@@ -509,21 +624,23 @@ void asynchronousOpenPerformsASecondGateAtLoadTime()
     trackloom::AppPlaybackController playback(host, makePreparedPlan);
     trackloom::AppProjectSession session;
     trackloom::AppLoopPlaybackState loopState;
+    SelectionFixture selection;
     preparePreservedSession(session, loopState, testWorkspace() / "async-current.trackloom");
     require(session.save().success, "async current fixture must become clean before chooser gate");
     const auto firstGate = trackloom::prepareAppProjectReplacement(playback);
     require(firstGate.safe, "chooser launch gate must allow the initially stopped host");
 
     startPlaying(playback, session, loopState);
-    const auto before = observe(session, loopState);
+    const auto before = observe(session, playback, loopState);
     const auto secondGate = trackloom::openAppProjectIfSafe(
-        session, playback, loopState, targetPath);
+        session, playback, loopState, selection.selection(), targetPath);
 
     require(!secondGate.success
             && secondGate.failureReason
                 == trackloom::AppProjectReplacementFailureReason::PlaybackActive,
         "load-time gate must reject playback started while the chooser was open");
-    requirePreserved(before, session, loopState, "asynchronous second-gate rejection");
+    requirePreserved(before, session, playback, loopState, "asynchronous second-gate rejection");
+    require(selection.unchanged(), "async second-gate rejection must preserve Main selection");
 }
 
 void openFailurePreservesSessionAndLoopAfterReleasingAResidualPlan()
@@ -534,12 +651,17 @@ void openFailurePreservesSessionAndLoopAfterReleasingAResidualPlan()
     trackloom::AppPlaybackController playback(host, makePreparedPlan);
     trackloom::AppProjectSession session;
     trackloom::AppLoopPlaybackState loopState;
+    SelectionFixture selection;
     preparePreservedSession(session, loopState, testWorkspace() / "load-failure.trackloom");
     require(session.save().success, "load failure fixture must be clean before open");
-    const auto before = observe(session, loopState);
+    const auto before = observe(session, playback, loopState);
 
     const auto result = trackloom::openAppProjectIfSafe(
-        session, playback, loopState, testWorkspace() / "missing.trackloom");
+        session,
+        playback,
+        loopState,
+        selection.selection(),
+        testWorkspace() / "missing.trackloom");
 
     require(!result.success
             && result.failureReason
@@ -547,7 +669,217 @@ void openFailurePreservesSessionAndLoopAfterReleasingAResidualPlan()
         "missing project must report OpenFailed after host quiescence");
     require(host.hardResetCallCount == 1,
         "Stopped host with only a residual plan must hard reset before load");
-    requirePreserved(before, session, loopState, "open failure");
+    requirePreserved(before, session, playback, loopState, "open failure");
+    require(selection.unchanged(), "open failure must preserve Main selection");
+    const auto canonicalBeforeHistoryProbe = trackloom::saveProjectToText(session.project());
+    require(session.undoProjectEdit(),
+        "failed open must retain a real undo command, not only canUndo metadata");
+    require(trackloom::saveProjectToText(session.project()) != canonicalBeforeHistoryProbe,
+        "failed open undo must change the project using the retained command payload");
+    require(session.redoProjectEdit(),
+        "failed open must retain a real redo command payload");
+    require(trackloom::saveProjectToText(session.project()) == canonicalBeforeHistoryProbe,
+        "failed open redo must restore the exact pre-failure project");
+}
+
+void playingFailurePreservesInstalledLoopIntentAndSelection()
+{
+    resetTestWorkspace();
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host, makePreparedPlan);
+    trackloom::AppProjectSession session;
+    trackloom::AppLoopPlaybackState loopState;
+    SelectionFixture selection;
+    require(session.editProject().setPlaybackLoopRange(
+                trackloom::PlaybackLoopRange { 960, 3840 }),
+        "installed intent fixture must establish its first loop");
+    require(loopState.setEnabled(session.project(), true),
+        "installed intent fixture must enable loop playback");
+    startPlaying(playback, session, loopState);
+
+    const auto rejected = trackloom::createNewAppProjectIfSafe(
+        session, playback, loopState, selection.selection(), "Rejected Playing Intent");
+    require(!rejected.success, "playing intent fixture must be rejected");
+    require(selection.unchanged(), "playing rejection must preserve Main selection");
+
+    require(session.editProject().setPlaybackLoopRange(
+                trackloom::PlaybackLoopRange { 1920, 5760 }),
+        "installed intent fixture must accept a changed next-play loop");
+    playback.poll(session, loopState);
+    require(playback.status().loopIntentStatus
+            == trackloom::AppPlaybackLoopIntentStatus::PendingNextPlayback,
+        "playing rejection must preserve installed preparation key and high-level intent");
+}
+
+void stoppingFailurePreservesRewindFlagsAndSelection()
+{
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host, makePreparedPlan);
+    trackloom::AppProjectSession session;
+    trackloom::AppLoopPlaybackState loopState;
+    SelectionFixture selection;
+    startPlaying(playback, session, loopState);
+    require(playback.rewindToStart().success,
+        "rewind preservation fixture must enter Stopping");
+
+    const auto rejected = trackloom::createNewAppProjectIfSafe(
+        session, playback, loopState, selection.selection(), "Rejected Rewind");
+    require(!rejected.success, "Stopping rewind replacement must be rejected");
+    require(selection.unchanged(), "Stopping rejection must preserve Main selection");
+
+    std::latch replayPublished(1);
+    trackloom::detail::setAppPlaybackPreparationPublishedCallbackForTesting(
+        playback, [&] { replayPublished.count_down(); });
+    host.completeStop();
+    playback.poll(session, loopState);
+    replayPublished.wait();
+    playback.poll(session, loopState);
+    require(playback.status().state == trackloom::AppPlaybackState::Playing
+            && host.installCallCount == 2
+            && host.installedStartSamples.back() == 0,
+        "Stopping rejection must preserve rewind flags and execute the queued replay");
+}
+
+void successfulReplacementClearsNextStartAndUsesTheNewCompletionState()
+{
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host, makePreparedPlan);
+    trackloom::AppProjectSession session;
+    trackloom::AppLoopPlaybackState loopState;
+    SelectionFixture selection;
+    host.setRealtimePosition(4096);
+    playback.poll(session, loopState);
+    require(playback.rewindToStart().success,
+        "success reset fixture must establish a zero next-start intent");
+
+    const auto replaced = trackloom::createNewAppProjectIfSafe(
+        session, playback, loopState, selection.selection(), "Replacement Clears Intent");
+    require(replaced.success && selection.empty(),
+        "successful replacement must atomically clear project selection");
+
+    std::latch newCompletionPublished(1);
+    trackloom::detail::setAppPlaybackPreparationPublishedCallbackForTesting(
+        playback, [&] { newCompletionPublished.count_down(); });
+    require(trackloom::startAppPlayback(playback, session, loopState).success,
+        "replacement must accept preparation through its fresh completion state");
+    newCompletionPublished.wait();
+    playback.poll(session, loopState);
+    require(playback.status().state == trackloom::AppPlaybackState::Playing
+            && host.installedStartSamples.back() == 4096,
+        "successful replacement must clear the old zero next-start intent");
+}
+
+void successfulReplacementClearsAQueuedRewindBeforeLaterPlaybackStops()
+{
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host, makePreparedPlan);
+    trackloom::AppProjectSession session;
+    trackloom::AppLoopPlaybackState loopState;
+    SelectionFixture selection;
+    startPlaying(playback, session, loopState);
+    require(playback.rewindToStart().success,
+        "successful rewind reset fixture must queue a replay");
+
+    host.setRealtimeState(trackloom::RealtimePlaybackState::Faulted);
+    playback.poll(session, loopState);
+    require(playback.status().state == trackloom::AppPlaybackState::Faulted,
+        "successful rewind reset fixture must enter the replaceable Faulted state");
+
+    const auto replaced = trackloom::createNewAppProjectIfSafe(
+        session, playback, loopState, selection.selection(), "Replacement Clears Rewind");
+    require(replaced.success && selection.empty(),
+        "Faulted replacement must succeed and clear Main selection");
+
+    host.setRealtimeState(trackloom::RealtimePlaybackState::Stopped);
+    playback.poll(session, loopState);
+    require(playback.status().state == trackloom::AppPlaybackState::Stopped,
+        "the reset controller must recover to Stopped when the host recovers");
+    startPlaying(playback, session, loopState);
+    require(trackloom::stopAppPlayback(playback).success,
+        "post-replacement playback must accept a normal stop");
+    host.completeStop();
+    playback.poll(session, loopState);
+    require(playback.status().state == trackloom::AppPlaybackState::Stopped
+            && host.installCallCount == 2,
+        "successful replacement must clear stale rewind flags instead of replaying later");
+}
+
+void controllerResetStagingExceptionPreservesTheEntireLiveReplacementState()
+{
+    resetTestWorkspace();
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host, makePreparedPlan);
+    trackloom::AppProjectSession session;
+    trackloom::AppLoopPlaybackState loopState;
+    preparePreservedSession(
+        session, loopState, testWorkspace() / "reset-staging-exception.trackloom");
+    const auto before = observe(session, playback, loopState);
+    std::string selectedTrackId = "track-selection";
+    std::string selectedAudioTrackId = "audio-track-selection";
+    std::string selectedAudioClipId = "audio-clip-selection";
+    std::string selectedMidiClipId = "midi-clip-selection";
+    trackloom::AppProjectObjectSelection selection {
+        selectedTrackId,
+        selectedAudioTrackId,
+        selectedAudioClipId,
+        selectedMidiClipId
+    };
+
+    // prepareForProjectReplacement consumes the first snapshot. The next snapshot
+    // is the controller success-reset staging read and must occur before commit.
+    host.throwAfterSuccessfulSnapshots(1);
+    const auto result = trackloom::createNewAppProjectIfSafe(
+        session, playback, loopState, selection, "Must Not Commit");
+
+    require(!result.success
+            && result.failureReason
+                == trackloom::AppProjectReplacementFailureReason::OpenFailed,
+        "a recoverable controller reset staging exception must become failure feedback");
+    requirePreserved(before, session, playback, loopState, "controller reset staging exception");
+    require(selectedTrackId == "track-selection"
+            && selectedAudioTrackId == "audio-track-selection"
+            && selectedAudioClipId == "audio-clip-selection"
+            && selectedMidiClipId == "midi-clip-selection",
+        "replacement staging failure must preserve every Main selection field");
+}
+
+void loadExceptionPreservesTheEntireLiveReplacementState()
+{
+    resetTestWorkspace();
+    FakeRealtimePlaybackHost host;
+    trackloom::AppPlaybackController playback(host, makePreparedPlan);
+    trackloom::AppProjectSession session(
+        trackloom::saveProjectToFileAtomically, throwDuringProjectLoad);
+    trackloom::AppLoopPlaybackState loopState;
+    SelectionFixture selection;
+    preparePreservedSession(
+        session, loopState, testWorkspace() / "load-exception.trackloom");
+    const auto before = observe(session, playback, loopState);
+
+    const auto result = trackloom::openAppProjectIfSafe(
+        session,
+        playback,
+        loopState,
+        selection.selection(),
+        testWorkspace() / "throwing-load.trackloom");
+
+    require(!result.success
+            && result.failureReason
+                == trackloom::AppProjectReplacementFailureReason::OpenFailed,
+        "a recoverable loader exception must become failure feedback");
+    requirePreserved(before, session, playback, loopState, "loader exception");
+    require(selection.unchanged(),
+        "loader exception must preserve every Main selection field");
+
+    const auto canonicalBeforeHistoryProbe = trackloom::saveProjectToText(session.project());
+    require(session.undoProjectEdit(),
+        "loader exception must retain the real undo command payload");
+    require(trackloom::saveProjectToText(session.project()) != canonicalBeforeHistoryProbe,
+        "loader exception undo must execute the retained command");
+    require(session.redoProjectEdit(),
+        "loader exception must retain the real redo command payload");
+    require(trackloom::saveProjectToText(session.project()) == canonicalBeforeHistoryProbe,
+        "loader exception redo must restore the exact project");
 }
 
 void recentProjectsReorderOnlyAfterARealSuccessfulOpen()
@@ -565,27 +897,30 @@ void recentProjectsReorderOnlyAfterARealSuccessfulOpen()
     trackloom::AppProjectSession session;
     trackloom::AppLoopPlaybackState loopState;
     trackloom::AppRecentProjects recent;
+    SelectionFixture selection;
     recent.record(existingPath);
     recent.record(missingPath);
     const auto beforeFailure = recent.paths();
-    const auto sessionBeforeFailure = observe(session, loopState);
+    const auto sessionBeforeFailure = observe(session, playback, loopState);
 
     const auto failed = trackloom::openAppRecentProjectByNumber(
-        session, playback, loopState, recent, 1, settingsPath);
+        session, playback, loopState, selection.selection(), recent, 1, settingsPath);
     require(!failed.success
             && failed.kind == trackloom::AppRecentProjectOpenFeedbackKind::OpenFailed,
         "missing recent project must fail through the replacement gate");
     require(recent.paths() == beforeFailure,
         "failed recent open must not change in-memory ordering");
     requirePreserved(
-        sessionBeforeFailure, session, loopState, "failed recent open");
+        sessionBeforeFailure, session, playback, loopState, "failed recent open");
+    require(selection.unchanged(), "failed recent open must preserve Main selection");
 
     const auto succeeded = trackloom::openAppRecentProjectByNumber(
-        session, playback, loopState, recent, 2, settingsPath);
+        session, playback, loopState, selection.selection(), recent, 2, settingsPath);
     require(succeeded.success && session.project().name() == "Recent Success",
         "existing recent project must open through the replacement gate");
     require(recent.paths().size() == 2 && recent.paths()[0] == existingPath,
         "only a successful recent open may promote its path");
+    require(selection.empty(), "successful recent open must clear Main selection");
 }
 
 void fileMenuDisablesEveryReplacementEntryDuringObviousActiveStates()
@@ -652,6 +987,12 @@ int main()
         faultedControllerWithUnfinishedWorkerRejectsBeforeHardReset();
         asynchronousOpenPerformsASecondGateAtLoadTime();
         openFailurePreservesSessionAndLoopAfterReleasingAResidualPlan();
+        playingFailurePreservesInstalledLoopIntentAndSelection();
+        stoppingFailurePreservesRewindFlagsAndSelection();
+        successfulReplacementClearsNextStartAndUsesTheNewCompletionState();
+        successfulReplacementClearsAQueuedRewindBeforeLaterPlaybackStops();
+        controllerResetStagingExceptionPreservesTheEntireLiveReplacementState();
+        loadExceptionPreservesTheEntireLiveReplacementState();
         recentProjectsReorderOnlyAfterARealSuccessfulOpen();
         fileMenuDisablesEveryReplacementEntryDuringObviousActiveStates();
     } catch (const std::exception& error) {

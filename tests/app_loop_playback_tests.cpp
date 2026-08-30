@@ -67,6 +67,8 @@ public:
         snapshot_.realtime.projectSamplePosition = plan->playbackStartSample;
         snapshot_.realtime.renderedSampleCount = 0;
         snapshot_.realtime.state = trackloom::RealtimePlaybackState::Playing;
+        snapshot_.callbackRunning = true;
+        snapshot_.planInstalled = true;
         installedPlan = std::move(plan);
         return installResult;
     }
@@ -85,6 +87,9 @@ public:
     {
         std::scoped_lock lock(mutex_);
         ++serviceCallCount;
+        if (snapshot_.realtime.state == trackloom::RealtimePlaybackState::Stopped) {
+            snapshot_.callbackRunning = false;
+        }
     }
 
     void hardStopAndReset() noexcept override
@@ -92,6 +97,9 @@ public:
         std::scoped_lock lock(mutex_);
         ++hardResetCallCount;
         snapshot_.realtime.state = trackloom::RealtimePlaybackState::Stopped;
+        snapshot_.callbackRunning = false;
+        snapshot_.planInstalled = false;
+        installedPlan.reset();
     }
 
     trackloom::RealtimePlaybackHostSnapshot snapshot() const override
@@ -151,6 +159,37 @@ trackloom::PreparedMidiPlaybackPlanBuildResult makeFakePreparedPlan(
     plan->outputChannelMask = request.outputChannelMask;
     plan->playbackStartSample = request.playbackStartSample;
     return { trackloom::PreparedMidiPlaybackPlanBuildFailureReason::None, std::move(plan) };
+}
+
+void fakeRealtimePlaybackHostMirrorsThePublicQuiescenceContract()
+{
+    FakeRealtimePlaybackHost host;
+    trackloom::PreparedMidiPlaybackPlanBuildRequest request;
+    request.sampleRate = 48000.0;
+    request.maximumBlockFrames = 256;
+    request.outputChannelCount = 2;
+    request.outputChannelMask = 3;
+    auto built = makeFakePreparedPlan(request);
+    require(host.installAndStart(std::move(built.plan)).success,
+        "fake contract fixture must install its plan");
+    require(host.snapshot().callbackRunning && host.snapshot().planInstalled
+            && host.installedPlan != nullptr,
+        "fake install/start must publish callback=true and plan=true ownership");
+
+    require(host.requestStop(), "fake contract fixture must accept stop");
+    host.completeStop();
+    require(host.snapshot().callbackRunning && host.snapshot().planInstalled,
+        "fake runtime Stopped before service must retain callback and plan evidence");
+
+    host.serviceNonRealtime();
+    require(!host.snapshot().callbackRunning && host.snapshot().planInstalled
+            && host.installedPlan != nullptr,
+        "fake service must stop callback while retaining lazy plan ownership");
+
+    host.hardStopAndReset();
+    require(!host.snapshot().callbackRunning && !host.snapshot().planInstalled
+            && host.installedPlan == nullptr,
+        "fake hard reset must clear callback, plan evidence, and owned plan");
 }
 
 void pollUntilSettled(
@@ -732,6 +771,7 @@ int main()
 {
     configureTestFailureOutput();
     try {
+        fakeRealtimePlaybackHostMirrorsThePublicQuiescenceContract();
         loopStartResolutionUsesTheHalfOpenConvertedSampleRange();
         loopStartResolutionUsesTheProjectTempoMap();
         loopStartResolutionClassifiesInvalidSampleRatesFirst();

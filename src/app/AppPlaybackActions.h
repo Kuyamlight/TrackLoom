@@ -126,6 +126,11 @@ struct AppPlaybackPreparationCompletionState {
     std::function<void()> completionPublishedCallbackForTesting;
 };
 
+struct AppPlaybackProjectReplacementReset {
+    AppPlaybackStatus status;
+    std::shared_ptr<AppPlaybackPreparationCompletionState> completionState;
+};
+
 void runAppPlaybackPreparationBuild(
     const std::shared_ptr<AppPlaybackPreparationCompletionState>& completionState,
     PreparedMidiPlaybackPlanBuildRequest request,
@@ -155,6 +160,9 @@ public:
     AppPlaybackActionFeedback stop();
     AppPlaybackActionFeedback rewindToStart();
     AppProjectReplacementSafety prepareForProjectReplacement();
+    detail::AppPlaybackProjectReplacementReset stageProjectReplacementReset() const;
+    void commitProjectReplacementReset(
+        detail::AppPlaybackProjectReplacementReset&& reset) noexcept;
     void resetAfterProjectReplacement();
     void poll(
         const AppProjectSession& session,
