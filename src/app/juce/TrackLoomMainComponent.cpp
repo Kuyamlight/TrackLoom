@@ -14,12 +14,14 @@
 #include "AppProjectReplacementActions.h"
 #include "AppProjectStatus.h"
 #include "AppTimelineStatus.h"
+#include "AppTimelineCanvasStatus.h"
 #include "AppTrackActions.h"
 #include "AppTrackListStatus.h"
 #include "AppTrackStateActions.h"
 #include "TrackLoomAppInfo.h"
 #include "JuceAudioHost.h"
 #include "TrackLoomMainComponent.h"
+#include "TimelineLoopEditorComponent.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -235,6 +237,7 @@ public:
         , audioSettingsPath_(std::move(dependencies.audioSettingsPath))
         , loadAudioSettings_(std::move(dependencies.loadAudioSettings))
         , saveAudioSettings_(std::move(dependencies.saveAudioSettings))
+        , openProjectChooser_(std::move(dependencies.chooseProjectToOpen))
         , presentAudioSettings_(std::move(dependencies.presentAudioSettings))
         , titleChanged_(std::move(dependencies.titleChanged))
         , recentProjectsSettingsPath_(appRecentProjectsSettingsPath())
@@ -243,6 +246,13 @@ public:
         , customShortcutBindings_(trackloom::loadAppShortcutCustomBindings(shortcutSettingsPath_))
         , shortcutCustomization_(trackloom::customizeAppShortcutBindings(customShortcutBindings_))
         , menuBar_(this)
+        , timelineLoopEditor_({
+              [this](std::string clipId) { selectMidiClipById(clipId); },
+              {},
+              {},
+              [this](trackloom::AppTimelineVisibleTickRange range) {
+                  refreshTimelineCanvas(range);
+              } })
     {
         // 首屏现在绑定真实 AppProjectSession；后续文件选择器和时间线 UI 继续沿着这个会话入口扩展。
         titleLabel_.setFont(juce::FontOptions(30.0f, juce::Font::bold));
@@ -305,6 +315,7 @@ public:
         targetMidiClipBox_.setColour(juce::ComboBox::textColourId, juce::Colour(0xfff2f0e8));
         targetMidiClipBox_.setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff3a463c));
         targetMidiClipBox_.setColour(juce::ComboBox::arrowColourId, juce::Colour(0xff6ccf8d));
+        targetMidiClipBox_.setComponentID(trackloom::mainMidiClipSelectorComponentId);
 
         clipNameLabel_.setText(toJuceString("片段名称"), juce::dontSendNotification);
         clipNameLabel_.setFont(juce::FontOptions(15.0f));
@@ -333,8 +344,6 @@ public:
         recentProjectBox_.setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff3a463c));
         recentProjectBox_.setColour(juce::ComboBox::arrowColourId, juce::Colour(0xff6ccf8d));
 
-        styleReadOnlyTextEditor(trackListText_);
-        styleReadOnlyTextEditor(timelineText_);
         styleReadOnlyTextEditor(recentProjectsText_);
 
         commandPaletteBackground_.setColour(juce::Label::backgroundColourId, juce::Colour(0xff1d211e));
@@ -386,6 +395,25 @@ public:
         saveProjectButton_.setComponentID(trackloom::mainSaveButtonComponentId);
         playProjectButton_.setComponentID(trackloom::mainPlayButtonComponentId);
         playbackStatusLabel_.setComponentID(trackloom::mainPlaybackStatusComponentId);
+        addInstrumentTrackButton_.setComponentID(trackloom::mainAddInstrumentTrackButtonComponentId);
+        createMidiClipButton_.setComponentID(trackloom::mainCreateMidiClipButtonComponentId);
+        setLoopButton_.setButtonText(toJuceString("设置循环"));
+        clearLoopButton_.setButtonText(toJuceString("清除循环"));
+        loopToggle_.setButtonText(toJuceString("循环"));
+        loopIntentStatusLabel_.setText(toJuceString("循环控制 D2 预留"), juce::dontSendNotification);
+        midiEditorToggle_.setButtonText(toJuceString("MIDI 编辑器"));
+        midiEditorPlaceholder_.setText(toJuceString("D3 预留，尚未实现"), juce::dontSendNotification);
+        midiEditorPlaceholder_.setJustificationType(juce::Justification::centred);
+        setLoopButton_.setComponentID(trackloom::mainSetLoopButtonComponentId);
+        clearLoopButton_.setComponentID(trackloom::mainClearLoopButtonComponentId);
+        loopToggle_.setComponentID(trackloom::mainLoopToggleComponentId);
+        loopIntentStatusLabel_.setComponentID(trackloom::mainLoopIntentStatusComponentId);
+        inspectorViewport_.setComponentID(trackloom::mainInspectorViewportComponentId);
+        midiEditorToggle_.setComponentID(trackloom::mainMidiEditorToggleComponentId);
+        midiEditorPlaceholder_.setComponentID(trackloom::mainMidiEditorPlaceholderComponentId);
+        setLoopButton_.setEnabled(false);
+        clearLoopButton_.setEnabled(false);
+        loopToggle_.setEnabled(false);
         createMidiClipButton_.setButtonText(toJuceString("创建 MIDI 片段"));
         createAudioClipButton_.setButtonText(toJuceString("创建音频片段"));
         deleteAudioTrackButton_.setButtonText(toJuceString("删除音频轨"));
@@ -495,6 +523,7 @@ public:
         renameMidiClipButton_.onClick = [this] { renameSelectedMidiClip(); };
         clipNameEditor_.onReturnKey = [this] { renameSelectedMidiClip(); };
         openRecentProjectButton_.onClick = [this] { openSelectedRecentProject(); };
+        midiEditorToggle_.onStateChange = [this] { resized(); };
         commandPaletteQueryEditor_.onTextChange = [this] { updateCommandPaletteQueryFromUi(); };
         commandPaletteQueryEditor_.onReturnKey = [this] { activateCommandPaletteSelectionFromUi(); };
         commandPaletteQueryEditor_.onEscapeKey = [this] { closeCommandPaletteFromUi(); };
@@ -506,6 +535,14 @@ public:
         addAndMakeVisible(playbackStatusLabel_);
         addAndMakeVisible(trackSummaryLabel_);
         addAndMakeVisible(actionLabel_);
+        addAndMakeVisible(timelineLoopEditor_);
+        addAndMakeVisible(inspectorViewport_);
+        addAndMakeVisible(midiEditorToggle_);
+        addAndMakeVisible(midiEditorPlaceholder_);
+        addAndMakeVisible(setLoopButton_);
+        addAndMakeVisible(clearLoopButton_);
+        addAndMakeVisible(loopToggle_);
+        addAndMakeVisible(loopIntentStatusLabel_);
         addAndMakeVisible(targetTrackLabel_);
         addAndMakeVisible(targetTrackBox_);
         addAndMakeVisible(targetAudioTrackLabel_);
@@ -519,10 +556,6 @@ public:
         addAndMakeVisible(targetMidiClipBox_);
         addAndMakeVisible(clipNameLabel_);
         addAndMakeVisible(clipNameEditor_);
-        addAndMakeVisible(trackListTitleLabel_);
-        addAndMakeVisible(trackListText_);
-        addAndMakeVisible(timelineTitleLabel_);
-        addAndMakeVisible(timelineText_);
         addAndMakeVisible(recentProjectsTitleLabel_);
         addAndMakeVisible(recentProjectLabel_);
         addAndMakeVisible(recentProjectBox_);
@@ -592,6 +625,9 @@ public:
         }
         addAndMakeVisible(commandPaletteEmptyLabel_);
 
+        inspectorViewport_.setViewedComponent(&inspectorContent_, false);
+        reparentInspectorControls();
+
         // MainComponent 主动获取键盘焦点后，Space 键才能先交给 keyPressed 处理。
         setWantsKeyboardFocus(true);
         if (!shortcutCustomization_.conflicts.empty()) {
@@ -601,7 +637,13 @@ public:
         playback_.poll(session_, loopState_);
         refreshFromSession();
         startTimerHz(30);
-        setSize(1040, 920);
+        setSize(trackloom::trackLoomMainDefaultWidth, trackloom::trackLoomMainDefaultHeight);
+    }
+
+    ~TrackLoomMainComponentImpl() override
+    {
+        timelineLoopEditor_.cancelLoopDrag();
+        inspectorViewport_.setViewedComponent(nullptr, false);
     }
 
     void paint(juce::Graphics& graphics) override
@@ -612,8 +654,116 @@ public:
         graphics.fillRect(0, 0, getWidth(), 4);
     }
 
+    std::vector<juce::Component*> inspectorControls()
+    {
+        return {
+            &targetTrackLabel_, &targetTrackBox_, &trackNameLabel_, &trackNameEditor_,
+            &addInstrumentTrackButton_, &deleteInstrumentTrackButton_, &moveTrackUpButton_,
+            &moveTrackDownButton_, &renameTrackButton_, &muteTrackButton_, &soloTrackButton_,
+            &disableTrackButton_, &hideTrackButton_, &createMidiClipButton_,
+            &targetMidiClipLabel_, &targetMidiClipBox_, &clipNameLabel_, &clipNameEditor_,
+            &addMidiNoteButton_, &deleteMidiNoteButton_, &duplicateMidiNoteButton_,
+            &raiseMidiNotePitchButton_, &lowerMidiNotePitchButton_, &increaseMidiNoteVelocityButton_,
+            &decreaseMidiNoteVelocityButton_, &lengthenMidiNoteButton_, &shortenMidiNoteButton_,
+            &moveMidiNoteEarlierButton_, &moveMidiNoteLaterButton_, &duplicateMidiClipButton_,
+            &splitMidiClipButton_, &moveMidiClipLeftButton_, &moveMidiClipRightButton_,
+            &moveMidiClipToTrackButton_, &trimMidiClipStartButton_, &extendMidiClipStartButton_,
+            &trimMidiClipEndButton_, &extendMidiClipEndButton_, &deleteMidiClipButton_,
+            &renameMidiClipButton_, &targetAudioTrackLabel_, &targetAudioTrackBox_,
+            &createAudioClipButton_, &addAudioTrackButton_, &deleteAudioTrackButton_,
+            &addFolderTrackButton_, &targetAudioClipLabel_, &targetAudioClipBox_,
+            &audioClipNameEditor_, &deleteAudioClipButton_, &renameAudioClipButton_,
+            &duplicateAudioClipButton_, &splitAudioClipButton_, &moveAudioClipToTrackButton_,
+            &moveAudioClipLeftButton_, &moveAudioClipRightButton_, &trimAudioClipEndButton_,
+            &extendAudioClipEndButton_, &trimAudioClipStartButton_, &extendAudioClipStartButton_,
+            &recentProjectsTitleLabel_, &recentProjectLabel_, &recentProjectBox_,
+            &openRecentProjectButton_, &recentProjectsText_
+        };
+    }
+
+    void reparentInspectorControls()
+    {
+        for (auto* control : inspectorControls()) {
+            inspectorContent_.addAndMakeVisible(*control);
+        }
+    }
+
+    void layoutA()
+    {
+        auto bounds = getLocalBounds().reduced(16);
+        menuBar_.setBounds(bounds.removeFromTop(24));
+        bounds.removeFromTop(6);
+        titleLabel_.setBounds(bounds.removeFromTop(32));
+        statusLabel_.setBounds(bounds.removeFromTop(24));
+        playbackStatusLabel_.setBounds(bounds.removeFromTop(22));
+        trackSummaryLabel_.setBounds(bounds.removeFromTop(22));
+        actionLabel_.setBounds(bounds.removeFromTop(22));
+        bounds.removeFromTop(6);
+
+        auto transport = bounds.removeFromTop(34);
+        const auto placeTransport = [&](juce::Component& component, int width) {
+            component.setBounds(transport.removeFromLeft(width));
+            transport.removeFromLeft(6);
+        };
+        placeTransport(newProjectButton_, 82);
+        placeTransport(openProjectButton_, 82);
+        placeTransport(saveProjectButton_, 64);
+        placeTransport(saveAsProjectButton_, 76);
+        placeTransport(playProjectButton_, 62);
+        placeTransport(stopProjectButton_, 62);
+        placeTransport(rewindProjectButton_, 80);
+        placeTransport(setLoopButton_, 72);
+        placeTransport(clearLoopButton_, 72);
+        placeTransport(loopToggle_, 58);
+        loopIntentStatusLabel_.setBounds(transport);
+        bounds.removeFromTop(8);
+
+        const auto bottomHeight = midiEditorToggle_.getToggleState() ? 24 : 144;
+        auto mainArea = bounds.removeFromTop(std::max(0, bounds.getHeight() - bottomHeight - 8));
+        auto inspectorArea = mainArea.removeFromRight(std::min(360, std::max(260, mainArea.getWidth() / 3)));
+        mainArea.removeFromRight(10);
+        timelineLoopEditor_.setBounds(mainArea);
+        inspectorViewport_.setBounds(inspectorArea);
+
+        midiEditorToggle_.setBounds(bounds.removeFromTop(24));
+        midiEditorPlaceholder_.setVisible(!midiEditorToggle_.getToggleState());
+        if (midiEditorPlaceholder_.isVisible()) {
+            midiEditorPlaceholder_.setBounds(bounds);
+        } else {
+            midiEditorPlaceholder_.setBounds({});
+        }
+
+        auto contentBounds = inspectorViewport_.getLocalBounds().reduced(10, 8);
+        const auto contentWidth = std::max(1, contentBounds.getWidth() - inspectorViewport_.getScrollBarThickness());
+        int y = 8;
+        for (auto* control : inspectorControls()) {
+            control->setBounds(10, y, contentWidth, 28);
+            y += 36;
+        }
+        inspectorContent_.setSize(contentWidth + 20, y + 8);
+
+        const auto paletteWidth = std::max(320, std::min(720, getWidth() - 80));
+        juce::Rectangle<int> paletteBounds((getWidth() - paletteWidth) / 2, 76, paletteWidth, 292);
+        commandPaletteBackground_.setBounds(paletteBounds);
+        commandPalettePanel_.setBounds(paletteBounds);
+        auto paletteInner = paletteBounds.reduced(18);
+        auto paletteTitleRow = paletteInner.removeFromTop(24);
+        commandPaletteRangeLabel_.setBounds(paletteTitleRow.removeFromRight(150));
+        commandPaletteTitleLabel_.setBounds(paletteTitleRow);
+        paletteInner.removeFromTop(8);
+        commandPaletteQueryEditor_.setBounds(paletteInner.removeFromTop(34));
+        paletteInner.removeFromTop(10);
+        for (auto& rowLabel : commandPaletteRowLabels_) {
+            rowLabel.setBounds(paletteInner.removeFromTop(28));
+            paletteInner.removeFromTop(4);
+        }
+        commandPaletteEmptyLabel_.setBounds(commandPaletteRowLabels_.front().getBounds());
+    }
+
     void resized() override
     {
+        layoutA();
+        return;
         auto bounds = getLocalBounds().reduced(40);
         menuBar_.setBounds(bounds.removeFromTop(24));
         bounds.removeFromTop(10);
@@ -1385,7 +1535,11 @@ private:
     void requestNewProject()
     {
         const auto result = trackloom::createNewAppProjectIfSafe(
-            session_, playback_, loopState_, projectObjectSelection(), "Untitled");
+            session_, playback_, loopState_, "Untitled");
+        if (result.success) {
+            clearObjectSelectionsForProjectReplacement();
+            timelineLoopEditor_.cancelLoopDrag();
+        }
         lastActionMessage_ = result.message;
         refreshFromSession();
     }
@@ -1405,6 +1559,17 @@ private:
             return;
         }
 
+        const juce::Component::SafePointer<TrackLoomMainComponentImpl> safeThis(this);
+        const auto completion = [safeThis](std::optional<std::filesystem::path> path) {
+            if (safeThis != nullptr) {
+                safeThis->finishOpenProjectChoice(std::move(path));
+            }
+        };
+        if (openProjectChooser_) {
+            openProjectChooser_(completion);
+            return;
+        }
+
         // FileChooser 必须活到异步回调结束；成员指针保证弹窗生命周期不短于回调。
         fileChooser_ = std::make_unique<juce::FileChooser>(
             toJuceString("打开 TrackLoom 工程"),
@@ -1414,13 +1579,13 @@ private:
             false,
             this);
 
-        const juce::Component::SafePointer<TrackLoomMainComponentImpl> safeThis(this);
         fileChooser_->launchAsync(
             juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-            [safeThis](const juce::FileChooser& chooser) {
-                if (safeThis != nullptr) {
-                    safeThis->finishOpenProjectChoice(chooser);
-                }
+            [completion](const juce::FileChooser& chooser) {
+                const auto selected = chooser.getResult();
+                completion(selected.getFullPathName().isEmpty()
+                    ? std::optional<std::filesystem::path> {}
+                    : std::optional<std::filesystem::path>(juceFileToPath(selected)));
             });
     }
 
@@ -1458,10 +1623,9 @@ private:
             });
     }
 
-    void finishOpenProjectChoice(const juce::FileChooser& chooser)
+    void finishOpenProjectChoice(std::optional<std::filesystem::path> selectedPath)
     {
-        const auto selectedFile = chooser.getResult();
-        if (selectedFile.getFullPathName().isEmpty()) {
+        if (!selectedPath.has_value()) {
             setFileActionFeedback(trackloom::describeCanceledAppProjectFileAction(
                 trackloom::AppProjectFileAction::Open));
             return;
@@ -1471,9 +1635,10 @@ private:
             session_,
             playback_,
             loopState_,
-            projectObjectSelection(),
-            juceFileToPath(selectedFile));
+            *selectedPath);
         if (openResult.success) {
+            clearObjectSelectionsForProjectReplacement();
+            timelineLoopEditor_.cancelLoopDrag();
             recordCurrentProjectAsRecent();
         }
         lastActionMessage_ = openResult.message;
@@ -1585,11 +1750,32 @@ private:
         const auto selectedId = targetMidiClipBox_.getSelectedId();
         if (selectedId <= 0
             || static_cast<std::size_t>(selectedId) > selectableMidiClipIds_.size()) {
-            selectedMidiClipId_.clear();
+            selectMidiClipById({});
             return;
         }
 
-        selectedMidiClipId_ = selectableMidiClipIds_[static_cast<std::size_t>(selectedId - 1)];
+        selectMidiClipById(selectableMidiClipIds_[static_cast<std::size_t>(selectedId - 1)]);
+    }
+
+    void selectMidiClipById(std::string_view clipId)
+    {
+        const std::string requestedClipId(clipId);
+        const auto clip = session_.project().findClipById(requestedClipId);
+        if (clipId.empty() || !clip.has_value() || clip->type != trackloom::ClipType::Midi) {
+            selectedMidiClipId_.clear();
+        } else {
+            selectedMidiClipId_ = requestedClipId;
+        }
+
+        int selectedItem = 0;
+        for (std::size_t index = 0; index < selectableMidiClipIds_.size(); ++index) {
+            if (selectableMidiClipIds_[index] == selectedMidiClipId_) {
+                selectedItem = static_cast<int>(index + 1);
+                break;
+            }
+        }
+        targetMidiClipBox_.setSelectedId(selectedItem, juce::dontSendNotification);
+        timelineLoopEditor_.setSelectedMidiClipId(selectedMidiClipId_);
     }
 
     void updateSelectedRecentProjectFromComboBox()
@@ -1786,7 +1972,7 @@ private:
         const auto feedback = trackloom::createDefaultMidiClipOnTrack(session_, targetTrackId);
         if (feedback.success) {
             selectedTrackId_ = targetTrackId;
-            selectedMidiClipId_ = feedback.clipId;
+            selectMidiClipById(feedback.clipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2026,7 +2212,7 @@ private:
         const auto feedback = trackloom::deleteInstrumentTrackById(session_, targetTrackId);
         if (feedback.success && selectedTrackId_ == targetTrackId) {
             selectedTrackId_.clear();
-            selectedMidiClipId_.clear();
+            selectMidiClipById({});
         }
 
         lastActionMessage_ = feedback.message;
@@ -2151,7 +2337,7 @@ private:
         const auto targetClipId = selectedMidiClipId_;
         const auto feedback = trackloom::createDefaultMidiNoteInClip(session_, targetClipId);
         if (feedback.success) {
-            selectedMidiClipId_ = targetClipId;
+            selectMidiClipById(targetClipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2169,7 +2355,7 @@ private:
         const auto targetClipId = selectedMidiClipId_;
         const auto feedback = trackloom::deleteLastMidiNoteInClip(session_, targetClipId);
         if (feedback.success) {
-            selectedMidiClipId_ = targetClipId;
+            selectMidiClipById(targetClipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2187,7 +2373,7 @@ private:
         const auto targetClipId = selectedMidiClipId_;
         const auto feedback = trackloom::duplicateLastMidiNoteInClip(session_, targetClipId);
         if (feedback.success) {
-            selectedMidiClipId_ = targetClipId;
+            selectMidiClipById(targetClipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2205,7 +2391,7 @@ private:
         const auto targetClipId = selectedMidiClipId_;
         const auto feedback = trackloom::raiseLastMidiNotePitchInClip(session_, targetClipId);
         if (feedback.success) {
-            selectedMidiClipId_ = targetClipId;
+            selectMidiClipById(targetClipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2223,7 +2409,7 @@ private:
         const auto targetClipId = selectedMidiClipId_;
         const auto feedback = trackloom::lowerLastMidiNotePitchInClip(session_, targetClipId);
         if (feedback.success) {
-            selectedMidiClipId_ = targetClipId;
+            selectMidiClipById(targetClipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2241,7 +2427,7 @@ private:
         const auto targetClipId = selectedMidiClipId_;
         const auto feedback = trackloom::increaseLastMidiNoteVelocityInClip(session_, targetClipId);
         if (feedback.success) {
-            selectedMidiClipId_ = targetClipId;
+            selectMidiClipById(targetClipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2259,7 +2445,7 @@ private:
         const auto targetClipId = selectedMidiClipId_;
         const auto feedback = trackloom::decreaseLastMidiNoteVelocityInClip(session_, targetClipId);
         if (feedback.success) {
-            selectedMidiClipId_ = targetClipId;
+            selectMidiClipById(targetClipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2277,7 +2463,7 @@ private:
         const auto targetClipId = selectedMidiClipId_;
         const auto feedback = trackloom::lengthenLastMidiNoteInClip(session_, targetClipId);
         if (feedback.success) {
-            selectedMidiClipId_ = targetClipId;
+            selectMidiClipById(targetClipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2295,7 +2481,7 @@ private:
         const auto targetClipId = selectedMidiClipId_;
         const auto feedback = trackloom::shortenLastMidiNoteInClip(session_, targetClipId);
         if (feedback.success) {
-            selectedMidiClipId_ = targetClipId;
+            selectMidiClipById(targetClipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2313,7 +2499,7 @@ private:
         const auto targetClipId = selectedMidiClipId_;
         const auto feedback = trackloom::moveLastMidiNoteStartEarlierInClip(session_, targetClipId);
         if (feedback.success) {
-            selectedMidiClipId_ = targetClipId;
+            selectMidiClipById(targetClipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2331,7 +2517,7 @@ private:
         const auto targetClipId = selectedMidiClipId_;
         const auto feedback = trackloom::moveLastMidiNoteStartLaterInClip(session_, targetClipId);
         if (feedback.success) {
-            selectedMidiClipId_ = targetClipId;
+            selectMidiClipById(targetClipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2351,7 +2537,7 @@ private:
             selectedMidiClipId_,
             juceStringToUtf8(clipNameEditor_.getText()));
         if (feedback.success) {
-            selectedMidiClipId_ = feedback.clipId;
+            selectMidiClipById(feedback.clipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2368,7 +2554,7 @@ private:
 
         const auto feedback = trackloom::splitMidiClipAtMidpoint(session_, selectedMidiClipId_);
         if (feedback.success) {
-            selectedMidiClipId_ = feedback.clipId;
+            selectMidiClipById(feedback.clipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2385,7 +2571,7 @@ private:
 
         const auto feedback = trackloom::moveMidiClipLeftOneBeat(session_, selectedMidiClipId_);
         if (feedback.success) {
-            selectedMidiClipId_ = feedback.clipId;
+            selectMidiClipById(feedback.clipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2402,7 +2588,7 @@ private:
 
         const auto feedback = trackloom::moveMidiClipRightOneBeat(session_, selectedMidiClipId_);
         if (feedback.success) {
-            selectedMidiClipId_ = feedback.clipId;
+            selectMidiClipById(feedback.clipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2427,7 +2613,7 @@ private:
         const auto feedback = trackloom::moveMidiClipToTrack(session_, selectedMidiClipId_, targetTrackId);
         if (feedback.success) {
             selectedTrackId_ = targetTrackId;
-            selectedMidiClipId_ = feedback.clipId;
+            selectMidiClipById(feedback.clipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2444,7 +2630,7 @@ private:
 
         const auto feedback = trackloom::trimMidiClipEndEarlierOneBeat(session_, selectedMidiClipId_);
         if (feedback.success) {
-            selectedMidiClipId_ = feedback.clipId;
+            selectMidiClipById(feedback.clipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2461,7 +2647,7 @@ private:
 
         const auto feedback = trackloom::trimMidiClipStartLaterOneBeat(session_, selectedMidiClipId_);
         if (feedback.success) {
-            selectedMidiClipId_ = feedback.clipId;
+            selectMidiClipById(feedback.clipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2478,7 +2664,7 @@ private:
 
         const auto feedback = trackloom::extendMidiClipStartEarlierOneBeat(session_, selectedMidiClipId_);
         if (feedback.success) {
-            selectedMidiClipId_ = feedback.clipId;
+            selectMidiClipById(feedback.clipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2495,7 +2681,7 @@ private:
 
         const auto feedback = trackloom::extendMidiClipEndLaterOneBeat(session_, selectedMidiClipId_);
         if (feedback.success) {
-            selectedMidiClipId_ = feedback.clipId;
+            selectMidiClipById(feedback.clipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2512,7 +2698,7 @@ private:
 
         const auto feedback = trackloom::duplicateMidiClipAfterItself(session_, selectedMidiClipId_);
         if (feedback.success) {
-            selectedMidiClipId_ = feedback.clipId;
+            selectMidiClipById(feedback.clipId);
         }
 
         lastActionMessage_ = feedback.message;
@@ -2530,7 +2716,7 @@ private:
         const auto targetClipId = selectedMidiClipId_;
         const auto feedback = trackloom::deleteMidiClipById(session_, targetClipId);
         if (feedback.success && selectedMidiClipId_ == targetClipId) {
-            selectedMidiClipId_.clear();
+            selectMidiClipById({});
         }
 
         lastActionMessage_ = feedback.message;
@@ -2549,12 +2735,23 @@ private:
             session_,
             playback_,
             loopState_,
-            projectObjectSelection(),
             recentProjects_,
             selectedRecentProjectNumber_,
             recentProjectsSettingsPath_);
+        if (feedback.success) {
+            clearObjectSelectionsForProjectReplacement();
+            timelineLoopEditor_.cancelLoopDrag();
+        }
         lastActionMessage_ = feedback.message;
         refreshFromSession();
+    }
+
+    void clearObjectSelectionsForProjectReplacement()
+    {
+        selectedTrackId_.clear();
+        selectedAudioTrackId_.clear();
+        selectedAudioClipId_.clear();
+        selectMidiClipById({});
     }
 
     trackloom::AppProjectObjectSelection projectObjectSelection() noexcept
@@ -2742,16 +2939,7 @@ private:
             ++itemId;
         }
 
-        if (selectedItemId == 0 && !selectableMidiClipIds_.empty()) {
-            selectedItemId = 1;
-            selectedMidiClipId_ = selectableMidiClipIds_.front();
-        } else if (selectedItemId > 0) {
-            selectedMidiClipId_ = previousSelection;
-        } else {
-            selectedMidiClipId_.clear();
-        }
-
-        targetMidiClipBox_.setSelectedId(selectedItemId, juce::dontSendNotification);
+        selectMidiClipById(selectedItemId > 0 ? previousSelection : std::string_view {});
         targetMidiClipBox_.setEnabled(!selectableMidiClipIds_.empty());
         addMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
         deleteMidiNoteButton_.setEnabled(!selectedMidiClipId_.empty());
@@ -2871,18 +3059,15 @@ private:
         refreshAudioClipTargetSelector(timelineStatus);
         refreshMidiClipTargetSelector(timelineStatus);
         refreshRecentProjectSelector(recentStatus);
+        refreshTimelineCanvas(timelineCanvasInitialised_
+                ? timelineLoopEditor_.visibleTickRange()
+                : trackloom::AppTimelineVisibleTickRange { 0, 7680 });
 
         titleLabel_.setText(toJuceString(status.windowTitle), juce::dontSendNotification);
         statusLabel_.setText(toJuceString(status.statusLine), juce::dontSendNotification);
         refreshPlaybackPresentation(hostStatus);
         trackSummaryLabel_.setText(toJuceString(trackSummaryText(status)), juce::dontSendNotification);
         actionLabel_.setText(toJuceString(lastActionMessage_), juce::dontSendNotification);
-        trackListText_.setText(
-            toJuceString(trackListText(trackloom::describeAppTrackList(session_.project()))),
-            false);
-        timelineText_.setText(
-            toJuceString(timelineText(timelineStatus)),
-            false);
         recentProjectsText_.setText(
             toJuceString(recentProjectsText(recentStatus)),
             false);
@@ -2891,6 +3076,18 @@ private:
         if (titleChanged_) {
             titleChanged_(status.windowTitle);
         }
+    }
+
+    void refreshTimelineCanvas(trackloom::AppTimelineVisibleTickRange range)
+    {
+        const auto canvas = trackloom::buildAppTimelineCanvasStatus(session_.project(), range);
+        if (!canvas.success) {
+            lastActionMessage_ = canvas.message;
+            return;
+        }
+        timelineCanvasInitialised_ = true;
+        timelineLoopEditor_.setTimelineStatus(canvas.status);
+        timelineLoopEditor_.setSelectedMidiClipId(selectedMidiClipId_);
     }
 
     static std::string trackSummaryText(const trackloom::AppProjectStatus& status)
@@ -3005,6 +3202,7 @@ private:
     trackloom::AppProjectSession session_;
     trackloom::AppLoopPlaybackState loopState_;
     std::function<void(std::string)> titleChanged_;
+    trackloom::AppOpenProjectChooserOperation openProjectChooser_;
     std::unique_ptr<juce::FileChooser> fileChooser_;
     std::filesystem::path recentProjectsSettingsPath_;
     trackloom::AppRecentProjects recentProjects_;
@@ -3016,6 +3214,7 @@ private:
     // 真正执行前仍会让 AppCommandPaletteSession 重新确认该命令仍在当前过滤结果里。
     std::array<int, commandPaletteVisibleRowCount> visibleCommandPaletteRowCommandIds_{};
     bool syncingCommandPaletteQuery_ = false;
+    bool timelineCanvasInitialised_ = false;
     std::vector<std::string> selectableTrackIds_;
     std::vector<std::string> selectableAudioTrackIds_;
     std::vector<std::string> selectableAudioClipIds_;
@@ -3041,6 +3240,15 @@ private:
     juce::Label playbackStatusLabel_;
     juce::Label trackSummaryLabel_;
     juce::Label actionLabel_;
+    trackloom::TimelineLoopEditorComponent timelineLoopEditor_;
+    juce::Component inspectorContent_;
+    juce::Viewport inspectorViewport_;
+    juce::TextButton setLoopButton_;
+    juce::TextButton clearLoopButton_;
+    juce::ToggleButton loopToggle_;
+    juce::Label loopIntentStatusLabel_;
+    juce::ToggleButton midiEditorToggle_;
+    juce::Label midiEditorPlaceholder_;
     juce::Label targetTrackLabel_;
     juce::ComboBox targetTrackBox_;
     juce::Label targetAudioTrackLabel_;

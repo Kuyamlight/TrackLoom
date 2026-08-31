@@ -1,4 +1,8 @@
 #include "TimelineLoopEditorComponent.h"
+#include "TrackLoomMainComponent.h"
+#include "AppMainMenu.h"
+#include "AppMidiClipActions.h"
+#include "AppProjectSession.h"
 #include "support/TestFailureOutput.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -10,6 +14,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -44,6 +49,137 @@ void requireColour(
 {
     require(actual.getARGB() == expected.getARGB(),
         message + " (actual ARGB=" + std::to_string(actual.getARGB()) + ")");
+}
+
+std::unique_ptr<trackloom::JuceAudioHost> makeHeadlessHost()
+{
+    return std::make_unique<trackloom::JuceAudioHost>(
+        []() -> std::unique_ptr<juce::AudioIODeviceType> { return {}; });
+}
+
+juce::Component* findDescendantWithId(juce::Component& component, const char* id)
+{
+    if (component.getComponentID() == id) {
+        return &component;
+    }
+    for (int index = 0; index < component.getNumChildComponents(); ++index) {
+        if (auto* child = findDescendantWithId(*component.getChildComponent(index), id)) {
+            return child;
+        }
+    }
+    return nullptr;
+}
+
+juce::Rectangle<int> boundsInMain(juce::Component& main, juce::Component& child)
+{
+    return main.getLocalArea(&child, child.getLocalBounds());
+}
+
+class TemporaryProjectFile final {
+public:
+    TemporaryProjectFile()
+        : path_(std::filesystem::temp_directory_path()
+              / ("trackloom-task-9-" + juce::Uuid().toString().toStdString() + ".trackloom"))
+    {
+    }
+
+    ~TemporaryProjectFile()
+    {
+        std::error_code error;
+        std::filesystem::remove(path_, error);
+    }
+
+    const std::filesystem::path& path() const noexcept { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
+
+void saveProjectFixture(
+    const std::filesystem::path& path,
+    bool withMidiClip,
+    const char* name)
+{
+    trackloom::AppProjectSession source;
+    source.createNewProject(name);
+    if (withMidiClip) {
+        const auto track = source.editProject().createTrack("Fixture MIDI", trackloom::TrackType::Instrument);
+        const auto midi = trackloom::createDefaultMidiClipOnTrack(source, track.id);
+        require(midi.success, "open fixture must contain a valid MIDI clip");
+    }
+    require(source.saveAs(path).success, "open fixture must save successfully");
+}
+
+void mainLayoutPlacesTheRealLoopEditorAndInspectorWithoutOverlap()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeHeadlessHost();
+    trackloom::TrackLoomMainComponent main(std::move(dependencies));
+    main.setSize(1280, 820);
+
+    auto* timeline = dynamic_cast<trackloom::TimelineLoopEditorComponent*>(
+        findDescendantWithId(main, trackloom::timelineLoopEditorComponentId));
+    auto* inspector = dynamic_cast<juce::Viewport*>(
+        findDescendantWithId(main, trackloom::mainInspectorViewportComponentId));
+    auto* midiSelector = dynamic_cast<juce::ComboBox*>(
+        findDescendantWithId(main, trackloom::mainMidiClipSelectorComponentId));
+    auto* addInstrument = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainAddInstrumentTrackButtonComponentId));
+    auto* createMidi = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainCreateMidiClipButtonComponentId));
+    auto* placeholder = dynamic_cast<juce::Label*>(
+        findDescendantWithId(main, trackloom::mainMidiEditorPlaceholderComponentId));
+    auto* collapse = dynamic_cast<juce::ToggleButton*>(
+        findDescendantWithId(main, trackloom::mainMidiEditorToggleComponentId));
+    auto* loopToggle = dynamic_cast<juce::ToggleButton*>(
+        findDescendantWithId(main, trackloom::mainLoopToggleComponentId));
+    auto* setLoop = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainSetLoopButtonComponentId));
+    auto* clearLoop = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainClearLoopButtonComponentId));
+    auto* loopStatus = dynamic_cast<juce::Label*>(
+        findDescendantWithId(main, trackloom::mainLoopIntentStatusComponentId));
+    require(timeline != nullptr && inspector != nullptr && midiSelector != nullptr
+            && addInstrument != nullptr && createMidi != nullptr && placeholder != nullptr
+            && collapse != nullptr && loopToggle != nullptr && setLoop != nullptr
+            && clearLoop != nullptr && loopStatus != nullptr,
+        "layout A must expose real timeline, inspector, selection, action, bottom, and loop controls");
+    require(placeholder->getText() == juce::String::fromUTF8("D3 预留，尚未实现"),
+        "the collapsible bottom panel must use the D3 placeholder text");
+    require(inspector->getViewedComponent() != nullptr
+            && inspector->getViewedComponent()->isParentOf(midiSelector)
+            && inspector->getViewedComponent()->isParentOf(addInstrument)
+            && inspector->getViewedComponent()->isParentOf(createMidi),
+        "the existing inspector controls must have one non-owning viewed-content parent");
+
+    const auto timelineBounds = boundsInMain(main, *timeline);
+    const auto inspectorBounds = boundsInMain(main, *inspector);
+    const auto placeholderBounds = boundsInMain(main, *placeholder);
+    const auto loopBounds = boundsInMain(main, *loopToggle);
+    require(!timelineBounds.isEmpty() && !inspectorBounds.isEmpty() && !placeholderBounds.isEmpty()
+            && !loopBounds.isEmpty(),
+        "layout A controls must have usable bounds at 1280 by 820");
+    require(timelineBounds.getRight() <= inspectorBounds.getX()
+            && timelineBounds.getY() > loopBounds.getBottom()
+            && placeholderBounds.getY() >= timelineBounds.getBottom(),
+        "timeline must sit below transport, left of inspector, and above the D3 placeholder");
+    require(inspector->getViewedComponent()->getHeight() > inspector->getHeight(),
+        "inspector content must create a real vertical scroll range");
+
+    const auto expandedBottom = timelineBounds.getBottom();
+    collapse->setToggleState(true, juce::sendNotification);
+    const auto collapsedTimeline = boundsInMain(main, *timeline);
+    require(!placeholder->isVisible() && collapsedTimeline.getBottom() > expandedBottom
+            && collapsedTimeline.getRight() <= inspectorBounds.getX(),
+        "collapsing the bottom placeholder must extend the timeline without overlapping inspector");
+
+    main.setSize(trackloom::trackLoomMainMinimumWidth, trackloom::trackLoomMainMinimumHeight);
+    const auto minimumTimeline = boundsInMain(main, *timeline);
+    const auto minimumInspector = boundsInMain(main, *inspector);
+    require(!minimumTimeline.isEmpty() && !minimumInspector.isEmpty()
+            && minimumTimeline.getRight() <= minimumInspector.getX(),
+        "the documented minimum window size must leave both timeline and inspector usable");
 }
 
 trackloom::AppTimelineCanvasStatus fixtureStatus()
@@ -86,6 +222,109 @@ juce::MouseEvent mouseEvent(
         1,
         wasDragged
     };
+}
+
+void mainSelectionUsesTheSameTruthForComboBoxAndTimeline()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeHeadlessHost();
+    trackloom::TrackLoomMainComponent main(std::move(dependencies));
+    main.setSize(1280, 820);
+    auto* addInstrument = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainAddInstrumentTrackButtonComponentId));
+    auto* createMidi = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainCreateMidiClipButtonComponentId));
+    auto* selector = dynamic_cast<juce::ComboBox*>(
+        findDescendantWithId(main, trackloom::mainMidiClipSelectorComponentId));
+    auto* timeline = dynamic_cast<trackloom::TimelineLoopEditorComponent*>(
+        findDescendantWithId(main, trackloom::timelineLoopEditorComponentId));
+    require(addInstrument != nullptr && createMidi != nullptr && selector != nullptr && timeline != nullptr,
+        "selection test requires the real inspector actions, selector, and timeline");
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::AddInstrumentTrack)).executed,
+        "the standard Add Instrument Track command must establish a real target track");
+    createMidi->onClick();
+    createMidi->onClick();
+    require(selector->getNumItems() == 2,
+        "two real create actions must produce two selectable MIDI clips");
+
+    selector->setSelectedId(1, juce::sendNotificationSync);
+    const auto secondBounds = timeline->clipBounds("clip-2");
+    require(selector->getSelectedId() == 1 && secondBounds.has_value(),
+        "ComboBox selection must retain the first MIDI clip while timeline exposes the second");
+    timeline->mouseDown(mouseEvent(*timeline, secondBounds->getCentre(), secondBounds->getCentre()));
+    timeline->mouseUp(mouseEvent(*timeline, secondBounds->getCentre(), secondBounds->getCentre()));
+    require(selector->getSelectedId() == 2,
+        "clicking a real timeline MIDI clip must select the same second clip in ComboBox");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::DeleteSelectedMidiClip)).executed,
+        "the standard selected-MIDI delete command must execute through the main component");
+    require(selector->getSelectedId() == 0,
+        "deleting the selected MIDI clip must leave selection empty instead of auto-selecting another clip");
+}
+
+void mainProjectReplacementUsesTheChooserSeamAndClearsOnlyAfterSuccess()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    TemporaryProjectFile midiProject;
+    TemporaryProjectFile emptyProject;
+    saveProjectFixture(midiProject.path(), true, "MIDI fixture");
+    saveProjectFixture(emptyProject.path(), false, "Empty fixture");
+
+    std::vector<trackloom::AppOpenProjectChooserCompletion> completions;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeHeadlessHost();
+    dependencies.chooseProjectToOpen = [&completions](auto completion) {
+        completions.push_back(std::move(completion));
+    };
+    trackloom::TrackLoomMainComponent main(std::move(dependencies));
+    main.setSize(1280, 820);
+    auto* selector = dynamic_cast<juce::ComboBox*>(
+        findDescendantWithId(main, trackloom::mainMidiClipSelectorComponentId));
+    require(selector != nullptr, "chooser test requires the real MIDI selection ComboBox");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
+            && completions.size() == 1,
+        "Open must expose exactly one captured chooser completion without a native dialog");
+    completions.back()(midiProject.path());
+    require(selector->getNumItems() == 1 && selector->getSelectedId() == 0,
+        "a successfully opened MIDI project must begin with no implicit MIDI selection");
+
+    selector->setSelectedId(1, juce::sendNotificationSync);
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::NewProject)).executed
+            && selector->getNumItems() == 0 && selector->getSelectedId() == 0,
+        "a successful New Project must clear an existing MIDI selection");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
+            && completions.size() == 2,
+        "a subsequent Open must capture a new completion");
+    completions.back()(midiProject.path());
+    selector->setSelectedId(1, juce::sendNotificationSync);
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
+            && completions.size() == 3,
+        "a selected clean project must still enter the chooser seam");
+    completions.back()(emptyProject.path());
+    require(selector->getNumItems() == 0 && selector->getSelectedId() == 0,
+        "a successfully opened replacement project must clear the former MIDI selection");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
+            && completions.size() == 4,
+        "the chooser must remain usable after a successful replacement");
+    completions.back()(midiProject.path());
+    selector->setSelectedId(1, juce::sendNotificationSync);
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
+            && completions.size() == 5,
+        "cancel verification must capture its own completion");
+    completions.back()(std::nullopt);
+    require(selector->getSelectedId() == 1,
+        "cancelling the chooser must preserve the selected MIDI clip");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
+            && completions.size() == 6,
+        "open failure verification must capture its own completion");
+    completions.back()(emptyProject.path() / "does-not-exist.trackloom");
+    require(selector->getSelectedId() == 1,
+        "a failed project load must preserve the selected MIDI clip");
 }
 
 void geometryPaintsTheTimelineBandsAndExposesHandDerivedBounds()
@@ -506,6 +745,9 @@ int main(int argumentCount, char* arguments[])
         run("wheel", wheelNormalizesNonFiniteAndExtremeInput);
         run("mutation-guards", interactionAndGeometryMutationGuards);
         run("range", wheelAndInvalidSnapshotKeepTheVisibleRangeLegal);
+        run("main-layout", mainLayoutPlacesTheRealLoopEditorAndInspectorWithoutOverlap);
+        run("main-selection", mainSelectionUsesTheSameTruthForComboBoxAndTimeline);
+        run("main-project-replacement", mainProjectReplacementUsesTheChooserSeamAndClearsOnlyAfterSuccess);
     } catch (const std::exception& error) {
         std::cerr << "D1 JUCE loop editor test failed: " << error.what() << '\n';
         return 1;

@@ -50,7 +50,14 @@ public:
                     setName(trackloom::toJuceString(title));
                 })),
             true);
-        centreWithSize(getWidth(), getHeight());
+        setResizeLimits(
+            trackloom::trackLoomMainMinimumWidth,
+            trackloom::trackLoomMainMinimumHeight,
+            4096,
+            4096);
+        centreWithSize(
+            trackloom::trackLoomMainDefaultWidth,
+            trackloom::trackLoomMainDefaultHeight);
         setVisible(true);
     }
 

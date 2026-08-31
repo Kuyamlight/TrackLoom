@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -26,6 +27,32 @@ inline constexpr auto mainOpenButtonComponentId = "trackloom-main-open";
 inline constexpr auto mainSaveButtonComponentId = "trackloom-main-save";
 inline constexpr auto mainPlayButtonComponentId = "trackloom-main-play";
 inline constexpr auto mainPlaybackStatusComponentId = "trackloom-main-playback-status";
+inline constexpr auto mainMidiClipSelectorComponentId =
+    "trackloom-main-midi-clip-selector";
+inline constexpr auto mainSetLoopButtonComponentId = "trackloom-main-set-loop";
+inline constexpr auto mainClearLoopButtonComponentId = "trackloom-main-clear-loop";
+inline constexpr auto mainLoopToggleComponentId = "trackloom-main-loop-toggle";
+inline constexpr auto mainLoopIntentStatusComponentId =
+    "trackloom-main-loop-intent-status";
+inline constexpr auto mainInspectorViewportComponentId = "trackloom-main-inspector";
+inline constexpr auto mainMidiEditorToggleComponentId =
+    "trackloom-main-midi-editor-toggle";
+inline constexpr auto mainMidiEditorPlaceholderComponentId =
+    "trackloom-main-midi-editor-placeholder";
+inline constexpr auto mainAddInstrumentTrackButtonComponentId =
+    "trackloom-main-add-instrument-track";
+inline constexpr auto mainCreateMidiClipButtonComponentId =
+    "trackloom-main-create-midi-clip";
+
+inline constexpr int trackLoomMainDefaultWidth = 1280;
+inline constexpr int trackLoomMainDefaultHeight = 820;
+inline constexpr int trackLoomMainMinimumWidth = 960;
+inline constexpr int trackLoomMainMinimumHeight = 640;
+
+using AppOpenProjectChooserCompletion =
+    std::function<void(std::optional<std::filesystem::path>)>;
+using AppOpenProjectChooserOperation =
+    std::function<void(AppOpenProjectChooserCompletion)>;
 
 struct TrackLoomMainComponentDependencies {
     std::unique_ptr<JuceAudioHost> audioHost;
@@ -33,6 +60,7 @@ struct TrackLoomMainComponentDependencies {
     std::filesystem::path audioSettingsPath;
     AppAudioSettingsLoadOperation loadAudioSettings = loadAppAudioSettings;
     AppAudioSettingsSaveOperation saveAudioSettings = saveAppAudioSettings;
+    AppOpenProjectChooserOperation chooseProjectToOpen;
     std::function<void(std::string)> titleChanged;
     std::function<void(std::unique_ptr<AudioSettingsComponent>)>
         presentAudioSettings;
