@@ -82,6 +82,20 @@ juce::Component* findDescendantWithId(juce::Component& component, const char* id
     return nullptr;
 }
 
+juce::TextButton* findDescendantTextButtonWithText(juce::Component& component, const char* text)
+{
+    if (auto* button = dynamic_cast<juce::TextButton*>(&component);
+        button != nullptr && button->getButtonText() == text) {
+        return button;
+    }
+    for (int index = 0; index < component.getNumChildComponents(); ++index) {
+        if (auto* child = findDescendantTextButtonWithText(*component.getChildComponent(index), text)) {
+            return child;
+        }
+    }
+    return nullptr;
+}
+
 juce::Rectangle<int> boundsInMain(juce::Component& main, juce::Component& child)
 {
     return main.getLocalArea(&child, child.getLocalBounds());
@@ -341,7 +355,20 @@ void mainVisibleRangeWheelRefreshesOnlyTheCanvas()
     main.setSize(1280, 820);
     auto* timeline = dynamic_cast<trackloom::TimelineLoopEditorComponent*>(
         findDescendantWithId(main, trackloom::timelineLoopEditorComponentId));
+    auto* createMidi = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainCreateMidiClipButtonComponentId));
+    auto* extendMidiEnd = findDescendantTextButtonWithText(main, "延长片尾");
     require(timeline != nullptr, "visible-range integration requires Main's real embedded timeline");
+    require(createMidi != nullptr
+            && main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::AddInstrumentTrack)).executed,
+        "visible-range integration requires a real Main-created instrument track");
+    require(extendMidiEnd != nullptr, "visible-range integration requires Main's real MIDI length control");
+    createMidi->onClick();
+    for (int index = 0; index < 5; ++index) {
+        extendMidiEnd->onClick();
+    }
+    requireBounds(timeline->clipBounds("clip-1"), 160.0f, 58.0f, 718.0f, 40.0f,
+        "real Main MIDI clip spanning the hand-derived pre-wheel canvas range");
 
     const auto titlesBeforeWheel = titleChanges;
     const auto before = timeline->visibleTickRange();
@@ -352,6 +379,8 @@ void mainVisibleRangeWheelRefreshesOnlyTheCanvas()
     require(before == trackloom::AppTimelineVisibleTickRange { 0, 7680 }
             && after == trackloom::AppTimelineVisibleTickRange { 7680, 15360 },
         "a real embedded horizontal wheel event must publish and retain its hand-derived shifted tick range");
+    requireBounds(timeline->clipBounds("clip-1"), 160.0f, 58.0f, 89.75f, 40.0f,
+        "canvas rebuilt for the shifted range must expose the hand-derived trailing MIDI clip geometry");
     require(titleChanges == titlesBeforeWheel,
         "visible-range callback must rebuild only the canvas rather than running Main full refresh/title presentation");
     requireColour(paintedTimelinePixel(*timeline, { (160 + timeline->getWidth()) / 2, 100 }),
@@ -363,9 +392,9 @@ void mainProjectReplacementUsesTheChooserSeamAndClearsOnlyAfterSuccess()
 {
     juce::ScopedJuceInitialiser_GUI initialiseGui;
     TemporaryProjectFile midiProject;
-    TemporaryProjectFile emptyProject;
+    TemporaryProjectFile replacementMidiProject;
     saveProjectFixture(midiProject.path(), true, "MIDI fixture");
-    saveProjectFixture(emptyProject.path(), false, "Empty fixture");
+    saveProjectFixture(replacementMidiProject.path(), true, "Replacement MIDI fixture");
 
     std::vector<trackloom::AppOpenProjectChooserCompletion> completions;
     trackloom::TrackLoomMainComponentDependencies dependencies;
@@ -377,7 +406,9 @@ void mainProjectReplacementUsesTheChooserSeamAndClearsOnlyAfterSuccess()
     main.setSize(1280, 820);
     auto* selector = dynamic_cast<juce::ComboBox*>(
         findDescendantWithId(main, trackloom::mainMidiClipSelectorComponentId));
+    auto* addMidiNote = findDescendantTextButtonWithText(main, "添加默认音符");
     require(selector != nullptr, "chooser test requires the real MIDI selection ComboBox");
+    require(addMidiNote != nullptr, "chooser test requires Main's real MIDI edit control");
 
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
             && completions.size() == 1,
@@ -388,20 +419,20 @@ void mainProjectReplacementUsesTheChooserSeamAndClearsOnlyAfterSuccess()
 
     selector->setSelectedId(1, juce::sendNotificationSync);
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::NewProject)).executed
-            && selector->getNumItems() == 0 && selector->getSelectedId() == 0,
+            && selector->getNumItems() == 0 && selector->getSelectedId() == 0 && !addMidiNote->isEnabled(),
         "a successful New Project must clear an existing MIDI selection");
 
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
             && completions.size() == 2,
-        "a subsequent Open must capture a new completion");
+        "a New Project must leave Main able to enter the chooser seam again");
     completions.back()(midiProject.path());
     selector->setSelectedId(1, juce::sendNotificationSync);
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
             && completions.size() == 3,
         "a selected clean project must still enter the chooser seam");
-    completions.back()(emptyProject.path());
-    require(selector->getNumItems() == 0 && selector->getSelectedId() == 0,
-        "a successfully opened replacement project must clear the former MIDI selection");
+    completions.back()(replacementMidiProject.path());
+    require(selector->getNumItems() == 1 && selector->getSelectedId() == 0,
+        "a successful replacement retaining clip-1's stable ID must still clear the former MIDI selection");
 
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
             && completions.size() == 4,
@@ -418,7 +449,7 @@ void mainProjectReplacementUsesTheChooserSeamAndClearsOnlyAfterSuccess()
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
             && completions.size() == 6,
         "open failure verification must capture its own completion");
-    completions.back()(emptyProject.path() / "does-not-exist.trackloom");
+    completions.back()(replacementMidiProject.path() / "does-not-exist.trackloom");
     require(selector->getSelectedId() == 1,
         "a failed project load must preserve the selected MIDI clip");
 }
