@@ -51,6 +51,18 @@ void requireColour(
         message + " (actual ARGB=" + std::to_string(actual.getARGB()) + ")");
 }
 
+void requireRectangle(
+    juce::Rectangle<int> actual,
+    int x,
+    int y,
+    int width,
+    int height,
+    const std::string& message)
+{
+    require(actual == juce::Rectangle<int>(x, y, width, height),
+        message + " must match its hand-derived main-coordinate bounds");
+}
+
 std::unique_ptr<trackloom::JuceAudioHost> makeHeadlessHost()
 {
     return std::make_unique<trackloom::JuceAudioHost>(
@@ -73,6 +85,18 @@ juce::Component* findDescendantWithId(juce::Component& component, const char* id
 juce::Rectangle<int> boundsInMain(juce::Component& main, juce::Component& child)
 {
     return main.getLocalArea(&child, child.getLocalBounds());
+}
+
+juce::Colour paintedTimelinePixel(
+    trackloom::TimelineLoopEditorComponent& timeline,
+    juce::Point<int> point)
+{
+    juce::Image image(juce::Image::ARGB, timeline.getWidth(), timeline.getHeight(), true);
+    {
+        juce::Graphics graphics(image);
+        timeline.paint(graphics);
+    }
+    return image.getPixelAt(point.x, point.y);
 }
 
 class TemporaryProjectFile final {
@@ -175,11 +199,42 @@ void mainLayoutPlacesTheRealLoopEditorAndInspectorWithoutOverlap()
         "collapsing the bottom placeholder must extend the timeline without overlapping inspector");
 
     main.setSize(trackloom::trackLoomMainMinimumWidth, trackloom::trackLoomMainMinimumHeight);
+    collapse->setToggleState(false, juce::sendNotification);
     const auto minimumTimeline = boundsInMain(main, *timeline);
     const auto minimumInspector = boundsInMain(main, *inspector);
-    require(!minimumTimeline.isEmpty() && !minimumInspector.isEmpty()
-            && minimumTimeline.getRight() <= minimumInspector.getX(),
-        "the documented minimum window size must leave both timeline and inspector usable");
+    const auto minimumPlaceholder = boundsInMain(main, *placeholder);
+    const auto minimumToggle = boundsInMain(main, *collapse);
+    const auto minimumNew = boundsInMain(main, *findDescendantWithId(main, trackloom::mainNewButtonComponentId));
+    const auto minimumOpen = boundsInMain(main, *findDescendantWithId(main, trackloom::mainOpenButtonComponentId));
+    const auto minimumSave = boundsInMain(main, *findDescendantWithId(main, trackloom::mainSaveButtonComponentId));
+    const auto minimumPlay = boundsInMain(main, *findDescendantWithId(main, trackloom::mainPlayButtonComponentId));
+    requireRectangle(minimumNew, 16, 174, 82, 34, "minimum New button");
+    requireRectangle(minimumOpen, 104, 174, 82, 34, "minimum Open button");
+    requireRectangle(minimumSave, 192, 174, 64, 34, "minimum Save button");
+    requireRectangle(minimumPlay, 344, 174, 62, 34, "minimum Play button");
+    requireRectangle(minimumTimeline, 16, 216, 609, 256, "minimum timeline");
+    requireRectangle(minimumInspector, 635, 216, 309, 256, "minimum inspector");
+    requireRectangle(minimumToggle, 16, 472, 928, 24, "minimum MIDI editor toggle");
+    requireRectangle(minimumPlaceholder, 16, 496, 928, 128, "minimum D3 placeholder");
+    const auto mainBounds = main.getLocalBounds();
+    const auto containedByMain = [&mainBounds](juce::Rectangle<int> bounds) {
+        return bounds.getX() >= mainBounds.getX() && bounds.getY() >= mainBounds.getY()
+            && bounds.getRight() <= mainBounds.getRight() && bounds.getBottom() <= mainBounds.getBottom();
+    };
+    require(containedByMain(minimumNew) && containedByMain(minimumOpen)
+            && containedByMain(minimumSave) && containedByMain(minimumPlay)
+            && containedByMain(minimumTimeline) && containedByMain(minimumInspector)
+            && containedByMain(minimumToggle) && containedByMain(minimumPlaceholder),
+        "all minimum-window transport, timeline, inspector, and bottom regions must stay inside Main coordinates");
+    require(minimumNew.getWidth() > 0 && minimumOpen.getWidth() > 0
+            && minimumSave.getWidth() > 0 && minimumPlay.getWidth() > 0
+            && minimumTimeline.getRight() <= minimumInspector.getX()
+            && minimumTimeline.getBottom() <= minimumToggle.getY()
+            && minimumInspector.getBottom() <= minimumToggle.getY()
+            && minimumToggle.getBottom() <= minimumPlaceholder.getY(),
+        "minimum-window transport and all four layout regions must remain non-overlapping and operable");
+    require(inspector->getViewedComponent()->getHeight() > minimumInspector.getHeight(),
+        "minimum inspector must retain a real vertical scroll range");
 }
 
 trackloom::AppTimelineCanvasStatus fixtureStatus()
@@ -248,10 +303,22 @@ void mainSelectionUsesTheSameTruthForComboBoxAndTimeline()
     require(selector->getNumItems() == 2,
         "two real create actions must produce two selectable MIDI clips");
 
-    selector->setSelectedId(1, juce::sendNotificationSync);
+    const auto firstBounds = timeline->clipBounds("clip-1");
     const auto secondBounds = timeline->clipBounds("clip-2");
-    require(selector->getSelectedId() == 1 && secondBounds.has_value(),
-        "ComboBox selection must retain the first MIDI clip while timeline exposes the second");
+    require(firstBounds.has_value() && secondBounds.has_value(),
+        "selection test requires paintable bounds for both real MIDI clips");
+    const auto samplePoint = [](juce::Rectangle<float> bounds) {
+        return juce::Point<int>(
+            static_cast<int>(std::floor(bounds.getX())) + 2,
+            static_cast<int>(std::floor(bounds.getY())) + 2);
+    };
+    const auto firstBeforeComboBox = paintedTimelinePixel(*timeline, samplePoint(*firstBounds));
+    const auto secondBeforeComboBox = paintedTimelinePixel(*timeline, samplePoint(*secondBounds));
+    selector->setSelectedId(1, juce::sendNotificationSync);
+    require(selector->getSelectedId() == 1
+            && paintedTimelinePixel(*timeline, samplePoint(*firstBounds)) == secondBeforeComboBox
+            && paintedTimelinePixel(*timeline, samplePoint(*secondBounds)) == firstBeforeComboBox,
+        "ComboBox selection must repaint first/second timeline clip selection before any timeline click");
     timeline->mouseDown(mouseEvent(*timeline, secondBounds->getCentre(), secondBounds->getCentre()));
     timeline->mouseUp(mouseEvent(*timeline, secondBounds->getCentre(), secondBounds->getCentre()));
     require(selector->getSelectedId() == 2,
@@ -261,6 +328,35 @@ void mainSelectionUsesTheSameTruthForComboBoxAndTimeline()
         "the standard selected-MIDI delete command must execute through the main component");
     require(selector->getSelectedId() == 0,
         "deleting the selected MIDI clip must leave selection empty instead of auto-selecting another clip");
+}
+
+void mainVisibleRangeWheelRefreshesOnlyTheCanvas()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    int titleChanges = 0;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeHeadlessHost();
+    dependencies.titleChanged = [&titleChanges](std::string) { ++titleChanges; };
+    trackloom::TrackLoomMainComponent main(std::move(dependencies));
+    main.setSize(1280, 820);
+    auto* timeline = dynamic_cast<trackloom::TimelineLoopEditorComponent*>(
+        findDescendantWithId(main, trackloom::timelineLoopEditorComponentId));
+    require(timeline != nullptr, "visible-range integration requires Main's real embedded timeline");
+
+    const auto titlesBeforeWheel = titleChanges;
+    const auto before = timeline->visibleTickRange();
+    timeline->mouseWheelMove(
+        mouseEvent(*timeline, { 380.0f, 100.0f }, { 380.0f, 100.0f }),
+        { 10.0f, 0.0f, false, false, false });
+    const auto after = timeline->visibleTickRange();
+    require(before == trackloom::AppTimelineVisibleTickRange { 0, 7680 }
+            && after == trackloom::AppTimelineVisibleTickRange { 7680, 15360 },
+        "a real embedded horizontal wheel event must publish and retain its hand-derived shifted tick range");
+    require(titleChanges == titlesBeforeWheel,
+        "visible-range callback must rebuild only the canvas rather than running Main full refresh/title presentation");
+    requireColour(paintedTimelinePixel(*timeline, { (160 + timeline->getWidth()) / 2, 100 }),
+        juce::Colour(0xff3a463c),
+        "canvas rebuilt for the shifted range must paint the newly-visible 11520-tick measure gridline");
 }
 
 void mainProjectReplacementUsesTheChooserSeamAndClearsOnlyAfterSuccess()
@@ -747,6 +843,7 @@ int main(int argumentCount, char* arguments[])
         run("range", wheelAndInvalidSnapshotKeepTheVisibleRangeLegal);
         run("main-layout", mainLayoutPlacesTheRealLoopEditorAndInspectorWithoutOverlap);
         run("main-selection", mainSelectionUsesTheSameTruthForComboBoxAndTimeline);
+        run("main-visible-range", mainVisibleRangeWheelRefreshesOnlyTheCanvas);
         run("main-project-replacement", mainProjectReplacementUsesTheChooserSeamAndClearsOnlyAfterSuccess);
     } catch (const std::exception& error) {
         std::cerr << "D1 JUCE loop editor test failed: " << error.what() << '\n';
