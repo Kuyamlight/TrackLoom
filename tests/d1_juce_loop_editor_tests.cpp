@@ -3,17 +3,23 @@
 #include "AppMainMenu.h"
 #include "AppMidiClipActions.h"
 #include "AppProjectSession.h"
+#include "support/FakeJuceAudioDeviceType.h"
 #include "support/TestFailureOutput.h"
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <array>
+#include <chrono>
 #include <cmath>
+#include <functional>
 #include <iostream>
+#include <latch>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -69,6 +75,51 @@ std::unique_ptr<trackloom::JuceAudioHost> makeHeadlessHost()
         []() -> std::unique_ptr<juce::AudioIODeviceType> { return {}; });
 }
 
+std::unique_ptr<trackloom::JuceAudioHost> makeFakeHost(
+    std::function<void(trackloom::test::FakeJuceAudioDeviceType&)> configure = {})
+{
+    return std::make_unique<trackloom::JuceAudioHost>(
+        [configure = std::move(configure)]() -> std::unique_ptr<juce::AudioIODeviceType> {
+            auto type = std::make_unique<trackloom::test::FakeJuceAudioDeviceType>();
+            if (configure) {
+                configure(*type);
+            }
+            return type;
+        });
+}
+
+class LatchRelease final {
+public:
+    explicit LatchRelease(std::latch& latch) noexcept : latch_(latch) {}
+    ~LatchRelease() { release(); }
+
+    void release() noexcept
+    {
+        if (!released_) {
+            latch_.count_down();
+            released_ = true;
+        }
+    }
+
+private:
+    std::latch& latch_;
+    bool released_ = false;
+};
+
+bool waitUntil(
+    const std::function<bool()>& predicate,
+    std::chrono::milliseconds timeout = std::chrono::milliseconds { 5000 })
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    do {
+        if (predicate()) {
+            return true;
+        }
+        std::this_thread::yield();
+    } while (std::chrono::steady_clock::now() < deadline);
+    return predicate();
+}
+
 juce::Component* findDescendantWithId(juce::Component& component, const char* id)
 {
     if (component.getComponentID() == id) {
@@ -90,6 +141,23 @@ juce::TextButton* findDescendantTextButtonWithText(juce::Component& component, c
     }
     for (int index = 0; index < component.getNumChildComponents(); ++index) {
         if (auto* child = findDescendantTextButtonWithText(*component.getChildComponent(index), text)) {
+            return child;
+        }
+    }
+    return nullptr;
+}
+
+juce::TextEditor* findDescendantTextEditorWithPlaceholder(
+    juce::Component& component,
+    const char* placeholder)
+{
+    if (auto* editor = dynamic_cast<juce::TextEditor*>(&component);
+        editor != nullptr && editor->getTextToShowWhenEmpty() == juce::String::fromUTF8(placeholder)) {
+        return editor;
+    }
+    for (int index = 0; index < component.getNumChildComponents(); ++index) {
+        if (auto* child = findDescendantTextEditorWithPlaceholder(
+                *component.getChildComponent(index), placeholder)) {
             return child;
         }
     }
@@ -136,7 +204,8 @@ private:
 void saveProjectFixture(
     const std::filesystem::path& path,
     bool withMidiClip,
-    const char* name)
+    const char* name,
+    std::optional<trackloom::PlaybackLoopRange> loopRange = std::nullopt)
 {
     trackloom::AppProjectSession source;
     source.createNewProject(name);
@@ -144,6 +213,10 @@ void saveProjectFixture(
         const auto track = source.editProject().createTrack("Fixture MIDI", trackloom::TrackType::Instrument);
         const auto midi = trackloom::createDefaultMidiClipOnTrack(source, track.id);
         require(midi.success, "open fixture must contain a valid MIDI clip");
+    }
+    if (loopRange.has_value()) {
+        require(source.editProject().setPlaybackLoopRange(loopRange),
+            "open fixture must store its requested playback loop range");
     }
     require(source.saveAs(path).success, "open fixture must save successfully");
 }
@@ -293,6 +366,84 @@ juce::MouseEvent mouseEvent(
     };
 }
 
+trackloom::PlaybackLoopRange beginChangedEndPreview(
+    trackloom::TimelineLoopEditorComponent& timeline)
+{
+    const auto handle = timeline.loopHandleBounds(trackloom::AppLoopBoundaryEdge::End);
+    require(handle.has_value(), "changed-preview helper requires a stored loop end handle");
+    const auto down = handle->getCentre();
+    const auto dragged = juce::Point<float> {
+        static_cast<float>(timeline.getWidth() - 2), down.y
+    };
+    timeline.mouseDown(mouseEvent(timeline, down, down));
+    timeline.mouseDrag(mouseEvent(timeline, dragged, down, true));
+    const auto preview = timeline.previewLoopRange();
+    require(preview.has_value() && preview->endTick != 3840,
+        "changed-preview helper must create a valid range distinct from the stored fixture range");
+    return *preview;
+}
+
+trackloom::PreparedMidiPlaybackPlanBuildRequest captureMainPlaybackRequest(bool useSpace)
+{
+    std::mutex requestMutex;
+    std::optional<trackloom::PreparedMidiPlaybackPlanBuildRequest> capturedRequest;
+    std::latch builderStarted { 1 };
+    std::latch allowBuilderToFinish { 1 };
+    std::latch builderReturned { 1 };
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeFakeHost();
+    dependencies.buildOperation = [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request,
+                                      std::stop_token stopToken) {
+        {
+            std::scoped_lock lock(requestMutex);
+            capturedRequest = request;
+        }
+        builderStarted.count_down();
+        allowBuilderToFinish.wait();
+        auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request), stopToken);
+        builderReturned.count_down();
+        return result;
+    };
+    trackloom::TrackLoomMainComponent main(std::move(dependencies));
+    LatchRelease unblockBuilder(allowBuilderToFinish);
+    main.setSize(1280, 820);
+    auto* createMidi = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainCreateMidiClipButtonComponentId));
+    auto* selector = dynamic_cast<juce::ComboBox*>(
+        findDescendantWithId(main, trackloom::mainMidiClipSelectorComponentId));
+    auto* setLoop = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainSetLoopButtonComponentId));
+    require(createMidi != nullptr && selector != nullptr && setLoop != nullptr,
+        "playback request capture requires Main's real MIDI and loop controls");
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::AddInstrumentTrack)).executed,
+        "playback request capture requires a real instrument track");
+    createMidi->onClick();
+    createMidi->onClick();
+    selector->setSelectedId(2, juce::sendNotificationSync);
+    setLoop->onClick();
+
+    const auto started = useSpace
+        ? main.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey))
+        : main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::PlayProject)).executed;
+    require(started, "Play and Space request capture must both enter asynchronous preparation");
+    require(waitUntil([&] { return builderStarted.try_wait(); }),
+        "playback builder must start within the bounded test deadline");
+    trackloom::PreparedMidiPlaybackPlanBuildRequest result;
+    {
+        std::scoped_lock lock(requestMutex);
+        require(capturedRequest.has_value(), "started builder must expose its immutable request snapshot");
+        result = *capturedRequest;
+    }
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::StopProject)).executed,
+        "request-capture cleanup must cancel the blocked preparation through Main");
+    unblockBuilder.release();
+    require(waitUntil([&] { return builderReturned.try_wait(); }),
+        "request-capture builder must return after its latch is released");
+    main.serviceUiTimer();
+    return result;
+}
+
 void mainSelectionUsesTheSameTruthForComboBoxAndTimeline()
 {
     juce::ScopedJuceInitialiser_GUI initialiseGui;
@@ -393,12 +544,16 @@ void mainProjectReplacementUsesTheChooserSeamAndClearsOnlyAfterSuccess()
     juce::ScopedJuceInitialiser_GUI initialiseGui;
     TemporaryProjectFile midiProject;
     TemporaryProjectFile replacementMidiProject;
-    saveProjectFixture(midiProject.path(), true, "MIDI fixture");
-    saveProjectFixture(replacementMidiProject.path(), true, "Replacement MIDI fixture");
+    saveProjectFixture(
+        midiProject.path(), true, "MIDI fixture", trackloom::PlaybackLoopRange { 0, 3840 });
+    saveProjectFixture(replacementMidiProject.path(), true, "Replacement MIDI fixture",
+        trackloom::PlaybackLoopRange { 0, 3840 });
 
     std::vector<trackloom::AppOpenProjectChooserCompletion> completions;
+    std::vector<std::string> titles;
     trackloom::TrackLoomMainComponentDependencies dependencies;
     dependencies.audioHost = makeHeadlessHost();
+    dependencies.titleChanged = [&titles](std::string title) { titles.push_back(std::move(title)); };
     dependencies.chooseProjectToOpen = [&completions](auto completion) {
         completions.push_back(std::move(completion));
     };
@@ -406,8 +561,15 @@ void mainProjectReplacementUsesTheChooserSeamAndClearsOnlyAfterSuccess()
     main.setSize(1280, 820);
     auto* selector = dynamic_cast<juce::ComboBox*>(
         findDescendantWithId(main, trackloom::mainMidiClipSelectorComponentId));
+    auto* timeline = dynamic_cast<trackloom::TimelineLoopEditorComponent*>(
+        findDescendantWithId(main, trackloom::timelineLoopEditorComponentId));
+    auto* loopToggle = dynamic_cast<juce::ToggleButton*>(
+        findDescendantWithId(main, trackloom::mainLoopToggleComponentId));
+    auto* setLoop = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainSetLoopButtonComponentId));
     auto* addMidiNote = findDescendantTextButtonWithText(main, "添加默认音符");
-    require(selector != nullptr, "chooser test requires the real MIDI selection ComboBox");
+    require(selector != nullptr && timeline != nullptr && loopToggle != nullptr && setLoop != nullptr,
+        "chooser test requires the real MIDI selector, timeline, and loop controls");
     require(addMidiNote != nullptr, "chooser test requires Main's real MIDI edit control");
 
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
@@ -416,42 +578,535 @@ void mainProjectReplacementUsesTheChooserSeamAndClearsOnlyAfterSuccess()
     completions.back()(midiProject.path());
     require(selector->getNumItems() == 1 && selector->getSelectedId() == 0,
         "a successfully opened MIDI project must begin with no implicit MIDI selection");
+    require(timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value()
+            && !loopToggle->getToggleState(),
+        "opening a stored v11 loop range must show it while leaving session playback disabled");
 
+    const auto cleanTitle = titles.back();
     selector->setSelectedId(1, juce::sendNotificationSync);
+    setLoop->onClick();
+    require(loopToggle->getToggleState() && titles.back() == cleanTitle,
+        "Set of the already-stored selected clip range must enable only the session and keep the project clean");
+    loopToggle->setToggleState(false, juce::sendNotificationSync);
+    loopToggle->setToggleState(true, juce::sendNotificationSync);
+    require(titles.back() == cleanTitle,
+        "a loop-toggle round trip must not dirty the saved project");
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::UndoProject)).executed
+            && timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value()
+            && loopToggle->getToggleState(),
+        "session-only Set and Toggle must not create history for a clean opened range");
+    beginChangedEndPreview(*timeline);
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::NewProject)).executed
-            && selector->getNumItems() == 0 && selector->getSelectedId() == 0 && !addMidiNote->isEnabled(),
-        "a successful New Project must clear an existing MIDI selection");
+            && selector->getNumItems() == 0 && selector->getSelectedId() == 0 && !addMidiNote->isEnabled()
+            && !loopToggle->getToggleState() && !timeline->previewLoopRange().has_value(),
+        "a successful New Project must clear selection, disable looping, and cancel preview");
 
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
             && completions.size() == 2,
         "a New Project must leave Main able to enter the chooser seam again");
     completions.back()(midiProject.path());
     selector->setSelectedId(1, juce::sendNotificationSync);
+    loopToggle->setToggleState(true, juce::sendNotificationSync);
+    beginChangedEndPreview(*timeline);
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
             && completions.size() == 3,
         "a selected clean project must still enter the chooser seam");
     completions.back()(replacementMidiProject.path());
-    require(selector->getNumItems() == 1 && selector->getSelectedId() == 0,
-        "a successful replacement retaining clip-1's stable ID must still clear the former MIDI selection");
+    require(selector->getNumItems() == 1 && selector->getSelectedId() == 0
+            && !loopToggle->getToggleState() && !timeline->previewLoopRange().has_value(),
+        "a successful replacement retaining clip-1's stable ID must clear selection, loop session, and preview");
 
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
             && completions.size() == 4,
         "the chooser must remain usable after a successful replacement");
     completions.back()(midiProject.path());
     selector->setSelectedId(1, juce::sendNotificationSync);
+    loopToggle->setToggleState(true, juce::sendNotificationSync);
+    const auto canceledPreview = beginChangedEndPreview(*timeline);
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
             && completions.size() == 5,
         "cancel verification must capture its own completion");
     completions.back()(std::nullopt);
-    require(selector->getSelectedId() == 1,
-        "cancelling the chooser must preserve the selected MIDI clip");
+    require(selector->getSelectedId() == 1 && loopToggle->getToggleState()
+            && timeline->previewLoopRange() == canceledPreview,
+        "cancelling the chooser must preserve selection, loop session, and the changed preview");
 
+    timeline->mouseCaptureLost();
+    const auto failedPreview = beginChangedEndPreview(*timeline);
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
             && completions.size() == 6,
         "open failure verification must capture its own completion");
     completions.back()(replacementMidiProject.path() / "does-not-exist.trackloom");
-    require(selector->getSelectedId() == 1,
-        "a failed project load must preserve the selected MIDI clip");
+    require(selector->getSelectedId() == 1 && loopToggle->getToggleState()
+            && timeline->previewLoopRange() == failedPreview,
+        "a failed project load must preserve selection, loop session, and the changed preview");
+
+    require(main.dispatchCommand(trackloom::appMainMenuRecentProjectCommandId(1)).executed,
+        "the most recently successful Open must remain reachable through Task 7's dynamic recent command");
+    require(selector->getSelectedId() == 0 && !loopToggle->getToggleState()
+            && !timeline->previewLoopRange().has_value(),
+        "a successful Recent replacement must use the same clear/off/cancel success boundary");
+
+    selector->setSelectedId(1, juce::sendNotificationSync);
+    addMidiNote->onClick();
+    loopToggle->setToggleState(true, juce::sendNotificationSync);
+    const auto dirtyPreview = beginChangedEndPreview(*timeline);
+    const auto completionCountBeforeDirtyOpen = completions.size();
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
+            && completions.size() == completionCountBeforeDirtyOpen
+            && selector->getSelectedId() == 1 && loopToggle->getToggleState()
+            && timeline->previewLoopRange() == dirtyPreview,
+        "dirty Open refusal must not enter the chooser or change selection, loop session, or preview");
+
+    timeline->mouseCaptureLost();
+    require(main.dispatchCommand(
+                static_cast<int>(trackloom::AppMainMenuCommand::OpenCommandPalette)).executed,
+        "dirty command-palette Open proof must expose the existing Task 8 command front door");
+    auto* paletteQuery = findDescendantTextEditorWithPlaceholder(main, "搜索命令");
+    require(paletteQuery != nullptr, "command-palette Open proof requires the real query editor");
+    const auto palettePreview = beginChangedEndPreview(*timeline);
+    paletteQuery->setText(juce::String::fromUTF8("打开工程"), false);
+    require(static_cast<bool>(paletteQuery->onTextChange),
+        "command-palette Open proof requires Main's real query callback");
+    paletteQuery->onTextChange();
+    require(main.keyPressed(juce::KeyPress(juce::KeyPress::returnKey))
+            && completions.size() == completionCountBeforeDirtyOpen
+            && timeline->previewLoopRange() == palettePreview,
+        "dirty Open refusal through the command palette must not run a second full refresh that cancels preview");
+}
+
+void mainSetLoopUsesTheSelectedMidiClipAndPublishesItsRange()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeHeadlessHost();
+    trackloom::TrackLoomMainComponent main(std::move(dependencies));
+    main.setSize(1280, 820);
+
+    auto* createMidi = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainCreateMidiClipButtonComponentId));
+    auto* setLoop = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainSetLoopButtonComponentId));
+    auto* clearLoop = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainClearLoopButtonComponentId));
+    auto* loopToggle = dynamic_cast<juce::ToggleButton*>(
+        findDescendantWithId(main, trackloom::mainLoopToggleComponentId));
+    auto* timeline = dynamic_cast<trackloom::TimelineLoopEditorComponent*>(
+        findDescendantWithId(main, trackloom::timelineLoopEditorComponentId));
+    require(createMidi != nullptr && setLoop != nullptr && clearLoop != nullptr
+            && loopToggle != nullptr && timeline != nullptr,
+        "loop wiring test requires the real inspector controls and timeline");
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::AddInstrumentTrack)).executed,
+        "loop wiring test requires a real instrument track");
+    createMidi->onClick();
+    require(setLoop->isEnabled() && !clearLoop->isEnabled() && !loopToggle->isEnabled(),
+        "only a valid selected MIDI clip may enable Set before the project has a loop range");
+
+    setLoop->onClick();
+    require(loopToggle->getToggleState() && clearLoop->isEnabled() && loopToggle->isEnabled(),
+        "setting the selected MIDI clip as loop must enable the session toggle and range controls");
+    require(timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::Start).has_value()
+            && timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value(),
+        "setting the selected MIDI clip as loop must publish the project range to the real timeline");
+}
+
+void mainLoopHistoryKeepsSessionEnablementOutOfUndoRedo()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeHeadlessHost();
+    trackloom::TrackLoomMainComponent main(std::move(dependencies));
+    main.setSize(1280, 820);
+
+    auto* createMidi = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainCreateMidiClipButtonComponentId));
+    auto* setLoop = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainSetLoopButtonComponentId));
+    auto* clearLoop = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainClearLoopButtonComponentId));
+    auto* loopToggle = dynamic_cast<juce::ToggleButton*>(
+        findDescendantWithId(main, trackloom::mainLoopToggleComponentId));
+    auto* timeline = dynamic_cast<trackloom::TimelineLoopEditorComponent*>(
+        findDescendantWithId(main, trackloom::timelineLoopEditorComponentId));
+    require(createMidi != nullptr && setLoop != nullptr && clearLoop != nullptr
+            && loopToggle != nullptr && timeline != nullptr,
+        "loop history test requires the real loop controls and embedded timeline");
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::AddInstrumentTrack)).executed,
+        "loop history test requires a real instrument track");
+    createMidi->onClick();
+    setLoop->onClick();
+    require(loopToggle->getToggleState()
+            && timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value(),
+        "Set must create the range and enable this playback session");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::UndoProject)).executed,
+        "the real Undo command must execute after Set");
+    require(!timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value()
+            && !loopToggle->getToggleState(),
+        "Set -> Undo must remove the range and reconcile the impossible enabled-without-range state");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::RedoProject)).executed,
+        "the real Redo command must execute after undoing Set");
+    require(timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value()
+            && !loopToggle->getToggleState(),
+        "Set -> Undo -> Redo must restore only the project range, not session enablement");
+
+    setLoop->onClick();
+    require(loopToggle->getToggleState(),
+        "setting the same stored range while disabled must re-enable only the session");
+    loopToggle->setToggleState(false, juce::sendNotificationSync);
+    loopToggle->setToggleState(true, juce::sendNotificationSync);
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::UndoProject)).executed,
+        "one Undo after session-only Set and toggle changes must still target the original range command");
+    require(!timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value()
+            && !loopToggle->getToggleState(),
+        "session-only Set and toggle round trips must not enter project history");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::RedoProject)).executed,
+        "Redo must restore the range before the Clear matrix");
+    require(timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value()
+            && !loopToggle->getToggleState(),
+        "redo after session-only actions must restore the range disabled");
+    clearLoop->onClick();
+    require(!timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value()
+            && !loopToggle->getToggleState(),
+        "Clear must remove the range and leave the session disabled");
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::UndoProject)).executed,
+        "Undo must restore the cleared range");
+    require(timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value()
+            && !loopToggle->getToggleState(),
+        "Clear -> Undo must restore only the project range");
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::RedoProject)).executed,
+        "Redo must clear the restored range again");
+    require(!timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value()
+            && !loopToggle->getToggleState(),
+        "Clear -> Undo -> Redo must end without a range or latent enablement");
+}
+
+void mainLoopDragCommitsOnceAndOneUndoRestoresTheStoredRange()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeHeadlessHost();
+    trackloom::TrackLoomMainComponent main(std::move(dependencies));
+    main.setSize(1280, 820);
+
+    auto* createMidi = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainCreateMidiClipButtonComponentId));
+    auto* setLoop = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainSetLoopButtonComponentId));
+    auto* timeline = dynamic_cast<trackloom::TimelineLoopEditorComponent*>(
+        findDescendantWithId(main, trackloom::timelineLoopEditorComponentId));
+    require(createMidi != nullptr && setLoop != nullptr && timeline != nullptr,
+        "Main drag integration requires its real MIDI action, Set control, and timeline");
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::AddInstrumentTrack)).executed,
+        "Main drag integration requires a real instrument track");
+    createMidi->onClick();
+    setLoop->onClick();
+    const auto originalEnd = timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End);
+    require(originalEnd.has_value(), "Main drag integration requires the stored Set range");
+    const auto down = originalEnd->getCentre();
+    const auto firstDrag = juce::Point<float> {
+        static_cast<float>(timeline->getWidth() - 180), down.y
+    };
+    const auto finalDrag = juce::Point<float> {
+        static_cast<float>(timeline->getWidth() - 2), down.y
+    };
+
+    timeline->mouseDown(mouseEvent(*timeline, down, down));
+    timeline->mouseDrag(mouseEvent(*timeline, firstDrag, down, true));
+    timeline->mouseDrag(mouseEvent(*timeline, finalDrag, down, true));
+    const auto finalPreview = timeline->previewLoopRange();
+    require(finalPreview.has_value() && finalPreview->endTick > 3840,
+        "multiple Main drags must publish the last valid application preview before mouse-up");
+    timeline->mouseUp(mouseEvent(*timeline, finalDrag, down, true));
+    const auto committedEnd = timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End);
+    require(!timeline->previewLoopRange().has_value() && committedEnd.has_value()
+            && committedEnd != originalEnd,
+        "one mouse-up must commit the last preview and refresh the stored timeline range");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::UndoProject)).executed,
+        "one real Undo must be available after the drag commit");
+    require(timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End) == originalEnd,
+        "one Undo after multiple drag events and one mouse-up must restore the old stored range");
+}
+
+void mainCaptureLossCancelsAChangedPreviewWithoutCommitOrHistory()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeHeadlessHost();
+    trackloom::TrackLoomMainComponent main(std::move(dependencies));
+    main.setSize(1280, 820);
+
+    auto* createMidi = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainCreateMidiClipButtonComponentId));
+    auto* setLoop = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainSetLoopButtonComponentId));
+    auto* loopToggle = dynamic_cast<juce::ToggleButton*>(
+        findDescendantWithId(main, trackloom::mainLoopToggleComponentId));
+    auto* timeline = dynamic_cast<trackloom::TimelineLoopEditorComponent*>(
+        findDescendantWithId(main, trackloom::timelineLoopEditorComponentId));
+    require(createMidi != nullptr && setLoop != nullptr && loopToggle != nullptr && timeline != nullptr,
+        "Main capture cancellation requires its real loop controls and embedded timeline");
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::AddInstrumentTrack)).executed,
+        "Main capture cancellation requires a real instrument track");
+    createMidi->onClick();
+    setLoop->onClick();
+    const auto storedEnd = timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End);
+    require(storedEnd.has_value(), "capture cancellation requires a stored Set range");
+    const auto changedPreview = beginChangedEndPreview(*timeline);
+    require(changedPreview != trackloom::PlaybackLoopRange { 0, 3840 },
+        "capture cancellation proof must not use an unchanged preview");
+
+    const auto laterMouseUp = juce::Point<float> {
+        static_cast<float>(timeline->getWidth() - 2), storedEnd->getCentreY()
+    };
+    timeline->mouseCaptureLost();
+    timeline->mouseUp(mouseEvent(*timeline, laterMouseUp, storedEnd->getCentre(), true));
+    require(!timeline->previewLoopRange().has_value()
+            && timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End) == storedEnd,
+        "public capture loss followed by mouse-up must clear preview without changing the stored range");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::UndoProject)).executed,
+        "Undo after capture loss must still target the original Set command");
+    require(!timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value()
+            && !loopToggle->getToggleState(),
+        "capture loss must add no commit: one Undo must remove the original Set range entirely");
+}
+
+void mainPlayAndSpaceCaptureTheSameLoopRangeAndResolvedStart()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    const auto playRequest = captureMainPlaybackRequest(false);
+    const auto spaceRequest = captureMainPlaybackRequest(true);
+    const auto expectedRange = trackloom::PlaybackLoopRange { 3840, 7680 };
+    require(playRequest.loopRange == expectedRange && spaceRequest.loopRange == expectedRange,
+        "Play and Space must capture the same selected second-clip loop range");
+    require(playRequest.playbackStartSample == 96000
+            && spaceRequest.playbackStartSample == 96000
+            && playRequest.playbackStartSample == spaceRequest.playbackStartSample,
+        "Play and Space must both resolve the 3840-tick loop start to 96000 samples at 48 kHz / 120 BPM");
+}
+
+void mainPreparingLoopChangeInvalidatesTheWorkerAndNewPreservesUiState()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    TemporaryProjectFile fixture;
+    saveProjectFixture(
+        fixture.path(), true, "Preparing fixture", trackloom::PlaybackLoopRange { 0, 3840 });
+    std::vector<trackloom::AppOpenProjectChooserCompletion> completions;
+    std::vector<std::string> titles;
+    std::latch builderStarted { 1 };
+    std::latch allowBuilderToFinish { 1 };
+    std::latch builderReturned { 1 };
+    trackloom::JuceAudioHost* observedHost = nullptr;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeFakeHost();
+    observedHost = dependencies.audioHost.get();
+    dependencies.chooseProjectToOpen = [&completions](auto completion) {
+        completions.push_back(std::move(completion));
+    };
+    dependencies.titleChanged = [&titles](std::string title) { titles.push_back(std::move(title)); };
+    dependencies.buildOperation = [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request,
+                                      std::stop_token stopToken) {
+        builderStarted.count_down();
+        allowBuilderToFinish.wait();
+        auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request), stopToken);
+        builderReturned.count_down();
+        return result;
+    };
+    trackloom::TrackLoomMainComponent main(std::move(dependencies));
+    LatchRelease unblockBuilder(allowBuilderToFinish);
+    main.setSize(1280, 820);
+    auto* selector = dynamic_cast<juce::ComboBox*>(
+        findDescendantWithId(main, trackloom::mainMidiClipSelectorComponentId));
+    auto* loopToggle = dynamic_cast<juce::ToggleButton*>(
+        findDescendantWithId(main, trackloom::mainLoopToggleComponentId));
+    auto* loopIntent = dynamic_cast<juce::Label*>(
+        findDescendantWithId(main, trackloom::mainLoopIntentStatusComponentId));
+    auto* timeline = dynamic_cast<trackloom::TimelineLoopEditorComponent*>(
+        findDescendantWithId(main, trackloom::timelineLoopEditorComponentId));
+    require(selector != nullptr && loopToggle != nullptr && loopIntent != nullptr && timeline != nullptr,
+        "Preparing integration requires Main's real selector, toggle, intent label, and timeline");
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
+            && completions.size() == 1,
+        "Preparing fixture must enter the injected chooser exactly once");
+    completions.back()(fixture.path());
+    selector->setSelectedId(1, juce::sendNotificationSync);
+    loopToggle->setToggleState(true, juce::sendNotificationSync);
+    const auto projectTitle = titles.back();
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::PlayProject)).executed,
+        "Preparing integration must start playback through Main's Play command");
+    require(waitUntil([&] { return builderStarted.try_wait(); }),
+        "Preparing integration builder must start within the bounded deadline");
+    require(main.dispatchCommand(
+                static_cast<int>(trackloom::AppMainMenuCommand::OpenCommandPalette)).executed,
+        "Preparing disabled-command proof must open the real command palette");
+    auto* paletteQuery = findDescendantTextEditorWithPlaceholder(main, "搜索命令");
+    require(paletteQuery != nullptr,
+        "Preparing disabled-command proof requires the real command-palette query editor");
+    const auto changedPreview = beginChangedEndPreview(*timeline);
+    paletteQuery->setText(juce::String::fromUTF8("新建工程"), false);
+    require(static_cast<bool>(paletteQuery->onTextChange),
+        "Preparing disabled-command proof requires Main's real query callback");
+    paletteQuery->onTextChange();
+    require(main.keyPressed(juce::KeyPress(juce::KeyPress::returnKey))
+            && timeline->previewLoopRange() == changedPreview,
+        "a disabled Preparing replacement command must report refusal without a full refresh that cancels preview");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::NewProject)).executed,
+        "New command must dispatch even when its replacement action refuses Preparing");
+    require(titles.back() == projectTitle && selector->getNumItems() == 1
+            && selector->getSelectedId() == 1 && loopToggle->getToggleState()
+            && timeline->previewLoopRange() == changedPreview
+            && timeline->loopHandleBounds(trackloom::AppLoopBoundaryEdge::End).has_value(),
+        "Preparing New refusal must preserve project, MIDI selection, loop session, and changed preview");
+    require(main.dispatchCommand(trackloom::appMainMenuRecentProjectCommandId(1)).executed
+            && titles.back() == projectTitle && selector->getSelectedId() == 1
+            && loopToggle->getToggleState() && timeline->previewLoopRange() == changedPreview,
+        "Preparing Recent refusal must preserve the same project, selection, loop session, and changed preview");
+
+    loopToggle->setToggleState(false, juce::sendNotificationSync);
+    require(loopIntent->getText() == juce::String::fromUTF8("循环设置已变化，请重新播放")
+            && !observedHost->snapshot().planInstalled,
+        "changing loop intent during Preparing must immediately reject the old worker and show the controller message");
+    unblockBuilder.release();
+    require(waitUntil([&] { return builderReturned.try_wait(); }),
+        "invalidated Preparing worker must return after its latch is released");
+    require(waitUntil([&] {
+        main.serviceUiTimer();
+        return !observedHost->snapshot().planInstalled;
+    }), "invalidated old worker must never install a playback plan");
+    require(loopIntent->getText() == juce::String::fromUTF8("循环设置已变化，请重新播放"),
+        "PreparationInvalidated message must be derived from controller status after worker cleanup");
+}
+
+void mainOpenCompletionRechecksPreparingAndPreservesEveryUiState()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    TemporaryProjectFile fixture;
+    TemporaryProjectFile replacement;
+    saveProjectFixture(
+        fixture.path(), true, "Completion fixture", trackloom::PlaybackLoopRange { 0, 3840 });
+    saveProjectFixture(replacement.path(), true, "Should not open",
+        trackloom::PlaybackLoopRange { 0, 3840 });
+    std::vector<trackloom::AppOpenProjectChooserCompletion> completions;
+    std::vector<std::string> titles;
+    std::latch builderStarted { 1 };
+    std::latch allowBuilderToFinish { 1 };
+    std::latch builderReturned { 1 };
+    trackloom::JuceAudioHost* observedHost = nullptr;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeFakeHost();
+    observedHost = dependencies.audioHost.get();
+    dependencies.chooseProjectToOpen = [&completions](auto completion) {
+        completions.push_back(std::move(completion));
+    };
+    dependencies.titleChanged = [&titles](std::string title) { titles.push_back(std::move(title)); };
+    dependencies.buildOperation = [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request,
+                                      std::stop_token stopToken) {
+        builderStarted.count_down();
+        allowBuilderToFinish.wait();
+        auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request), stopToken);
+        builderReturned.count_down();
+        return result;
+    };
+    trackloom::TrackLoomMainComponent main(std::move(dependencies));
+    LatchRelease unblockBuilder(allowBuilderToFinish);
+    main.setSize(1280, 820);
+    auto* selector = dynamic_cast<juce::ComboBox*>(
+        findDescendantWithId(main, trackloom::mainMidiClipSelectorComponentId));
+    auto* loopToggle = dynamic_cast<juce::ToggleButton*>(
+        findDescendantWithId(main, trackloom::mainLoopToggleComponentId));
+    auto* timeline = dynamic_cast<trackloom::TimelineLoopEditorComponent*>(
+        findDescendantWithId(main, trackloom::timelineLoopEditorComponentId));
+    require(selector != nullptr && loopToggle != nullptr && timeline != nullptr,
+        "completion-gate integration requires Main's real selector, toggle, and timeline");
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
+            && completions.size() == 1,
+        "completion-gate fixture must open through the one chooser seam");
+    completions.back()(fixture.path());
+    selector->setSelectedId(1, juce::sendNotificationSync);
+    loopToggle->setToggleState(true, juce::sendNotificationSync);
+    const auto projectTitle = titles.back();
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
+            && completions.size() == 2,
+        "Open's first safety gate must capture a completion while playback is stopped");
+    auto pendingCompletion = completions.back();
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::PlayProject)).executed,
+        "completion-gate integration must enter Preparing after chooser capture");
+    require(waitUntil([&] { return builderStarted.try_wait(); }),
+        "completion-gate builder must start within the bounded deadline");
+    const auto changedPreview = beginChangedEndPreview(*timeline);
+
+    pendingCompletion(replacement.path());
+    require(titles.back() == projectTitle && selector->getNumItems() == 1
+            && selector->getSelectedId() == 1 && loopToggle->getToggleState()
+            && timeline->previewLoopRange() == changedPreview
+            && !observedHost->snapshot().planInstalled,
+        "Open completion's second safety gate must refuse Preparing without changing project, selection, loop, or preview");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::StopProject)).executed,
+        "completion-gate cleanup must cancel Preparing through Main");
+    unblockBuilder.release();
+    require(waitUntil([&] { return builderReturned.try_wait(); }),
+        "completion-gate builder must return after cleanup releases its latch");
+    main.serviceUiTimer();
+}
+
+void mainPlayingLoopChangeKeepsPlayingAndShowsTheControllerMessage()
+{
+    juce::ScopedJuceInitialiser_GUI initialiseGui;
+    trackloom::test::FakeJuceAudioDeviceType* observedType = nullptr;
+    trackloom::JuceAudioHost* observedHost = nullptr;
+    trackloom::TrackLoomMainComponentDependencies dependencies;
+    dependencies.audioHost = makeFakeHost(
+        [&](trackloom::test::FakeJuceAudioDeviceType& type) { observedType = &type; });
+    observedHost = dependencies.audioHost.get();
+    trackloom::TrackLoomMainComponent main(std::move(dependencies));
+    main.setSize(1280, 820);
+    auto* createMidi = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainCreateMidiClipButtonComponentId));
+    auto* setLoop = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainSetLoopButtonComponentId));
+    auto* loopToggle = dynamic_cast<juce::ToggleButton*>(
+        findDescendantWithId(main, trackloom::mainLoopToggleComponentId));
+    auto* loopIntent = dynamic_cast<juce::Label*>(
+        findDescendantWithId(main, trackloom::mainLoopIntentStatusComponentId));
+    require(createMidi != nullptr && setLoop != nullptr && loopToggle != nullptr && loopIntent != nullptr
+            && observedType != nullptr && observedType->activeDevice() != nullptr,
+        "Playing integration requires real Main loop controls and a live fake audio device");
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::AddInstrumentTrack)).executed,
+        "Playing integration requires a real instrument track");
+    createMidi->onClick();
+    setLoop->onClick();
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::PlayProject)).executed,
+        "Playing integration must start through Main's Play command");
+    require(waitUntil([&] {
+        main.serviceUiTimer();
+        return observedHost->snapshot().planInstalled
+            && observedHost->snapshot().realtime.state == trackloom::RealtimePlaybackState::Playing;
+    }), "fake-device preparation must install and enter Playing within the bounded deadline");
+
+    loopToggle->setToggleState(false, juce::sendNotificationSync);
+    const auto playingAfterChange = observedHost->snapshot();
+    require(playingAfterChange.planInstalled
+            && playingAfterChange.realtime.state == trackloom::RealtimePlaybackState::Playing
+            && loopIntent->getText().contains(juce::String::fromUTF8("停止并重新播放后生效")),
+        "changing loop intent during Playing must keep playback active and show the controller-derived restart message");
+
+    require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::StopProject)).executed,
+        "Playing integration cleanup must request Stop through Main");
+    require(waitUntil([&] {
+        if (observedType->activeDevice() != nullptr) {
+            observedType->activeDevice()->runCallback(256);
+        }
+        main.serviceUiTimer();
+        const auto snapshot = observedHost->snapshot();
+        return snapshot.realtime.state == trackloom::RealtimePlaybackState::Stopped
+            && !snapshot.callbackRunning;
+    }), "Playing integration cleanup must drain the fake callback and reach Stopped without hanging");
 }
 
 void geometryPaintsTheTimelineBandsAndExposesHandDerivedBounds()
@@ -876,6 +1531,14 @@ int main(int argumentCount, char* arguments[])
         run("main-selection", mainSelectionUsesTheSameTruthForComboBoxAndTimeline);
         run("main-visible-range", mainVisibleRangeWheelRefreshesOnlyTheCanvas);
         run("main-project-replacement", mainProjectReplacementUsesTheChooserSeamAndClearsOnlyAfterSuccess);
+        run("main-loop-set", mainSetLoopUsesTheSelectedMidiClipAndPublishesItsRange);
+        run("main-loop-history", mainLoopHistoryKeepsSessionEnablementOutOfUndoRedo);
+        run("main-loop-drag-history", mainLoopDragCommitsOnceAndOneUndoRestoresTheStoredRange);
+        run("main-capture-cancel", mainCaptureLossCancelsAChangedPreviewWithoutCommitOrHistory);
+        run("main-play-space", mainPlayAndSpaceCaptureTheSameLoopRangeAndResolvedStart);
+        run("main-preparing-loop", mainPreparingLoopChangeInvalidatesTheWorkerAndNewPreservesUiState);
+        run("main-open-second-gate", mainOpenCompletionRechecksPreparingAndPreservesEveryUiState);
+        run("main-playing-loop", mainPlayingLoopChangeKeepsPlayingAndShowsTheControllerMessage);
     } catch (const std::exception& error) {
         std::cerr << "D1 JUCE loop editor test failed: " << error.what() << '\n';
         return 1;

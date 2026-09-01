@@ -248,8 +248,10 @@ public:
         , menuBar_(this)
         , timelineLoopEditor_({
               [this](std::string clipId) { selectMidiClipById(clipId); },
-              {},
-              {},
+              [this](trackloom::AppLoopBoundaryEdge edge, std::int64_t candidateTick) {
+                  return previewLoopBoundary(edge, candidateTick);
+              },
+              [this](trackloom::PlaybackLoopRange range) { commitLoopRange(range); },
               [this](trackloom::AppTimelineVisibleTickRange range) {
                   refreshTimelineCanvas(range);
               } })
@@ -400,7 +402,7 @@ public:
         setLoopButton_.setButtonText(toJuceString("设置循环"));
         clearLoopButton_.setButtonText(toJuceString("清除循环"));
         loopToggle_.setButtonText(toJuceString("循环"));
-        loopIntentStatusLabel_.setText(toJuceString("循环控制 D2 预留"), juce::dontSendNotification);
+        loopIntentStatusLabel_.setText({}, juce::dontSendNotification);
         midiEditorToggle_.setButtonText(toJuceString("MIDI 编辑器"));
         midiEditorPlaceholder_.setText(toJuceString("D3 预留，尚未实现"), juce::dontSendNotification);
         midiEditorPlaceholder_.setJustificationType(juce::Justification::centred);
@@ -467,6 +469,9 @@ public:
         playProjectButton_.onClick = [this] { startProjectPlayback(); };
         stopProjectButton_.onClick = [this] { stopProjectPlayback(); };
         rewindProjectButton_.onClick = [this] { rewindProjectPlayback(); };
+        setLoopButton_.onClick = [this] { setLoopFromSelectedMidiClip(); };
+        clearLoopButton_.onClick = [this] { clearLoopRange(); };
+        loopToggle_.onStateChange = [this] { toggleLoopEnabled(); };
         targetTrackBox_.onChange = [this] { updateSelectedTrackFromComboBox(); };
         targetAudioTrackBox_.onChange = [this] { updateSelectedAudioTrackFromComboBox(); };
         targetAudioClipBox_.onChange = [this] { updateSelectedAudioClipFromComboBox(); };
@@ -1406,7 +1411,13 @@ private:
             if (result.dispatch.command != trackloom::AppCommandKind::OpenCommandPalette) {
                 commandPaletteSession_.close();
             }
-            refreshFromSession();
+            const auto projectReplacementCommand =
+                result.dispatch.command == trackloom::AppCommandKind::NewProject
+                || result.dispatch.command == trackloom::AppCommandKind::OpenProject
+                || result.dispatch.command == trackloom::AppCommandKind::OpenRecentProject;
+            // Replacement handlers already own success/full versus refusal/non-timeline refresh.
+            // A second full palette refresh would silently cancel a valid loop-boundary preview.
+            refreshFromSession(!projectReplacementCommand);
             grabKeyboardFocus();
             return true;
         }
@@ -1425,7 +1436,7 @@ private:
             break;
         }
 
-        refreshFromSession();
+        refreshFromSession(false);
         commandPaletteQueryEditor_.grabKeyboardFocus();
         return true;
     }
@@ -1512,7 +1523,7 @@ private:
         } else {
             lastActionMessage_ = "编辑动作：当前没有可撤销的工程编辑。";
         }
-        refreshFromSession();
+        reconcileLoopStateAfterProjectHistoryChange();
     }
 
     void redoProjectEditFromMenu()
@@ -1523,7 +1534,7 @@ private:
         } else {
             lastActionMessage_ = "编辑动作：当前没有可重做的工程编辑。";
         }
-        refreshFromSession();
+        reconcileLoopStateAfterProjectHistoryChange();
     }
 
     void timerCallback() override
@@ -1541,21 +1552,21 @@ private:
             timelineLoopEditor_.cancelLoopDrag();
         }
         lastActionMessage_ = result.message;
-        refreshFromSession();
+        refreshFromSession(result.success);
     }
 
     void chooseProjectToOpen()
     {
         if (session_.isDirty()) {
             lastActionMessage_ = "当前工程有未保存修改，请先保存或另存为，再打开其他工程。";
-            refreshFromSession();
+            refreshFromSession(false);
             return;
         }
 
         const auto safety = trackloom::prepareAppProjectReplacement(playback_);
         if (!safety.safe) {
             lastActionMessage_ = safety.message;
-            refreshFromSession();
+            refreshFromSession(false);
             return;
         }
 
@@ -1627,7 +1638,7 @@ private:
     {
         if (!selectedPath.has_value()) {
             setFileActionFeedback(trackloom::describeCanceledAppProjectFileAction(
-                trackloom::AppProjectFileAction::Open));
+                trackloom::AppProjectFileAction::Open), false);
             return;
         }
 
@@ -1642,7 +1653,7 @@ private:
             recordCurrentProjectAsRecent();
         }
         lastActionMessage_ = openResult.message;
-        refreshFromSession();
+        refreshFromSession(openResult.success);
     }
 
     void finishSaveProjectChoice(const juce::FileChooser& chooser)
@@ -1670,7 +1681,9 @@ private:
             .getChildFile(toJuceString("Untitled.trackloom"));
     }
 
-    void setFileActionFeedback(const trackloom::AppProjectFileActionFeedback& feedback)
+    void setFileActionFeedback(
+        const trackloom::AppProjectFileActionFeedback& feedback,
+        bool refreshTimeline = true)
     {
         const auto presentation = trackloom::describeAppProjectFileActionPresentation(feedback);
         lastActionMessage_ = presentation.summary;
@@ -1678,7 +1691,7 @@ private:
         if (feedback.success) {
             recordCurrentProjectAsRecent();
         }
-        refreshFromSession();
+        refreshFromSession(refreshTimeline);
 
         if (presentation.showWarningDetails) {
             // 弹窗是完整详情的主入口；TooltipWindow 让状态栏悬停时也能再次查看同一内容。
@@ -1803,6 +1816,55 @@ private:
     {
         const auto feedback = trackloom::stopAppPlayback(playback_);
         lastActionMessage_ = feedback.message;
+        refreshFromSession();
+    }
+
+    void setLoopFromSelectedMidiClip()
+    {
+        const auto feedback = trackloom::setAppPlaybackLoopFromSelectedMidiClip(
+            session_, selectedMidiClipId_, loopState_);
+        lastActionMessage_ = feedback.message;
+        refreshLoopAfterProjectOrSessionChange();
+    }
+
+    void clearLoopRange()
+    {
+        const auto feedback = trackloom::clearAppPlaybackLoopRange(session_, loopState_);
+        lastActionMessage_ = feedback.message;
+        refreshLoopAfterProjectOrSessionChange();
+    }
+
+    void toggleLoopEnabled()
+    {
+        const auto feedback = trackloom::toggleAppLoopPlaybackEnabled(session_.project(), loopState_);
+        lastActionMessage_ = feedback.message;
+        refreshLoopAfterProjectOrSessionChange();
+    }
+
+    std::optional<trackloom::PlaybackLoopRange> previewLoopBoundary(
+        trackloom::AppLoopBoundaryEdge edge,
+        std::int64_t candidateTick)
+    {
+        return trackloom::previewAppPlaybackLoopBoundaryDrag(
+            session_.project(), edge, candidateTick).range;
+    }
+
+    void commitLoopRange(trackloom::PlaybackLoopRange range)
+    {
+        const auto feedback = trackloom::commitAppPlaybackLoopRange(session_, range, loopState_);
+        lastActionMessage_ = feedback.message;
+        refreshLoopAfterProjectOrSessionChange();
+    }
+
+    void reconcileLoopStateAfterProjectHistoryChange()
+    {
+        loopState_.reconcile(session_.project());
+        refreshLoopAfterProjectOrSessionChange();
+    }
+
+    void refreshLoopAfterProjectOrSessionChange()
+    {
+        playback_.poll(session_, loopState_);
         refreshFromSession();
     }
 
@@ -2727,7 +2789,7 @@ private:
     {
         if (selectedRecentProjectNumber_ == 0) {
             lastActionMessage_ = "请先选择一个最近工程。";
-            refreshFromSession();
+            refreshFromSession(false);
             return;
         }
 
@@ -2743,7 +2805,7 @@ private:
             timelineLoopEditor_.cancelLoopDrag();
         }
         lastActionMessage_ = feedback.message;
-        refreshFromSession();
+        refreshFromSession(feedback.success);
     }
 
     void clearObjectSelectionsForProjectReplacement()
@@ -3046,9 +3108,25 @@ private:
             playbackStatus.state == trackloom::AppPlaybackState::Preparing
             || playbackStatus.state == trackloom::AppPlaybackState::Playing);
         rewindProjectButton_.setEnabled(playback_.currentSample() > 0);
+        refreshLoopPresentation(playbackStatus);
     }
 
-    void refreshFromSession()
+    void refreshLoopPresentation(const trackloom::AppPlaybackStatus& playbackStatus)
+    {
+        const auto selectedClip = session_.project().findClipById(selectedMidiClipId_);
+        const auto hasSelectedMidiClip = selectedClip.has_value()
+            && selectedClip->type == trackloom::ClipType::Midi;
+        const auto hasLoopRange = session_.project().playbackLoopRange().has_value();
+        setLoopButton_.setEnabled(hasSelectedMidiClip);
+        clearLoopButton_.setEnabled(hasLoopRange);
+        loopToggle_.setEnabled(hasLoopRange);
+        loopToggle_.setToggleState(loopState_.enabled(), juce::dontSendNotification);
+        loopIntentStatusLabel_.setText(
+            toJuceString(playbackStatus.loopIntentMessage),
+            juce::dontSendNotification);
+    }
+
+    void refreshFromSession(bool refreshTimeline = true)
     {
         const auto status = trackloom::describeAppProjectSession(session_);
         const auto hostStatus = audioHost_->snapshot();
@@ -3059,9 +3137,11 @@ private:
         refreshAudioClipTargetSelector(timelineStatus);
         refreshMidiClipTargetSelector(timelineStatus);
         refreshRecentProjectSelector(recentStatus);
-        refreshTimelineCanvas(timelineCanvasInitialised_
-                ? timelineLoopEditor_.visibleTickRange()
-                : trackloom::AppTimelineVisibleTickRange { 0, 7680 });
+        if (refreshTimeline) {
+            refreshTimelineCanvas(timelineCanvasInitialised_
+                    ? timelineLoopEditor_.visibleTickRange()
+                    : trackloom::AppTimelineVisibleTickRange { 0, 7680 });
+        }
 
         titleLabel_.setText(toJuceString(status.windowTitle), juce::dontSendNotification);
         statusLabel_.setText(toJuceString(status.statusLine), juce::dontSendNotification);
