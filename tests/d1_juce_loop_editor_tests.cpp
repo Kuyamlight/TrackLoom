@@ -909,10 +909,10 @@ void mainPreparingLoopChangeInvalidatesTheWorkerAndNewPreservesUiState()
     };
     dependencies.titleChanged = [&titles](std::string title) { titles.push_back(std::move(title)); };
     dependencies.buildOperation = [&](trackloom::PreparedMidiPlaybackPlanBuildRequest request,
-                                      std::stop_token stopToken) {
+                                      std::stop_token) {
         builderStarted.count_down();
         allowBuilderToFinish.wait();
-        auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request), stopToken);
+        auto result = trackloom::buildPreparedMidiPlaybackPlan(std::move(request), {});
         builderReturned.count_down();
         return result;
     };
@@ -925,10 +925,13 @@ void mainPreparingLoopChangeInvalidatesTheWorkerAndNewPreservesUiState()
         findDescendantWithId(main, trackloom::mainLoopToggleComponentId));
     auto* loopIntent = dynamic_cast<juce::Label*>(
         findDescendantWithId(main, trackloom::mainLoopIntentStatusComponentId));
+    auto* play = dynamic_cast<juce::TextButton*>(
+        findDescendantWithId(main, trackloom::mainPlayButtonComponentId));
     auto* timeline = dynamic_cast<trackloom::TimelineLoopEditorComponent*>(
         findDescendantWithId(main, trackloom::timelineLoopEditorComponentId));
-    require(selector != nullptr && loopToggle != nullptr && loopIntent != nullptr && timeline != nullptr,
-        "Preparing integration requires Main's real selector, toggle, intent label, and timeline");
+    require(selector != nullptr && loopToggle != nullptr && loopIntent != nullptr
+            && play != nullptr && timeline != nullptr,
+        "Preparing integration requires Main's real selector, toggle, Play, intent label, and timeline");
     require(main.dispatchCommand(static_cast<int>(trackloom::AppMainMenuCommand::OpenProject)).executed
             && completions.size() == 1,
         "Preparing fixture must enter the injected chooser exactly once");
@@ -969,17 +972,18 @@ void mainPreparingLoopChangeInvalidatesTheWorkerAndNewPreservesUiState()
 
     loopToggle->setToggleState(false, juce::sendNotificationSync);
     require(loopIntent->getText() == juce::String::fromUTF8("循环设置已变化，请重新播放")
-            && !observedHost->snapshot().planInstalled,
+            && !play->isEnabled() && !observedHost->snapshot().planInstalled,
         "changing loop intent during Preparing must immediately reject the old worker and show the controller message");
     unblockBuilder.release();
     require(waitUntil([&] { return builderReturned.try_wait(); }),
         "invalidated Preparing worker must return after its latch is released");
     require(waitUntil([&] {
         main.serviceUiTimer();
-        return !observedHost->snapshot().planInstalled;
-    }), "invalidated old worker must never install a playback plan");
-    require(loopIntent->getText() == juce::String::fromUTF8("循环设置已变化，请重新播放"),
-        "PreparationInvalidated message must be derived from controller status after worker cleanup");
+        return play->isEnabled();
+    }), "Play must recover only after Main consumes the invalidated completion and settles Stopped");
+    require(!observedHost->snapshot().planInstalled
+            && loopIntent->getText() == juce::String::fromUTF8("循环设置已变化，请重新播放"),
+        "a settled invalidated completion must never install its old plan and must retain the controller message");
 }
 
 void mainOpenCompletionRechecksPreparingAndPreservesEveryUiState()
@@ -1511,10 +1515,17 @@ void wheelAndInvalidSnapshotKeepTheVisibleRangeLegal()
 int main(int argumentCount, char* arguments[])
 {
     trackloom::test::configureTestFailureOutput();
+    if (argumentCount > 2) {
+        std::cerr << "D1 JUCE loop editor test failed: expected at most one selector\n";
+        return 2;
+    }
+
     try {
         const auto requested = argumentCount > 1 ? std::string(arguments[1]) : std::string {};
+        std::size_t executedTestCount = 0;
         const auto run = [&](std::string_view name, const auto& test) {
             if (requested.empty() || requested == name) {
+                ++executedTestCount;
                 test();
             }
         };
@@ -1539,6 +1550,11 @@ int main(int argumentCount, char* arguments[])
         run("main-preparing-loop", mainPreparingLoopChangeInvalidatesTheWorkerAndNewPreservesUiState);
         run("main-open-second-gate", mainOpenCompletionRechecksPreparingAndPreservesEveryUiState);
         run("main-playing-loop", mainPlayingLoopChangeKeepsPlayingAndShowsTheControllerMessage);
+        if (!requested.empty() && executedTestCount == 0) {
+            std::cerr << "D1 JUCE loop editor test failed: unknown selector '"
+                      << requested << "'\n";
+            return 2;
+        }
     } catch (const std::exception& error) {
         std::cerr << "D1 JUCE loop editor test failed: " << error.what() << '\n';
         return 1;
