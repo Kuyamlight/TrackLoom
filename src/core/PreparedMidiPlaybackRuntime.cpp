@@ -441,7 +441,6 @@ bool PreparedMidiPlaybackRuntime::installPlan(const PreparedMidiPlaybackPlan* pl
             return event.samplePosition < samplePosition;
         }) - plan_->events.begin());
     initialChaseApplied_ = false;
-    boundaryTransitionPending_ = false;
     loopHeadChasePending_ = plan_->loop
         && plan_->playbackStartSample == plan_->loop->loopStartSample;
     stopReleaseStarted_ = false;
@@ -487,7 +486,6 @@ void PreparedMidiPlaybackRuntime::hardReset(RealtimeAudioError error) noexcept
     plan_ = nullptr;
     eventIndex_ = 0;
     initialChaseApplied_ = false;
-    boundaryTransitionPending_ = false;
     loopHeadChasePending_ = false;
     stopReleaseStarted_ = false;
     projectSamplePositionCursor_ = 0;
@@ -652,25 +650,17 @@ void PreparedMidiPlaybackRuntime::processBlock(
         const auto& loop = *plan_->loop;
         auto index = eventIndex_;
         auto position = projectSamplePositionCursor_;
-        auto boundaryPending = boundaryTransitionPending_;
         auto headPending = loopHeadChasePending_;
         int remainingFrames = frames;
         while (remainingFrames > 0 && densityValid) {
-            if (position == loop.loopStartSample) {
-                if (boundaryPending) {
-                    densityValid = addCallbackEvents(loop.boundaryNoteOffEvents.size());
-                    boundaryPending = false;
-                    headPending = true;
+            if (position == loop.loopStartSample && headPending) {
+                densityValid = addCallbackEvents(loop.startChaseNoteOnEvents.size());
+                while (densityValid && index < plan_->events.size()
+                    && plan_->events[index].samplePosition == 0) {
+                    densityValid = addCallbackEvents(1);
+                    ++index;
                 }
-                if (densityValid && headPending) {
-                    densityValid = addCallbackEvents(loop.startChaseNoteOnEvents.size());
-                    while (densityValid && index < plan_->events.size()
-                        && plan_->events[index].samplePosition == 0) {
-                        densityValid = addCallbackEvents(1);
-                        ++index;
-                    }
-                    headPending = false;
-                }
+                headPending = false;
             }
             const auto relativeStart = position - loop.loopStartSample;
             const auto segmentFrames = static_cast<int>(std::min<std::int64_t>(
@@ -684,9 +674,10 @@ void PreparedMidiPlaybackRuntime::processBlock(
             remainingFrames -= segmentFrames;
             position += segmentFrames;
             if (position == loop.loopStartSample + loop.loopLengthSamples) {
+                densityValid = addCallbackEvents(loop.boundaryNoteOffEvents.size());
                 position = loop.loopStartSample;
                 index = 0;
-                boundaryPending = true;
+                headPending = true;
             }
         }
     }
@@ -719,16 +710,7 @@ void PreparedMidiPlaybackRuntime::processBlock(
     if (plan_->loop) {
         const auto& loop = *plan_->loop;
         const auto loopEnd = loop.loopStartSample + loop.loopLengthSamples;
-        const auto applyLoopHead = [&]() noexcept {
-            if (boundaryTransitionPending_) {
-                for (const auto& event : loop.boundaryNoteOffEvents) {
-                    applyEvent(event, loopIterationCursor_);
-                }
-                ++loopIterationCursor_;
-                loopIteration_.store(loopIterationCursor_, std::memory_order_release);
-                boundaryTransitionPending_ = false;
-                loopHeadChasePending_ = true;
-            }
+        const auto applyLoopHeadChase = [&]() noexcept {
             if (!loopHeadChasePending_) {
                 return;
             }
@@ -757,11 +739,21 @@ void PreparedMidiPlaybackRuntime::processBlock(
             }
             loopHeadChasePending_ = false;
         };
+        const auto commitLoopBoundary = [&]() noexcept {
+            for (const auto& event : loop.boundaryNoteOffEvents) {
+                applyEvent(event, loopIterationCursor_);
+            }
+            ++loopIterationCursor_;
+            loopIteration_.store(loopIterationCursor_, std::memory_order_release);
+            projectSamplePositionCursor_ = loop.loopStartSample;
+            eventIndex_ = 0;
+            loopHeadChasePending_ = true;
+        };
 
         int outputFrame = 0;
         while (outputFrame < frames) {
             if (projectSamplePositionCursor_ == loop.loopStartSample) {
-                applyLoopHead();
+                applyLoopHeadChase();
             }
             const auto relativeStart = projectSamplePositionCursor_ - loop.loopStartSample;
             const auto framesUntilBoundary = loop.loopLengthSamples - relativeStart;
@@ -787,12 +779,7 @@ void PreparedMidiPlaybackRuntime::processBlock(
             outputFrame += segmentFrames;
             projectSamplePositionCursor_ += segmentFrames;
             if (projectSamplePositionCursor_ == loopEnd) {
-                projectSamplePositionCursor_ = loop.loopStartSample;
-                eventIndex_ = 0;
-                boundaryTransitionPending_ = true;
-                if (outputFrame < frames) {
-                    applyLoopHead();
-                }
+                commitLoopBoundary();
             }
         }
         projectSamplePosition_.store(projectSamplePositionCursor_, std::memory_order_release);

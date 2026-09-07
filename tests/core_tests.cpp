@@ -109,7 +109,6 @@ struct PreparedMidiPlaybackRuntimeTestAccess {
         runtime.synth_.prepare(plan.sampleRate);
         runtime.eventIndex_ = 0;
         runtime.initialChaseApplied_ = false;
-        runtime.boundaryTransitionPending_ = false;
         runtime.loopHeadChasePending_ = plan.loop
             && plan.playbackStartSample == plan.loop->loopStartSample;
         runtime.stopReleaseStarted_ = false;
@@ -2674,17 +2673,19 @@ void runtimeStopsAfterNonLoopPlanAndEmptyPlan()
         "non-loop plan must stop after all events and release tails are exhausted");
 }
 
-void runtimeLoopsAcrossTailAndHeadWithBoundaryReleaseBeforeChase()
+void runtimeCommitsExactLoopBoundaryBeforeDeferringHeadChase()
 {
-    auto plan = runtimePlan(1, 64);
-    plan.playbackStartSample = 112;
-    plan.loop = trackloom::PreparedMidiLoop {100, 16, {}, {}};
+    auto plan = runtimePlan(1, 2048);
+    plan.playbackStartSample = 4192;
+    plan.loop = trackloom::PreparedMidiLoop {100, 4096, {}, {}};
     plan.events.push_back(runtimeEvent(
-        14, 20, 0, trackloom::PreparedMidiEventType::NoteOn));
+        4094, 20, 0, trackloom::PreparedMidiEventType::NoteOn));
     plan.loop->boundaryNoteOffEvents.push_back(runtimeEvent(
-        16, 20, 1, trackloom::PreparedMidiEventType::NoteOff));
+        4096, 20, 1, trackloom::PreparedMidiEventType::NoteOff));
+    plan.loop->boundaryNoteOffEvents.push_back(runtimeEvent(
+        4096, 999, 2, trackloom::PreparedMidiEventType::NoteOff));
     plan.loop->startChaseNoteOnEvents.push_back(runtimeEvent(
-        0, 20, 2, trackloom::PreparedMidiEventType::NoteOn));
+        0, 20, 3, trackloom::PreparedMidiEventType::NoteOn));
     trackloom::PreparedMidiPlaybackRuntime runtime;
     require(runtime.installPlan(&plan) && runtime.start(), "loop tail fixture should start");
     std::array<float, 4> tail {};
@@ -2692,25 +2693,36 @@ void runtimeLoopsAcrossTailAndHeadWithBoundaryReleaseBeforeChase()
 
     runtime.processBlock(tailOutput, 1, 4);
 
-    require(runtime.snapshot().projectSamplePosition == 100,
+    const auto boundary = runtime.snapshot();
+    require(boundary.projectSamplePosition == 100 && boundary.loopIteration == 1,
         "a callback ending exactly at the loop boundary must publish the wrapped position");
+    require(boundary.staleNoteOffCount == 1,
+        "the exact-boundary callback must apply its complete boundary note-off table");
     require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::hasVoiceKey(
                 runtime, 20, 0),
-        "the tail note must remain addressable until the next valid loop-head sample");
+        "the released tail voice must remain alive during its release envelope");
+    require(!trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::hasVoiceKey(
+                runtime, 20, 1),
+        "a callback with no loop-head output sample must defer the next-iteration chase");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(runtime) == 1,
+        "the exact-boundary callback must not create an early chased voice");
 
-    std::array<float, 4> head {};
+    std::array<float, 2048> head {};
     float* headOutput[] {head.data()};
-    runtime.processBlock(headOutput, 1, 4);
+    runtime.processBlock(headOutput, 1, static_cast<int>(head.size()));
     const auto snapshot = runtime.snapshot();
-    require(snapshot.projectSamplePosition == 104 && snapshot.loopIteration == 1,
-        "next callback must continue from the loop head in the next iteration");
-    require(snapshot.staleNoteOffCount == 0,
-        "boundary note off must target the old iteration before chase increments it");
+    require(snapshot.projectSamplePosition == 2148 && snapshot.loopIteration == 1,
+        "next callback must chase from the loop head without incrementing twice");
+    require(snapshot.staleNoteOffCount == 1,
+        "deferred chase must not replay the preceding boundary note-off table");
     require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::hasVoiceKey(
                 runtime, 20, 1),
         "loop-head chase must create the same base key in the new iteration");
-    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(runtime) == 2,
-        "releasing old iteration and chased new iteration must coexist");
+    require(!trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::hasVoiceKey(
+                runtime, 20, 0),
+        "the old iteration must finish its release while the chased iteration continues");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(runtime) == 1,
+        "only the chased iteration should remain after the old release envelope expires");
 }
 
 void runtimeDoesNotRepeatInitialOrLoopHeadChaseOnContinuousBlocks()
@@ -2772,6 +2784,45 @@ void runtimeHandlesMultipleLoopWrapsAndSameBaseKeyReleases()
                     runtime, 23, iteration),
             "same base key occurrences from different loop iterations must coexist");
     }
+}
+
+void runtimeCommitsFinalExactBoundaryAfterMultipleWraps()
+{
+    auto plan = runtimePlan(1, 8);
+    plan.loop = trackloom::PreparedMidiLoop {0, 4, {}, {}};
+    plan.loop->startChaseNoteOnEvents.push_back(runtimeEvent(
+        0, 25, 0, trackloom::PreparedMidiEventType::NoteOn));
+    plan.loop->boundaryNoteOffEvents.push_back(runtimeEvent(
+        4, 25, 1, trackloom::PreparedMidiEventType::NoteOff));
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    require(runtime.installPlan(&plan) && runtime.start(),
+        "exact multi-wrap fixture should start");
+    std::array<float, 8> samples {};
+    float* outputs[] {samples.data()};
+
+    runtime.processBlock(outputs, 1, static_cast<int>(samples.size()));
+
+    const auto boundary = runtime.snapshot();
+    require(boundary.projectSamplePosition == 0 && boundary.loopIteration == 2,
+        "every completed wrap, including the exact callback endpoint, must be committed");
+    require(boundary.staleNoteOffCount == 0,
+        "each multi-wrap boundary note off must target its own iteration");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::hasVoiceKey(
+                runtime, 25, 0)
+            && trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::hasVoiceKey(
+                runtime, 25, 1),
+        "the first two iterations must coexist in their release envelopes");
+    require(!trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::hasVoiceKey(
+                runtime, 25, 2),
+        "the final exact wrap must defer its chase until a callback owns a head sample");
+
+    runtime.processBlock(outputs, 1, 1);
+    const auto head = runtime.snapshot();
+    require(head.projectSamplePosition == 1 && head.loopIteration == 2,
+        "the deferred head chase must not increment the already committed iteration");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::hasVoiceKey(
+                runtime, 25, 2),
+        "the next callback must apply the deferred chase at sample offset zero");
 }
 
 void runtimeOrdersLoopHeadChaseAndNormalEventsByOrdinal()
@@ -3111,6 +3162,86 @@ void runtimeCallbackRejectsCorruptedEventDensityBeforeTouchingSynth()
         "density fault must not advance the event cursor");
     require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(runtime) == 0,
         "density preflight must fault before changing any synth voice");
+}
+
+void runtimeCountsExactBoundaryEventsWithoutCountingDeferredHeadChase()
+{
+    auto plan = runtimePlan(1, 1);
+    plan.playbackStartSample = 7;
+    plan.loop = trackloom::PreparedMidiLoop {0, 8, {}, {}};
+    plan.loop->boundaryNoteOffEvents.reserve(4'096);
+    for (std::uint32_t ordinal = 0; ordinal < 4'096; ++ordinal) {
+        plan.loop->boundaryNoteOffEvents.push_back(runtimeEvent(
+            8, ordinal + 1, ordinal, trackloom::PreparedMidiEventType::NoteOff));
+    }
+    plan.loop->startChaseNoteOnEvents.push_back(runtimeEvent(
+        0, 10'000, 4'096, trackloom::PreparedMidiEventType::NoteOn));
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::forceInstallUnchecked(
+        runtime, plan);
+    std::array<float, 1> output {};
+    float* outputs[] {output.data()};
+
+    runtime.processBlock(outputs, 1, 1);
+
+    const auto boundary = runtime.snapshot();
+    require(boundary.state == trackloom::RealtimePlaybackState::Playing
+            && boundary.lastError == trackloom::RealtimeAudioError::None,
+        "exactly 4,096 boundary events must remain within the runtime callback limit");
+    require(boundary.renderedSampleCount == 1
+            && boundary.projectSamplePosition == 0
+            && boundary.loopIteration == 1,
+        "an allowed exact-boundary callback must commit its complete transition");
+    require(boundary.staleNoteOffCount == 4'096,
+        "the preflight allowance must match the number of boundary events actually applied");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(runtime) == 0,
+        "the loop-head chase must not consume the exact-boundary callback without a head sample");
+
+    runtime.processBlock(outputs, 1, 1);
+    const auto head = runtime.snapshot();
+    require(head.state == trackloom::RealtimePlaybackState::Playing
+            && head.loopIteration == 1
+            && head.projectSamplePosition == 1,
+        "the next callback must count and apply only the deferred head work");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::hasVoiceKey(
+                runtime, 10'000, 1),
+        "the deferred chase must be applied in the already committed iteration");
+}
+
+void runtimeRejectsExactBoundaryDensityBeforeApplyingAnyEvent()
+{
+    auto plan = runtimePlan(1, 1);
+    plan.playbackStartSample = 7;
+    plan.loop = trackloom::PreparedMidiLoop {0, 8, {}, {}};
+    plan.loop->boundaryNoteOffEvents.reserve(4'097);
+    for (std::uint32_t ordinal = 0; ordinal < 4'097; ++ordinal) {
+        plan.loop->boundaryNoteOffEvents.push_back(runtimeEvent(
+            8, ordinal + 1, ordinal, trackloom::PreparedMidiEventType::NoteOff));
+    }
+    trackloom::PreparedMidiPlaybackRuntime runtime;
+    trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::forceInstallUnchecked(
+        runtime, plan);
+    std::array<float, 1> output {1.0f};
+    float* outputs[] {output.data()};
+
+    runtime.processBlock(outputs, 1, 1);
+
+    const auto snapshot = runtime.snapshot();
+    require(output[0] == 0.0f,
+        "an exact-boundary density fault must keep the complete callback silent");
+    require(snapshot.state == trackloom::RealtimePlaybackState::Faulted
+            && snapshot.lastError == trackloom::RealtimeAudioError::EventDensityExceeded,
+        "4,097 exact-boundary events must trip the stable runtime density fault");
+    require(snapshot.renderedSampleCount == 0
+            && snapshot.projectSamplePosition == 7
+            && snapshot.loopIteration == 0,
+        "density preflight must reject before committing any exact-boundary state");
+    require(snapshot.staleNoteOffCount == 0,
+        "density preflight must reject before applying the first boundary event");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::eventIndex(runtime) == 0,
+        "density preflight must preserve the normal event cursor");
+    require(trackloom::detail::PreparedMidiPlaybackRuntimeTestAccess::activeVoiceCount(runtime) == 0,
+        "density preflight must preserve the synth before exact-boundary rejection");
 }
 
 void runtimeOversizedBlockFaultsWithoutAdvancingPlayback()
@@ -10286,9 +10417,10 @@ int main()
         runtimeRendersSegmentsAndAdvancesActualFrames();
         runtimeSupportsMonoStereoAndNullOutputPointers();
         runtimeStopsAfterNonLoopPlanAndEmptyPlan();
-        runtimeLoopsAcrossTailAndHeadWithBoundaryReleaseBeforeChase();
+        runtimeCommitsExactLoopBoundaryBeforeDeferringHeadChase();
         runtimeDoesNotRepeatInitialOrLoopHeadChaseOnContinuousBlocks();
         runtimeHandlesMultipleLoopWrapsAndSameBaseKeyReleases();
+        runtimeCommitsFinalExactBoundaryAfterMultipleWraps();
         runtimeOrdersLoopHeadChaseAndNormalEventsByOrdinal();
         runtimeValidatorRejectsInvalidFormatsAndPreservesInstalledPlan();
         runtimeValidatorRejectsPhaseIncrementAboveOneCycleBeforeInstall();
@@ -10301,6 +10433,8 @@ int main()
         runtimeValidatorEnforcesTotalAndCallbackEventLimits();
         runtimeValidatorReportsUnavailableValidationResources();
         runtimeCallbackRejectsCorruptedEventDensityBeforeTouchingSynth();
+        runtimeCountsExactBoundaryEventsWithoutCountingDeferredHeadChase();
+        runtimeRejectsExactBoundaryDensityBeforeApplyingAnyEvent();
         runtimeOversizedBlockFaultsWithoutAdvancingPlayback();
         runtimeStoppingReleasesWithinThirtyMilliseconds();
         runtimeHardResetAndCallbackDiagnosticsPublishStableFaults();

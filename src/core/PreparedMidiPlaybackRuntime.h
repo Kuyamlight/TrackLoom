@@ -84,7 +84,6 @@ private:
     BuiltInPolySynth synth_;
     std::size_t eventIndex_ = 0;
     bool initialChaseApplied_ = false;
-    bool boundaryTransitionPending_ = false;
     bool loopHeadChasePending_ = false;
     bool stopReleaseStarted_ = false;
     std::int64_t projectSamplePositionCursor_ = 0;
